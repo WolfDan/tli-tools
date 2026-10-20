@@ -354,7 +354,7 @@ pub fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>) {
                         state_push_only = true;
                     }
                     if let Some(p) = cur_placement {
-                        let monitor_changed = last_placement.as_ref().map_or(true, |prev| {
+                        let monitor_changed = last_placement.as_ref().is_none_or(|prev| {
                             prev.monitor_index != p.monitor_index
                                 || prev.monitor_spatial_rank != p.monitor_spatial_rank
                                 || prev.monitor != p.monitor

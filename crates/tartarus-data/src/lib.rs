@@ -432,8 +432,8 @@ pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetI
         if !filters.iter().any(|f| lower.contains(f)) {
             continue;
         }
-        if let Ok(tex) = vfs.decode_texture(vpath) {
-            if tex.width >= 16 && tex.height >= 16 && tex.width <= 4096 && tex.height <= 4096 {
+        if let Ok(tex) = vfs.decode_texture(vpath)
+            && tex.width >= 16 && tex.height >= 16 && tex.width <= 4096 && tex.height <= 4096 {
                 let short_name = Path::new(vpath)
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
@@ -454,7 +454,6 @@ pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetI
                     },
                 );
             }
-        }
     }
 
     // Also load any UPaperSprite assets if not already decoded as standalone textures
@@ -1014,11 +1013,11 @@ pub fn render_catalog_relics_png(
     let cols = 3usize;
     let cell_w = 420usize;
     let cell_h = 112usize;
-    let rows = (db.relics.len() + cols - 1) / cols;
+    let rows = db.relics.len().div_ceil(cols);
     let width = 24 + cols * cell_w;
     let height = 52 + rows * cell_h;
     let mut buf = vec![0u8; width * height * 4];
-    for px in buf.chunks_exact_mut(4) {
+    for px in buf.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&[18, 16, 22, 255]);
     }
 
@@ -1128,7 +1127,7 @@ pub fn render_catalog_beasts_and_cells_png(
     let row_h = 128usize;
     let height = 56 + db.beasts.len() * row_h;
     let mut buf = vec![0u8; width * height * 4];
-    for px in buf.chunks_exact_mut(4) {
+    for px in buf.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&[18, 16, 22, 255]);
     }
 
@@ -1280,7 +1279,7 @@ pub fn render_catalog_gifts_themes_events_png(
     let width = 1280usize;
     let height = 980usize;
     let mut buf = vec![0u8; width * height * 4];
-    for px in buf.chunks_exact_mut(4) {
+    for px in buf.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&[18, 16, 22, 255]);
     }
 
@@ -2426,7 +2425,7 @@ pub fn render_catalog_board_layout_png(
     let width = 1600usize;
     let height = 1120usize;
     let mut buf = vec![0u8; width * height * 4];
-    for px in buf.chunks_exact_mut(4) {
+    for px in buf.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&[18, 16, 22, 255]);
     }
 
@@ -2580,8 +2579,8 @@ pub fn render_catalog_board_layout_png(
         "TRUETYPE FONT RASTERIZATION (UI_FONT_LIGHT_EN_AZ.UFONT): DIGITS 0..9 (10X14) & 'GO TO CELL' (40X10)",
         [250, 210, 120, 255],
     );
-    if let Ok(f1_bytes) = vfs.read_path("UE_game/Content/Art/UI/Fonts/UI_Font_Light_EN_AZ.ufont") {
-        if let Ok(font) = TtfFont::parse(f1_bytes) {
+    if let Ok(f1_bytes) = vfs.read_path("UE_game/Content/Art/UI/Fonts/UI_Font_Light_EN_AZ.ufont")
+        && let Ok(font) = TtfFont::parse(f1_bytes) {
             for d in 0..=9 {
                 let ch = char::from_digit(d as u32, 10).unwrap();
                 let x0 = 16 + d * 96;
@@ -2631,7 +2630,6 @@ pub fn render_catalog_board_layout_png(
                 }
             }
         }
-    }
 
     let png = encode_png_rgba8(width as u32, height as u32, &buf)?;
     fs::write(out_path, png).map_err(|e| e.to_string())

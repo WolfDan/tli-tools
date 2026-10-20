@@ -687,7 +687,7 @@ impl BoardModel {
     }
 
     pub fn clean_prey(&mut self) {
-        let mut copy = self.clone();
+        let mut copy = *self;
         copy.step = BoardStep::Manage;
         let (st, _) = copy.build_state(1);
         for n in 0..CELL_COUNT {
@@ -890,11 +890,10 @@ impl BoardModel {
 
         let mut max_tier = if st.vault_len > 0 { RAINBOW } else { 0 };
         for c in &st.cells {
-            if let Some(inm) = c.inmate {
-                if inm.tier > max_tier {
+            if let Some(inm) = c.inmate
+                && inm.tier > max_tier {
                     max_tier = inm.tier;
                 }
-            }
         }
         st.stats.best = max_tier;
         st.used = UsedToday::default();
@@ -903,8 +902,8 @@ impl BoardModel {
         st.pending_len = 0;
         st.phase = Phase::Manage;
 
-        if challenge {
-            if let Some(ch) = st.challenge.as_mut() {
+        if challenge
+            && let Some(ch) = st.challenge.as_mut() {
                 ch.vouchers = self.ch.vouchers.min(START_VOUCHERS);
                 let deadlines = [4u8, 8u8, 12u8];
                 for slot in 0..3 {
@@ -969,7 +968,6 @@ impl BoardModel {
                 ch.window_open = false;
                 ch.window_early = false;
             }
-        }
 
         let set_used = |st: &mut SimState| {
             st.used = UsedToday {
@@ -1279,12 +1277,11 @@ impl BoardModel {
             let mut opts = [ToolId::Revenge; 4];
             let mut olen = 0usize;
             for &c in p0.slice() {
-                if let ChoiceId::Tool(t) = c {
-                    if olen < 4 {
+                if let ChoiceId::Tool(t) = c
+                    && olen < 4 {
                         opts[olen] = t;
                         olen += 1;
                     }
-                }
             }
             m.choice = ChoiceModel::from_tools(p0.kind, &opts[..olen], p0.rerolls);
         } else if let Some(ch) = st.challenge.as_ref().filter(|c| c.window_open) {

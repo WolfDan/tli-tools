@@ -178,7 +178,7 @@ fn read_fstring(buf: &[u8], mut off: usize) -> Result<(String, usize), String> {
             .get(off..off + byte_len)
             .ok_or_else(|| format!("Unexpected EOF reading UTF-16 FString at {off}"))?;
         let u16s: Vec<u16> = slice
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
         let s = String::from_utf16_lossy(&u16s)

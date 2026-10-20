@@ -1386,11 +1386,10 @@ impl SimState {
         } else {
             self.params.double_eat_tier
         };
-        if tier.unwrap_or(0) >= from {
-            if let Some(sec) = beast.second_meal() {
+        if tier.unwrap_or(0) >= from
+            && let Some(sec) = beast.second_meal() {
                 return ([first, sec], 2);
             }
-        }
         ([first, first], 1)
     }
 
@@ -1442,26 +1441,23 @@ impl SimState {
                 continue;
             }
             if !c.sealed {
-                if let Some(meal) = c.inmate {
-                    if self.can_eat(eater, meal) {
+                if let Some(meal) = c.inmate
+                    && self.can_eat(eater, meal) {
                         out[len] = DevourOption {
                             cell: c.n,
                             scratch: false,
                         };
                         len += 1;
                     }
-                }
-            } else if c.scratch && eater.beast == Beast::Wolf && eater.tier < RAINBOW {
-                if let Some(hid) = c.hidden {
-                    if hid.tier == eater.tier {
+            } else if c.scratch && eater.beast == Beast::Wolf && eater.tier < RAINBOW
+                && let Some(hid) = c.hidden
+                    && hid.tier == eater.tier {
                         out[len] = DevourOption {
                             cell: c.n,
                             scratch: true,
                         };
                         len += 1;
                     }
-                }
-            }
         }
         (out, len)
     }
@@ -1526,12 +1522,11 @@ impl SimState {
             if c.n == self.position || c.sealed {
                 continue;
             }
-            if let Some(meal) = c.inmate {
-                if self.can_eat(lion, meal) && self.link_of(meal.id).is_none() {
+            if let Some(meal) = c.inmate
+                && self.can_eat(lion, meal) && self.link_of(meal.id).is_none() {
                     out[len] = c.n;
                     len += 1;
                 }
-            }
         }
         (out, len)
     }
@@ -1550,11 +1545,10 @@ impl SimState {
     #[inline]
     pub fn cell_of(&self, inmate_id: u16) -> Option<u8> {
         for c in &self.cells {
-            if let Some(i) = c.inmate {
-                if i.id == inmate_id {
+            if let Some(i) = c.inmate
+                && i.id == inmate_id {
                     return Some(c.n);
                 }
-            }
         }
         None
     }
@@ -1562,13 +1556,11 @@ impl SimState {
     #[inline]
     pub fn board_cell_of(&self, inmate_id: u16) -> Option<u8> {
         for c in &self.cells {
-            if !c.sealed {
-                if let Some(i) = c.inmate {
-                    if i.id == inmate_id {
+            if !c.sealed
+                && let Some(i) = c.inmate
+                    && i.id == inmate_id {
                         return Some(c.n);
                     }
-                }
-            }
         }
         None
     }
@@ -1661,11 +1653,10 @@ impl SimState {
 
     pub fn door_inmate(&mut self, cell_idx: usize) -> Inmate {
         let c = &self.cells[cell_idx];
-        if let Some(h) = c.hidden {
-            if h.tier > 0 || c.known > 0 || !self.has_tool(ToolId::Hook) {
+        if let Some(h) = c.hidden
+            && (h.tier > 0 || c.known > 0 || !self.has_tool(ToolId::Hook)) {
                 return h;
             }
-        }
         let w = self.cell_weights(&self.cells[cell_idx]);
         self.roll_inmate(&w)
     }
@@ -1717,14 +1708,12 @@ impl SimState {
         let mut pool = [0u16; 16];
         let mut len = 0;
         for c in &self.cells {
-            if !c.sealed {
-                if let Some(i) = c.inmate {
-                    if i.tier < RAINBOW {
+            if !c.sealed
+                && let Some(i) = c.inmate
+                    && i.tier < RAINBOW {
                         pool[len] = i.id;
                         len += 1;
                     }
-                }
-            }
         }
         (pool, len)
     }
@@ -2029,11 +2018,10 @@ impl SimState {
         self.check_prey();
 
         for n in 0..CELL_COUNT {
-            if let Some(due) = self.cells[n].nest_due {
-                if due <= self.day {
+            if let Some(due) = self.cells[n].nest_due
+                && due <= self.day {
                     self.open_cell(n, false, Some((Beast::Rat, self.params.nest_tier)));
                 }
-            }
         }
 
         if self.has_tool(ToolId::Tongs) {
@@ -2088,15 +2076,14 @@ impl SimState {
             let mut blen = 0;
             let mut top = 0u8;
             for c in &self.cells {
-                if !c.sealed {
-                    if let Some(i) = c.inmate {
+                if !c.sealed
+                    && let Some(i) = c.inmate {
                         board[blen] = c.n as usize;
                         blen += 1;
                         if i.tier > top {
                             top = i.tier;
                         }
                     }
-                }
             }
             if blen > 0 {
                 let mut tops = [0usize; 16];
@@ -2140,15 +2127,14 @@ impl SimState {
             let mut board = [0usize; 16];
             let mut blen = 0;
             for c in &self.cells {
-                if !c.sealed {
-                    if let Some(i) = c.inmate {
+                if !c.sealed
+                    && let Some(i) = c.inmate {
                         if (i.tier as usize) < 6 {
                             counts[i.beast.idx()][i.tier as usize] += 1;
                         }
                         board[blen] = c.n as usize;
                         blen += 1;
                     }
-                }
             }
             let mut matching = [0usize; 16];
             let mut mlen = 0;
@@ -2287,14 +2273,13 @@ impl SimState {
             }
         }
 
-        if let Some(ev) = event {
-            if self.cells[to as usize].inmate.is_some() {
+        if let Some(ev) = event
+            && self.cells[to as usize].inmate.is_some() {
                 self.phase = Phase::Event;
                 self.active_event = Some((ev, to));
                 self.count_objective(ObjectiveId::Incident);
                 return true;
             }
-        }
 
         self.phase = if to == OFFICE {
             Phase::Office
@@ -2407,11 +2392,10 @@ impl SimState {
                 };
                 let mut counts = [0u8; 4];
                 for c in &self.cells {
-                    if !c.sealed {
-                        if let Some(i) = c.inmate {
+                    if !c.sealed
+                        && let Some(i) = c.inmate {
                             counts[i.beast.idx()] += 1;
                         }
-                    }
                 }
                 let min_cnt = *counts.iter().min().unwrap_or(&0);
                 let mut scarce = [Beast::Mammoth; 4];
@@ -2485,14 +2469,13 @@ impl SimState {
                     }
                 }
                 self.event_pool_len = write as u8;
-                if let Some(nxt) = next_ev {
-                    if !self.event_pool_slice().contains(&nxt)
+                if let Some(nxt) = next_ev
+                    && !self.event_pool_slice().contains(&nxt)
                         && (self.event_pool_len as usize) < self.event_pool.len()
                     {
                         self.event_pool[self.event_pool_len as usize] = nxt;
                         self.event_pool_len += 1;
                     }
-                }
                 if kind == EventKind::Usurp1 {
                     let mut free = [0usize; 16];
                     let mut flen = 0;
@@ -2537,25 +2520,21 @@ impl SimState {
             EventKind::Appetite => {
                 let mut low_tier = u8::MAX;
                 for c in &self.cells {
-                    if !c.sealed {
-                        if let Some(i) = c.inmate {
-                            if i.tier < low_tier {
+                    if !c.sealed
+                        && let Some(i) = c.inmate
+                            && i.tier < low_tier {
                                 low_tier = i.tier;
                             }
-                        }
-                    }
                 }
                 let mut lowest = [0u16; 16];
                 let mut llen = 0;
                 for c in &self.cells {
-                    if !c.sealed {
-                        if let Some(i) = c.inmate {
-                            if i.tier == low_tier {
+                    if !c.sealed
+                        && let Some(i) = c.inmate
+                            && i.tier == low_tier {
                                 lowest[llen] = i.id;
                                 llen += 1;
                             }
-                        }
-                    }
                 }
                 if llen > 0 {
                     let who_id = pick_one(&mut self.rng, &lowest[..llen]);
@@ -2585,13 +2564,11 @@ impl SimState {
                 };
                 let mut same = 0u8;
                 for c in &self.cells {
-                    if c.n != n && !c.sealed {
-                        if let Some(i) = c.inmate {
-                            if i.beast == cur.beast {
+                    if c.n != n && !c.sealed
+                        && let Some(i) = c.inmate
+                            && i.beast == cur.beast {
                                 same += 1;
                             }
-                        }
-                    }
                 }
                 if same > 0 {
                     self.promote(cur.id, same, false);
@@ -2652,11 +2629,10 @@ impl SimState {
         } else {
             1
         };
-        if !option.scratch && eater.beast == Beast::Mammoth && self.has_tool(ToolId::Maul) {
-            if let Some(m) = meal {
+        if !option.scratch && eater.beast == Beast::Mammoth && self.has_tool(ToolId::Maul)
+            && let Some(m) = meal {
                 gain = (m.tier as i32 + 2 - eater.tier as i32).max(1) as u8;
             }
-        }
         let open_cnt = self
             .cells
             .iter()
@@ -2697,8 +2673,8 @@ impl SimState {
         self.stats.devours += 1;
         self.check_prey();
 
-        if revenge {
-            if let Some(ecn) = self.board_cell_of(eater.id) {
+        if revenge
+            && let Some(ecn) = self.board_cell_of(eater.id) {
                 let cur_eater = self.cells[ecn as usize].inmate.unwrap();
                 let (sealed, slen) = self.sealed_cells();
                 if slen > 0 {
@@ -2708,7 +2684,6 @@ impl SimState {
                     self.open_cell(target, false, Some((food, cur_eater.tier)));
                 }
             }
-        }
 
         if self.has_tool(ToolId::Cage)
             && self.cells[meal_cell_idx].sealed
@@ -2917,17 +2892,15 @@ impl SimState {
             let mut above_cnt = 0;
             let mut below_cnt = 0;
             for c in &self.cells {
-                if !c.sealed {
-                    if let Some(i) = c.inmate {
-                        if i.id != fresh.id {
+                if !c.sealed
+                    && let Some(i) = c.inmate
+                        && i.id != fresh.id {
                             if i.tier > fresh.tier {
                                 above_cnt += 1;
                             } else if i.tier < fresh.tier {
                                 below_cnt += 1;
                             }
                         }
-                    }
-                }
             }
             if above_cnt == below_cnt {
                 self.promote(fresh.id, 3, false);
@@ -2952,14 +2925,12 @@ impl SimState {
             let mut pool = [0u16; 16];
             let mut plen = 0;
             for c in &self.cells {
-                if !c.sealed {
-                    if let Some(i) = c.inmate {
-                        if self.params.ivory_includes_swapped || i.id != fresh.id {
+                if !c.sealed
+                    && let Some(i) = c.inmate
+                        && (self.params.ivory_includes_swapped || i.id != fresh.id) {
                             pool[plen] = i.id;
                             plen += 1;
                         }
-                    }
-                }
             }
             shuffle_slice(&mut self.rng, &mut pool[..plen]);
             let take = plen.min(self.params.ivory_count as usize);
@@ -2985,15 +2956,14 @@ impl SimState {
                 let mut ids = [0u16; 16];
                 let mut ilen = 0;
                 for c in &self.cells {
-                    if !c.sealed {
-                        if let Some(i) = c.inmate {
+                    if !c.sealed
+                        && let Some(i) = c.inmate {
                             let (_, olen) = self.devour_options(c.n);
                             if olen > 0 {
                                 ids[ilen] = i.id;
                                 ilen += 1;
                             }
                         }
-                    }
                 }
                 for &inmate_id in &ids[..ilen] {
                     let Some(cn) = self.board_cell_of(inmate_id) else {
@@ -3022,14 +2992,12 @@ impl SimState {
                 let mut low = [0u16; 16];
                 let mut llen = 0;
                 for c in &self.cells {
-                    if !c.sealed {
-                        if let Some(i) = c.inmate {
-                            if i.tier < 3 {
+                    if !c.sealed
+                        && let Some(i) = c.inmate
+                            && i.tier < 3 {
                                 low[llen] = i.id;
                                 llen += 1;
                             }
-                        }
-                    }
                 }
                 for &id in &low[..llen] {
                     if self.board_cell_of(id).is_some() {
@@ -3041,15 +3009,14 @@ impl SimState {
                 let mut hungry = [0u16; 16];
                 let mut hlen = 0;
                 for c in &self.cells {
-                    if !c.sealed {
-                        if let Some(i) = c.inmate {
+                    if !c.sealed
+                        && let Some(i) = c.inmate {
                             let (_, olen) = self.devour_options(c.n);
                             if olen == 0 {
                                 hungry[hlen] = i.id;
                                 hlen += 1;
                             }
                         }
-                    }
                 }
                 shuffle_slice(&mut self.rng, &mut hungry[..hlen]);
                 for &id in &hungry[..hlen.min(4)] {
@@ -3108,14 +3075,12 @@ impl SimState {
             }
             _ => return false,
         }
-        if self.phase == Phase::Event {
-            if let Some((_, ecn)) = self.active_event {
-                if self.cells[ecn as usize].inmate.is_none() {
+        if self.phase == Phase::Event
+            && let Some((_, ecn)) = self.active_event
+                && self.cells[ecn as usize].inmate.is_none() {
                     self.active_event = None;
                     self.phase = Phase::Manage;
                 }
-            }
-        }
         true
     }
 
@@ -3239,15 +3204,14 @@ impl SimState {
         if !self.guard(false) {
             return false;
         }
-        if let Some(contract) = self.current_contract() {
-            if contract.deadline == self.day {
+        if let Some(contract) = self.current_contract()
+            && contract.deadline == self.day {
                 if let Some(ch) = self.challenge.as_mut() {
                     ch.window_open = true;
                     ch.window_early = false;
                 }
                 return true;
             }
-        }
         self.advance_day();
         true
     }

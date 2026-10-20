@@ -692,13 +692,11 @@ impl Context {
         let scapegoat_loss = if st.has_tool(ToolId::Scapegoat) && board_len >= 3 {
             let mut val_sum = 0.0;
             for c in &st.cells {
-                if !c.sealed {
-                    if let Some(inmate) = c.inmate {
-                        if inmate.tier < RAINBOW {
+                if !c.sealed
+                    && let Some(inmate) = c.inmate
+                        && inmate.tier < RAINBOW {
                             val_sum += v[inmate.tier as usize];
                         }
-                    }
-                }
             }
             Some((2.0 * val_sum) / (board_len as f64))
         } else {
@@ -1341,11 +1339,10 @@ pub fn swap_value_with_comp(
     }
     let dist = swap_dist(st, ctx, tier);
     let mut maiden_counts = ctx.maiden;
-    if let Some(ref mut counts) = maiden_counts {
-        if (tier as usize) < 5 && counts[tier as usize] > 0 {
+    if let Some(ref mut counts) = maiden_counts
+        && (tier as usize) < 5 && counts[tier as usize] > 0 {
             counts[tier as usize] -= 1;
         }
-    }
 
     let beasts_slice: &[u8] = match beast {
         0 if ctx.pestle => &[0],
@@ -1363,8 +1360,8 @@ pub fn swap_value_with_comp(
             continue;
         }
         let mut eff_t = t as u8;
-        if let Some(ref counts) = maiden_counts {
-            if t < 5 {
+        if let Some(ref counts) = maiden_counts
+            && t < 5 {
                 let mut above = 0u8;
                 let mut below = 0u8;
                 for (u, &n) in counts.iter().enumerate() {
@@ -1378,7 +1375,6 @@ pub fn swap_value_with_comp(
                     eff_t = (eff_t + 3).min(RAINBOW);
                 }
             }
-        }
 
         if eff_t >= RAINBOW {
             value += p * ctx.r_val;
@@ -1742,8 +1738,8 @@ pub fn event_worth_of_cell(
             }
             _ => {}
         }
-    } else if c.sealed && c.known == 1 {
-        if let Some(h) = c.hidden {
+    } else if c.sealed && c.known == 1
+        && let Some(h) = c.hidden {
             let tier = h.tier.min(SUPREME);
             match kind {
                 EventKind::Trickster => {
@@ -1763,7 +1759,6 @@ pub fn event_worth_of_cell(
                 _ => {}
             }
         }
-    }
 
     event_worth_of(st, ctx, board_comp, kind)
 }
@@ -1835,8 +1830,8 @@ pub fn office_values(st: &SimState, ctx: &Context, comp: &[u8; 24]) -> OfficeVal
         if c.sealed {
             continue;
         }
-        if let Some(inmate) = c.inmate {
-            if inmate.tier < RAINBOW {
+        if let Some(inmate) = c.inmate
+            && inmate.tier < RAINBOW {
                 let t = inmate.tier as usize;
                 let next_v = if inmate.tier + 1 >= RAINBOW {
                     ctx.r_val
@@ -1846,7 +1841,6 @@ pub fn office_values(st: &SimState, ctx: &Context, comp: &[u8; 24]) -> OfficeVal
                 bestow += next_v - ctx.v[t];
                 count += 1;
             }
-        }
     }
     bestow /= (count.max(1)) as f64;
     let free = st
@@ -2119,16 +2113,14 @@ pub fn patrol_scores_fast(st: &SimState, ctx: &mut Context) -> ([PatrolCellScore
                 && st.link_of(inmate.id).is_none()
             {
                 for oc in &st.cells {
-                    if oc.n != c.n && !oc.sealed {
-                        if let Some(meal) = oc.inmate {
-                            if st.can_eat(inmate, meal) && st.link_of(meal.id).is_none() {
+                    if oc.n != c.n && !oc.sealed
+                        && let Some(meal) = oc.inmate
+                            && st.can_eat(inmate, meal) && st.link_of(meal.id).is_none() {
                                 let hv = hunt_pair_ev(st, ctx, inmate.tier, meal.tier);
                                 if hv > act_val {
                                     act_val = hv;
                                 }
                             }
-                        }
-                    }
                 }
             }
             score += p.w_walk * act_val;
@@ -2436,8 +2428,7 @@ pub fn devour_scores(st: &SimState, ctx: &mut Context) -> ([DevourScore; 16], us
         let m_tier = if o.scratch { tier } else { meal.tier };
         let coin_loss = if !o.scratch
             && ctx.coin
-            && m_tier >= 2
-            && m_tier < RAINBOW
+            && (2..RAINBOW).contains(&m_tier)
             && comp[(m_tier as usize) * 4 + meal.beast.idx()] == 1
         {
             0.40 * coin_pair_ev(ctx, m_tier)
@@ -2496,15 +2487,13 @@ pub fn swap_gain_here(st: &SimState, ctx: &mut Context) -> f64 {
         let mut board_len = 0usize;
         let mut lift_sum = 0.0;
         for c in &st.cells {
-            if !c.sealed {
-                if let Some(i) = c.inmate {
-                    if i.tier < RAINBOW {
+            if !c.sealed
+                && let Some(i) = c.inmate
+                    && i.tier < RAINBOW {
                         board_len += 1;
                         let t = i.tier as usize;
                         lift_sum += ctx.v[t + 1] - ctx.v[t];
                     }
-                }
-            }
         }
         let lift = lift_sum / ((board_len.max(1)) as f64);
         gain += ((st.params.ivory_count as usize).min(board_len) as f64) * lift;
@@ -2584,8 +2573,8 @@ pub fn board_value(st: &SimState, ctx: &mut Context) -> f64 {
     }
     if ctx.ravenous && ctx.top_tier >= 2 && ctx.top_tier < RAINBOW {
         for c in &st.cells {
-            if !c.sealed {
-                if let Some(top) = c.inmate.filter(|i| i.tier == ctx.top_tier) {
+            if !c.sealed
+                && let Some(top) = c.inmate.filter(|i| i.tier == ctx.top_tier) {
                     let gain = 1
                         + u8::from(ctx.crown && top.beast == Beast::Lion)
                         + u8::from(ctx.skewer && top.beast == Beast::Rat);
@@ -2598,8 +2587,8 @@ pub fn board_value(st: &SimState, ctx: &mut Context) -> f64 {
                     let mut best_adj = 0.0_f64;
                     for adj in [((c.n + 15) & 15), ((c.n + 1) & 15)] {
                         let ac = &st.cells[adj as usize];
-                        if !ac.sealed {
-                            if let Some(victim) = ac.inmate.filter(|v| v.tier < top.tier) {
+                        if !ac.sealed
+                            && let Some(victim) = ac.inmate.filter(|v| v.tier < top.tier) {
                                 let net =
                                     (to_v - ctx.v[top.tier as usize] - ctx.v[victim.tier as usize])
                                         .max(0.0);
@@ -2607,11 +2596,9 @@ pub fn board_value(st: &SimState, ctx: &mut Context) -> f64 {
                                     best_adj = net;
                                 }
                             }
-                        }
                     }
                     value += 0.45 * best_adj;
                 }
-            }
         }
     }
     for &link in &st.prey[..st.prey_len as usize] {
@@ -3135,8 +3122,8 @@ pub fn wants_reroll(st: &SimState, p: &SolverParams, options: &[ToolId]) -> bool
 }
 
 pub fn pick_tool(st: &SimState, p: &SolverParams, options: &[ToolId]) -> ToolId {
-    if p.tool_sets {
-        if let Some(gains) = tool_gains(st, options) {
+    if p.tool_sets
+        && let Some(gains) = tool_gains(st, options) {
             let mut best = options[0];
             for &id in &options[1..] {
                 if gains[id.idx()] > gains[best.idx()] {
@@ -3145,7 +3132,6 @@ pub fn pick_tool(st: &SimState, p: &SolverParams, options: &[ToolId]) -> ToolId 
             }
             return best;
         }
-    }
     for &t in &p.tool_rank {
         if options.contains(&t) {
             return t;
@@ -3216,8 +3202,8 @@ pub fn decide(
         return Some(SimAction::Choose(ChoiceId::Tool(picked)));
     }
 
-    if let Some(ch) = st.challenge.as_ref() {
-        if ch.window_open {
+    if let Some(ch) = st.challenge.as_ref()
+        && ch.window_open {
             if let Some(plan) = convoy_plan(st, &ctx) {
                 return Some(SimAction::Deliver {
                     cell_mask: plan.cell_mask,
@@ -3232,7 +3218,6 @@ pub fn decide(
                 SimAction::Skip
             });
         }
-    }
 
     if st.chaining_eater.is_some() {
         let (options, olen) = devour_scores(st, &mut ctx);
@@ -3267,8 +3252,8 @@ pub fn decide(
         return Some(SimAction::Office { choice });
     }
 
-    if st.phase == Phase::Event {
-        if let Some((kind, cell_n)) = st.active_event {
+    if st.phase == Phase::Event
+        && let Some((kind, cell_n)) = st.active_event {
             if kind == EventKind::Chain {
                 return Some(SimAction::Event {
                     accept: p.accept_chain,
@@ -3350,7 +3335,6 @@ pub fn decide(
                 accept: ev_val > p.exec_margin,
             });
         }
-    }
 
     if st.phase == Phase::Patrol {
         let (scores, len) = patrol_scores_fast(st, &mut ctx);
@@ -3390,11 +3374,10 @@ pub fn decide(
             });
         }
     }
-    if let Some((h_cell, h_val)) = hunt {
-        if h_val > 0.0 && h_val > swap_gain {
+    if let Some((h_cell, h_val)) = hunt
+        && h_val > 0.0 && h_val > swap_gain {
             return Some(SimAction::Hunt { to: h_cell });
         }
-    }
     if swap_gain > 0.0 {
         return Some(SimAction::Swap);
     }
@@ -3520,11 +3503,10 @@ pub fn cargo_label(
 ) -> String {
     let mut names = Vec::with_capacity((cell_mask.count_ones() as usize) + vault_len);
     for n in 0..16u8 {
-        if (cell_mask & (1u16 << n)) != 0 {
-            if let Some(inmate) = st.cells[n as usize].inmate {
+        if (cell_mask & (1u16 << n)) != 0
+            && let Some(inmate) = st.cells[n as usize].inmate {
                 names.push(format!("{} {}", describe_inmate(inmate), cell_label(n)));
             }
-        }
     }
     for _ in 0..vault_len {
         names.push("a vault Rainbow".to_string());
@@ -3646,8 +3628,8 @@ pub fn candidates(st: &SimState) -> Vec<Candidate> {
         return out;
     }
 
-    if let Some(ch) = st.challenge.as_ref() {
-        if ch.window_open {
+    if let Some(ch) = st.challenge.as_ref()
+        && ch.window_open {
             out.extend(convoy_options(st, None));
             if ch.window_early {
                 out.push(Candidate {
@@ -3668,7 +3650,6 @@ pub fn candidates(st: &SimState) -> Vec<Candidate> {
             }
             return out;
         }
-    }
 
     if st.chaining_eater.is_some() {
         let (opts, olen) = st.chain_options();
@@ -3721,8 +3702,8 @@ pub fn candidates(st: &SimState) -> Vec<Candidate> {
         return out;
     }
 
-    if st.phase == Phase::Event {
-        if let Some((kind, _)) = st.active_event {
+    if st.phase == Phase::Event
+        && let Some((kind, _)) = st.active_event {
             let prefix = if matches!(kind, EventKind::Chain | EventKind::Execution) {
                 "the "
             } else {
@@ -3755,7 +3736,6 @@ pub fn candidates(st: &SimState) -> Vec<Candidate> {
             });
             return out;
         }
-    }
 
     if st.phase == Phase::Patrol {
         if st.can_open_early() {
@@ -3824,8 +3804,8 @@ pub fn candidates(st: &SimState) -> Vec<Candidate> {
             extra: false,
         });
     }
-    if st.can_swap_now() && !here.sealed {
-        if let Some(inmate) = here.inmate {
+    if st.can_swap_now() && !here.sealed
+        && let Some(inmate) = here.inmate {
             out.push(Candidate {
                 action: SimAction::Swap,
                 label: format!(
@@ -3838,7 +3818,6 @@ pub fn candidates(st: &SimState) -> Vec<Candidate> {
                 extra: false,
             });
         }
-    }
     if st.can_hunt_now() {
         let (targets, tlen) = st.hunt_targets();
         for &n in &targets[..tlen] {
@@ -4212,13 +4191,11 @@ pub fn solve_parallel_with_candidates(
                         let val = trial.vault_len as f64;
                         let mut max_tier = if trial.vault_len > 0 { RAINBOW } else { 0 };
                         for c in &trial.cells {
-                            if !c.sealed {
-                                if let Some(inm) = c.inmate {
-                                    if inm.tier > max_tier {
+                            if !c.sealed
+                                && let Some(inm) = c.inmate
+                                    && inm.tier > max_tier {
                                         max_tier = inm.tier;
                                     }
-                                }
-                            }
                         }
                         (val, 0, 0, max_tier as u64)
                     };
@@ -4561,8 +4538,8 @@ pub fn reason(st: &SimState, action: &SimAction, params: Option<&'static SolverP
                     tlen += 1;
                 }
             }
-            if ctx.p.tool_sets {
-                if let Some(gains) = tool_gains(st, &tool_opts[..tlen]) {
+            if ctx.p.tool_sets
+                && let Some(gains) = tool_gains(st, &tool_opts[..tlen]) {
                     let add = gains[t_id.idx()];
                     if !add.is_nan() {
                         let held_str = if st.tools_len == 1 {
@@ -4590,7 +4567,6 @@ pub fn reason(st: &SimState, action: &SimAction, params: Option<&'static SolverP
                         );
                     }
                 }
-            }
             if let Some(rank) = ctx.p.tool_rank.iter().position(|&x| x == t_id) {
                 return format!("Ranked #{} of {} tools in training.", rank + 1, ctx.p.tool_rank.len());
             }

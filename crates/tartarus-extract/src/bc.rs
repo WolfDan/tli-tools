@@ -39,8 +39,8 @@ impl PixelFormat {
     }
 
     pub fn byte_size_for_dimensions(self, width: usize, height: usize) -> usize {
-        let bx = (width + 3) / 4;
-        let by = (height + 3) / 4;
+        let bx = width.div_ceil(4);
+        let by = height.div_ceil(4);
         match self {
             Self::BC7 | Self::BC3 | Self::BC5 => bx * by * 16,
             Self::BC1 | Self::BC4 => bx * by * 8,
@@ -79,7 +79,7 @@ pub fn decode_texture_to_rgba8(
     let mut out = vec![0u8; width * height * 4];
     match fmt {
         PixelFormat::B8G8R8A8 => {
-            for (dst, px) in out.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+            for (dst, px) in out.as_chunks_mut::<4>().0.iter_mut().zip(src.chunks_exact(4)) {
                 dst[0] = px[2];
                 dst[1] = px[1];
                 dst[2] = px[0];
@@ -90,7 +90,7 @@ pub fn decode_texture_to_rgba8(
             out.copy_from_slice(&src[..width * height * 4]);
         }
         PixelFormat::G8 => {
-            for (dst, &g) in out.chunks_exact_mut(4).zip(src.iter().take(width * height)) {
+            for (dst, &g) in out.as_chunks_mut::<4>().0.iter_mut().zip(src.iter().take(width * height)) {
                 dst[0] = g;
                 dst[1] = g;
                 dst[2] = g;
@@ -211,8 +211,8 @@ fn write_4x4_block(
 }
 
 fn decode_bc1(width: usize, height: usize, src: &[u8], out: &mut [u8]) {
-    let blocks_x = (width + 3) / 4;
-    let blocks_y = (height + 3) / 4;
+    let blocks_x = width.div_ceil(4);
+    let blocks_y = height.div_ceil(4);
     for by in 0..blocks_y {
         for bx in 0..blocks_x {
             let off = (by * blocks_x + bx) * 8;
@@ -224,8 +224,8 @@ fn decode_bc1(width: usize, height: usize, src: &[u8], out: &mut [u8]) {
 }
 
 fn decode_bc3(width: usize, height: usize, src: &[u8], out: &mut [u8]) {
-    let blocks_x = (width + 3) / 4;
-    let blocks_y = (height + 3) / 4;
+    let blocks_x = width.div_ceil(4);
+    let blocks_y = height.div_ceil(4);
     for by in 0..blocks_y {
         for bx in 0..blocks_x {
             let off = (by * blocks_x + bx) * 16;
@@ -242,8 +242,8 @@ fn decode_bc3(width: usize, height: usize, src: &[u8], out: &mut [u8]) {
 }
 
 fn decode_bc4(width: usize, height: usize, src: &[u8], out: &mut [u8]) {
-    let blocks_x = (width + 3) / 4;
-    let blocks_y = (height + 3) / 4;
+    let blocks_x = width.div_ceil(4);
+    let blocks_y = height.div_ceil(4);
     for by in 0..blocks_y {
         for bx in 0..blocks_x {
             let off = (by * blocks_x + bx) * 8;
@@ -259,8 +259,8 @@ fn decode_bc4(width: usize, height: usize, src: &[u8], out: &mut [u8]) {
 }
 
 fn decode_bc5(width: usize, height: usize, src: &[u8], out: &mut [u8]) {
-    let blocks_x = (width + 3) / 4;
-    let blocks_y = (height + 3) / 4;
+    let blocks_x = width.div_ceil(4);
+    let blocks_y = height.div_ceil(4);
     for by in 0..blocks_y {
         for bx in 0..blocks_x {
             let off = (by * blocks_x + bx) * 16;
@@ -629,8 +629,8 @@ fn decode_bc7_block(block: &[u8; 16]) -> [[u8; 4]; 16] {
 }
 
 fn decode_bc7(width: usize, height: usize, src: &[u8], out: &mut [u8]) {
-    let blocks_x = (width + 3) / 4;
-    let blocks_y = (height + 3) / 4;
+    let blocks_x = width.div_ceil(4);
+    let blocks_y = height.div_ceil(4);
     for by in 0..blocks_y {
         for bx in 0..blocks_x {
             let off = (by * blocks_x + bx) * 16;
@@ -743,7 +743,7 @@ fn paeth_predictor(a: u8, b: u8, c: u8) -> u8 {
 /// Decodes a standard 8-bit RGB or RGBA `.png` file into `(width, height, rgba8)`.
 pub fn decode_png_rgba8(png: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
     use std::io::Read;
-    if png.len() < 8 || &png[0..8] != &[137, 80, 78, 71, 13, 10, 26, 10] {
+    if png.len() < 8 || png[0..8] != [137, 80, 78, 71, 13, 10, 26, 10] {
         return Err("Invalid PNG signature".to_string());
     }
     let mut pos = 8usize;

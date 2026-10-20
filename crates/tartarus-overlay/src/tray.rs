@@ -131,9 +131,9 @@ fn run_linux_x11_hotkeys(tx: Sender<ControlCommand>, worker_tx: Sender<UiToWorke
 
     let min_kc = setup.min_keycode;
     let max_kc = setup.max_keycode;
-    if max_kc >= min_kc {
-        if let Ok(cookie) = conn.get_keyboard_mapping(min_kc, max_kc - min_kc + 1) {
-            if let Ok(reply) = cookie.reply() {
+    if max_kc >= min_kc
+        && let Ok(cookie) = conn.get_keyboard_mapping(min_kc, max_kc - min_kc + 1)
+            && let Ok(reply) = cookie.reply() {
                 let per = reply.keysyms_per_keycode as usize;
                 if per > 0 {
                     for kc in min_kc..=max_kc {
@@ -150,8 +150,6 @@ fn run_linux_x11_hotkeys(tx: Sender<ControlCommand>, worker_tx: Sender<UiToWorke
                     }
                 }
             }
-        }
-    }
 
     let base_mods = u16::from(ModMask::CONTROL | ModMask::M1);
     let mod_variants = [
@@ -171,11 +169,10 @@ fn run_linux_x11_hotkeys(tx: Sender<ControlCommand>, worker_tx: Sender<UiToWorke
                 kc,
                 GrabMode::ASYNC,
                 GrabMode::ASYNC,
-            ) {
-                if cookie.check().is_ok() {
+            )
+                && cookie.check().is_ok() {
                     any_grabbed = true;
                 }
-            }
         }
     }
 

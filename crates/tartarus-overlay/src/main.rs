@@ -98,11 +98,10 @@ pub fn resolve_game_display_id(
         }
     }
 
-    if let Some(idx) = p.monitor_index {
-        if let Some(d) = displays.get(idx) {
+    if let Some(idx) = p.monitor_index
+        && let Some(d) = displays.get(idx) {
             return Some(d.id());
         }
-    }
     None
 }
 

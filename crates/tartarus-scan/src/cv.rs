@@ -1182,15 +1182,13 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
             }
         };
 
-    if let Some(hloc) = hint {
-        if hloc.w == w && hloc.h == h {
-            if let Some(near) =
+    if let Some(hloc) = hint
+        && hloc.w == w && hloc.h == h
+            && let Some(near) =
                 refine_near_direct(hloc.s, hloc.tx, hloc.ty, 0.65_f64.max(hloc.score - 0.08))
             {
                 return Some(near);
             }
-        }
-    }
 
     // Standard 16:9 game window board position (reference frame is 1344x756)
     let s_win = ((w as f64) / 1344.0).min((h as f64) / 756.0);
@@ -1260,7 +1258,7 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
                         + 0.114 * (img.data[o + 2] as f32);
                 }
                 let sc32 = ncc_score_slice(&vals32[..cn32], c32_tv);
-                if best_coarse.map_or(true, |b| sc32 > b.3) {
+                if best_coarse.is_none_or(|b| sc32 > b.3) {
                     best_coarse = Some((s, dx_i, dy_i, sc32));
                 }
             }
@@ -1313,13 +1311,10 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
                     best
                 })
                 .reduce_with(|a, b| if b.3 > a.3 { b } else { a })
-            {
-                if msc >= 0.52 {
-                    if let Some(near) = refine_near_direct(ms, mtx, mty, 0.65) {
+                && msc >= 0.52
+                    && let Some(near) = refine_near_direct(ms, mtx, mty, 0.65) {
                         return Some(near);
                     }
-                }
-            }
         }
 
         let aspect = (w as f64) / (h as f64);
@@ -1463,7 +1458,7 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
                     } else {
                         -1.0
                     };
-                    if best.map_or(true, |b| sc > b.2) {
+                    if best.is_none_or(|b| sc > b.2) {
                         best = Some((ox, oy, sc));
                     }
                 }
@@ -1674,7 +1669,7 @@ pub fn padlock_at(img: &ImageView<'_>, x: f64, y: f64, k: f64) -> f32 {
             continue;
         }
         let fit = 1.0 - (area - 78.0).abs() / 78.0 - off / 14.0;
-        if best_fit.map_or(true, |bf| fit > bf) {
+        if best_fit.is_none_or(|bf| fit > bf) {
             best_fit = Some(fit);
         }
     }
@@ -2351,7 +2346,7 @@ pub fn find_warden_with_slot(
             continue;
         }
         let fit = area / 500.0 - dist;
-        if best.map_or(true, |b| fit > b.1) {
+        if best.is_none_or(|b| fit > b.1) {
             best = Some((cell, fit, dist, bx));
         }
     }
@@ -2373,7 +2368,7 @@ pub fn find_warden_with_slot(
         let rx = 18.0 * k;
         let ry = 20.0 * k;
         let share = color_share(img, ax - rx, ay - ry, ax + rx, ay + ry, is_gold);
-        if share > 0.08 && best_anchor.map_or(true, |b| share > b.1) {
+        if share > 0.08 && best_anchor.is_none_or(|b| share > b.1) {
             best_anchor = Some((
                 idx as u8,
                 share,
@@ -2389,7 +2384,7 @@ pub fn find_warden_with_slot(
 
     if let Some((cell, share, box_coords)) = best_anchor {
         let anchor_conf = (share * 3.2).clamp(0.25, 0.85);
-        if blob_res.as_ref().map_or(true, |w| anchor_conf > w.conf) {
+        if blob_res.as_ref().is_none_or(|w| anchor_conf > w.conf) {
             return Some(WardenRead {
                 cell,
                 conf: anchor_conf,
@@ -2979,15 +2974,14 @@ pub fn locate_by_labels_with_slot(
                 continue;
             }
             let r = read_number(img, &p.words[0].glyphs, line.h, &ALLOWED_CELLS);
-            if let Some(&(val, score)) = r.first() {
-                if score > 0.70 {
+            if let Some(&(val, score)) = r.first()
+                && score > 0.70 {
                     seen.push((
                         (val - 1) as usize,
                         (p.x0 + p.x1) as f64 * 0.5,
                         (p.y0 + p.y1) as f64 * 0.5,
                     ));
                 }
-            }
         }
     }
 
@@ -3022,7 +3016,7 @@ pub fn locate_by_labels_with_slot(
                 uniq |= 1u16 << c.0;
             }
             let cells = uniq.count_ones() as usize;
-            if best.as_ref().map_or(true, |b| cells > b.1) {
+            if best.as_ref().is_none_or(|b| cells > b.1) {
                 best = Some((s, cells, inl));
             }
         }
@@ -3108,7 +3102,7 @@ fn read_chain_screen_with_banner(
     }
     let mut targets = FixedVec::new();
     for c in cells.iter().skip(1) {
-        if warden.map_or(false, |w| c.n == w.cell) {
+        if warden.is_some_and(|w| c.n == w.cell) {
             continue;
         }
         let k = c.k;
@@ -3456,12 +3450,11 @@ fn read_doors_from_lines(img: &ImageView<'_>, lines_by_r: &[Vec<Line>]) -> Optio
     let mut candidates: Vec<Vec<(u8, f32)>> = Vec::with_capacity(best_group.len());
     for c in &best_group {
         let mut whole = read_number(img, &c.3, c.1, &ALLOWED_CELLS);
-        if c.3.len() == 1 && (c.3[0].w as f64) > 0.72 * (c.1 as f64) {
-            if let Some(parts) = split_glyph(img, &c.3[0]) {
+        if c.3.len() == 1 && (c.3[0].w as f64) > 0.72 * (c.1 as f64)
+            && let Some(parts) = split_glyph(img, &c.3[0]) {
                 whole.extend(read_number(img, &parts, c.1, &ALLOWED_CELLS));
                 whole.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
             }
-        }
         if whole.is_empty() {
             return None;
         }
@@ -3544,7 +3537,7 @@ fn extract_days_from_lines(img: &ImageView<'_>, lines: &[Line]) -> Option<(u8, f
             let sc = (smaller.min(8) as f64)
                 + 6.0 * (1.0 - (cx - half_w).abs() / half_w)
                 + 6.0 * ((a.h as f64) / tallest);
-            if best.as_ref().map_or(true, |b| sc > b.0) {
+            if best.as_ref().is_none_or(|b| sc > b.0) {
                 best = Some((sc, word, a.h));
             }
         }
@@ -3587,11 +3580,10 @@ pub fn read_days_with_slot(
     .flatten()
     .collect();
     let fast_res = extract_days_from_lines(img, &fast_lines);
-    if let Some((days, conf)) = fast_res {
-        if conf >= 0.45 {
+    if let Some((days, conf)) = fast_res
+        && conf >= 0.45 {
             return Some((days, conf));
         }
-    }
     if fast_lines.is_empty() {
         return None;
     }
@@ -3659,7 +3651,7 @@ pub fn find_label_with_slot(
                     continue;
                 }
                 let off = ((n - letters).abs() as f64) / 3.0 + (ratio - shape).abs();
-                if best.as_ref().map_or(true, |b| off < b.0) {
+                if best.as_ref().is_none_or(|b| off < b.0) {
                     best = Some((
                         off,
                         LabelBox {
@@ -4547,8 +4539,8 @@ pub enum TitleRead {
 }
 
 fn is_opulence_popup(img: &ImageView<'_>) -> bool {
-    let w = img.width as usize;
-    let h = img.height as usize;
+    let w = img.width;
+    let h = img.height;
     if w == 0 || h == 0 {
         return false;
     }
@@ -4669,7 +4661,7 @@ pub fn read_objective_title_with_slot(
                         .sum();
                     let total: isize = want.iter().sum();
                     if (off as f64) <= 1.0 + (total as f64) * 0.15 {
-                        let better = best_match.map_or(true, |(_, bh, boff)| {
+                        let better = best_match.is_none_or(|(_, bh, boff)| {
                             let same_tier = (line.h - bh).abs() <= bh.max(line.h) / 5;
                             if same_tier {
                                 off < boff || (off == boff && line.h > bh)
@@ -4769,7 +4761,7 @@ pub fn read_hud_objective_with_slot(
                         .zip(name.iter())
                         .map(|(a, b)| (a - b).abs())
                         .sum();
-                    if off <= 1 && best_match.map_or(true, |(_, boff)| off < boff) {
+                    if off <= 1 && best_match.is_none_or(|(_, boff)| off < boff) {
                         best_match = Some((id, off));
                     }
                 }
@@ -4781,18 +4773,17 @@ pub fn read_hud_objective_with_slot(
                         && (4..=6).contains(&words[2])
                     {
                         let nums = read_number(img, &p.words[1].glyphs, line.h, &[10, 18]);
-                        if let Some(&(n, score)) = nums.first() {
-                            if score >= 0.30 {
+                        if let Some(&(n, score)) = nums.first()
+                            && score >= 0.30 {
                                 let id = if n == 18 {
                                     ObjectiveId::Walk
                                 } else {
                                     ObjectiveId::Doors
                                 };
-                                if best_match.map_or(true, |(_, boff)| boff > 0) {
+                                if best_match.is_none_or(|(_, boff)| boff > 0) {
                                     best_match = Some((id, 0));
                                 }
                             }
-                        }
                     } else if (6..=8).contains(&words[0])
                         && (1..=2).contains(&words[1])
                         && (4..=6).contains(&words[2])
@@ -4803,11 +4794,9 @@ pub fn read_hud_objective_with_slot(
                     } else if (6..=8).contains(&words[0])
                         && (5..=7).contains(&words[1])
                         && (7..=9).contains(&words[2])
-                    {
-                        if best_match.is_none() {
+                        && best_match.is_none() {
                             best_match = Some((ObjectiveId::Incident, 1));
                         }
-                    }
                 }
             }
         }
@@ -5099,16 +5088,14 @@ pub fn scan_image_with_options_and_arena(
     let t_total = std::time::Instant::now();
     let t_loc = std::time::Instant::now();
     let mut loc = locate_board(img, hint);
-    if loc.map_or(false, |l| l.score >= 0.25 && l.score < 0.65) && has_devour_banner(img) {
-        if let Some(by_labels) = locate_by_labels_with_slot(img, &mut arena.slots[0]) {
-            if by_labels.cells_matched >= 8 {
+    if loc.is_some_and(|l| l.score >= 0.25 && l.score < 0.65) && has_devour_banner(img)
+        && let Some(by_labels) = locate_by_labels_with_slot(img, &mut arena.slots[0])
+            && by_labels.cells_matched >= 8 {
                 loc = Some(by_labels);
             }
-        }
-    }
     let loc_ms = t_loc.elapsed().as_secs_f64() * 1000.0;
 
-    let valid_board = loc.map_or(false, |l| l.by_labels || l.score >= 0.65);
+    let valid_board = loc.is_some_and(|l| l.by_labels || l.score >= 0.65);
     if !valid_board {
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         return ScanResult {

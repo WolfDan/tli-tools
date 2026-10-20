@@ -116,18 +116,15 @@ impl OverlayView {
                                 }
                             }
                             WorkerToUi::GamePlacement(placement) => {
-                                if let DisplayTarget::Auto(cur_id) = view.display_target {
-                                    if let Some(target_id) =
+                                if let DisplayTarget::Auto(cur_id) = view.display_target
+                                    && let Some(target_id) =
                                         crate::resolve_game_display_id(cx, Some(&placement))
-                                    {
-                                        if cur_id != Some(target_id) {
+                                        && cur_id != Some(target_id) {
                                             view.display_target =
                                                 DisplayTarget::Auto(Some(target_id));
                                             view.pending_reopen = true;
                                             changed = true;
                                         }
-                                    }
-                                }
                             }
                         }
                     }
@@ -658,7 +655,7 @@ impl OverlayView {
                                             this.snap.model.checks = 0;
                                             let _ = this.worker_tx.send(
                                                 UiToWorker::UpdateModelAndRecheck(
-                                                    this.snap.model.clone(),
+                                                    this.snap.model,
                                                 ),
                                             );
                                         }),
@@ -1217,7 +1214,7 @@ impl OverlayView {
         for tier in 0..=4u8 {
             let active = sel_cell.kind == CellKind::Inmate && sel_cell.tier == tier;
             let short = &tier_name(tier)[..3];
-            let lbl = SharedString::from(format!("{short}"));
+            let lbl = SharedString::from(short.to_string());
             beast_row = beast_row.child(
                 div()
                     .id(("ed-tier", tier as usize))
@@ -1406,7 +1403,7 @@ impl OverlayView {
                                             this.snap.model.checks = 0;
                                             let _ = this.worker_tx.send(
                                                 UiToWorker::UpdateModelAndRecheck(
-                                                    this.snap.model.clone(),
+                                                    this.snap.model,
                                                 ),
                                             );
                                         }),

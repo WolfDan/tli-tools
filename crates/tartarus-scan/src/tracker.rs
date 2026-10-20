@@ -388,25 +388,23 @@ impl RunTracker {
     }
 
     pub fn ingest(&mut self, scan: &ScanResult) -> bool {
-        if let Some(loc) = scan.loc {
-            if scan.ok {
+        if let Some(loc) = scan.loc
+            && scan.ok {
                 self.hint = Some(loc);
             }
-        }
 
         if let Some(title) = scan.title {
             self.use_title(title);
         }
 
         if !scan.ok {
-            if let Some(ref pick) = scan.pick {
-                if pick_is_confident(pick) {
+            if let Some(ref pick) = scan.pick
+                && pick_is_confident(pick) {
                     let fresh = self.model.day >= self.model.max_days
                         || (self.model.tools.is_empty() && self.model.day <= 1);
                     self.use_pick(pick, fresh);
                     return true;
                 }
-            }
             return false;
         }
 
@@ -473,13 +471,13 @@ impl RunTracker {
             let t_pick = Instant::now();
             let pick_opt = scan_pick_with_slot(view, &mut arena.slots[0]);
             let pick_ms = t_pick.elapsed().as_secs_f64() * 1000.0;
-            if let Some(pick) = pick_opt {
-                if pick_is_confident(&pick) {
+            if let Some(pick) = pick_opt
+                && pick_is_confident(&pick) {
                     let is_fresh = fresh_hint
                         || !self.phase.is_active()
                         || self
                             .last_board_at
-                            .map_or(true, |t| t.elapsed() > Duration::from_secs(300));
+                            .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
                     custom_status = Some(self.use_pick(&pick, is_fresh));
                     return (
                         true,
@@ -493,7 +491,6 @@ impl RunTracker {
                         },
                     );
                 }
-            }
             pre_pick_ms += pick_ms;
         }
 
@@ -505,14 +502,12 @@ impl RunTracker {
         scan_res.profile.pick_ms += pre_pick_ms;
         if scan_res.ok {
             let recognized = self.ingest(&scan_res);
-            if recognized && self.model.objective == ObjectiveId::Other && !self.model.milestone {
-                if let Some(loc) = scan_res.loc.as_ref() {
-                    if let Some(obj) = read_hud_objective_with_slot(view, loc, &mut arena.slots[0])
+            if recognized && self.model.objective == ObjectiveId::Other && !self.model.milestone
+                && let Some(loc) = scan_res.loc.as_ref()
+                    && let Some(obj) = read_hud_objective_with_slot(view, loc, &mut arena.slots[0])
                     {
                         self.model.objective = obj;
                     }
-                }
-            }
             let treasure_view = matches!(
                 trigger,
                 CaptureTrigger::Board {
@@ -532,19 +527,18 @@ impl RunTracker {
             let t_pick = Instant::now();
             let pick_opt = scan_pick_with_slot(view, &mut arena.slots[0]);
             scan_res.profile.pick_ms += t_pick.elapsed().as_secs_f64() * 1000.0;
-            if let Some(pick) = pick_opt {
-                if pick_is_confident(&pick) {
+            if let Some(pick) = pick_opt
+                && pick_is_confident(&pick) {
                     let fresh_hint = matches!(trigger, CaptureTrigger::Instruments { fresh: true });
                     let is_fresh = fresh_hint
                         || !self.phase.is_active()
                         || self
                             .last_board_at
-                            .map_or(true, |t| t.elapsed() > Duration::from_secs(300));
+                            .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
                     custom_status = Some(self.use_pick(&pick, is_fresh));
                     scan_res.profile.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
                     return (true, custom_status, scan_res.profile);
                 }
-            }
         }
 
         // 5. Try scanning an Objective / Start-Event scroll popup (e.g. Manual picture or fallback)
@@ -1158,7 +1152,7 @@ impl RunTracker {
                         d.kind == ScannedCellKind::Inmate && has_target(&final_st, k) == d.jaws
                     })
                     .count();
-                if best_combo.map_or(true, |(_, b_fit, b_orig)| {
+                if best_combo.is_none_or(|(_, b_fit, b_orig)| {
                     fit > b_fit || (fit == b_fit && kept_orig > b_orig)
                 }) {
                     best_combo = Some((assign, fit, kept_orig));
@@ -1187,7 +1181,7 @@ impl RunTracker {
                             d.kind == ScannedCellKind::Inmate && has_target(&final_st, k) == d.jaws
                         })
                         .count();
-                    if best.map_or(true, |b| fit > b.1) {
+                    if best.is_none_or(|b| fit > b.1) {
                         best = Some((beast, fit));
                     }
                 }

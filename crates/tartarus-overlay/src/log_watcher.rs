@@ -200,20 +200,19 @@ impl LogWatcher {
 
         let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
         for candidate in candidates {
-            if let Ok(meta) = fs::metadata(&candidate) {
-                if meta.is_file() {
+            if let Ok(meta) = fs::metadata(&candidate)
+                && meta.is_file() {
                     let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    if best.as_ref().map_or(true, |(_, bt)| mtime > *bt) {
+                    if best.as_ref().is_none_or(|(_, bt)| mtime > *bt) {
                         best = Some((candidate, mtime));
                     }
                 }
-            }
         }
         best.map(|(p, _)| p)
     }
 
     pub fn is_connected(&self) -> bool {
-        self.path.as_ref().map_or(false, |p| p.exists())
+        self.path.as_ref().is_some_and(|p| p.exists())
     }
 
     fn drain_complete_lines(&mut self, state_only: bool) {
@@ -420,7 +419,7 @@ impl LogWatcher {
         } else if line.contains("S16BoardColoredPop Run") {
             let after = self.last_action_at.and_then(|act| {
                 if now.duration_since(act).as_millis() <= 6000 {
-                    let is_consume = self.last_eat_at.map_or(false, |eat| {
+                    let is_consume = self.last_eat_at.is_some_and(|eat| {
                         eat + std::time::Duration::from_millis(500) >= act
                     });
                     Some(if is_consume {
@@ -436,7 +435,7 @@ impl LogWatcher {
         } else if line.contains("S16BoardColoredPop Destory") {
             let confirmed_recently = self
                 .last_gift_confirm_at
-                .map_or(false, |g| now.duration_since(g).as_millis() < 3000);
+                .is_some_and(|g| now.duration_since(g).as_millis() < 3000);
             out.push(LogEvent::BoardTrigger {
                 settle_ms: 600,
                 treasure_view: !confirmed_recently,

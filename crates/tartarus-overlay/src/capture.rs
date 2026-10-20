@@ -65,7 +65,7 @@ pub fn bgra_to_rgba_in_place(buf: &mut [u8]) {
         swapped.copy_to_slice(&mut buf[i..i + 32]);
         i += 32;
     }
-    for px in buf[i..].chunks_exact_mut(4) {
+    for px in buf[i..].as_chunks_mut::<4>().0 {
         px.swap(0, 2);
         px[3] = 255;
     }
@@ -390,33 +390,22 @@ mod platform {
             while let Some(win) = stack.pop() {
                 let mut matched_title = false;
                 if let Ok(cookie) = conn.get_property(false, win, net_wm_name, utf8_string, 0, 256)
-                {
-                    if let Ok(reply) = cookie.reply() {
-                        if !reply.value.is_empty() {
-                            if let Ok(title) = std::str::from_utf8(&reply.value) {
-                                if is_torchlight_title(title) {
+                    && let Ok(reply) = cookie.reply()
+                        && !reply.value.is_empty()
+                            && let Ok(title) = std::str::from_utf8(&reply.value)
+                                && is_torchlight_title(title) {
                                     matched_title = true;
                                 }
-                            }
-                        }
-                    }
-                }
-                if !matched_title {
-                    if let Ok(cookie) = conn.get_property(false, win, wm_name, x11rb::NONE, 0, 256)
-                    {
-                        if let Ok(reply) = cookie.reply() {
-                            if !reply.value.is_empty() {
-                                if let Ok(title) = std::str::from_utf8(&reply.value) {
-                                    if is_torchlight_title(title) {
+                if !matched_title
+                    && let Ok(cookie) = conn.get_property(false, win, wm_name, x11rb::NONE, 0, 256)
+                        && let Ok(reply) = cookie.reply()
+                            && !reply.value.is_empty()
+                                && let Ok(title) = std::str::from_utf8(&reply.value)
+                                    && is_torchlight_title(title) {
                                         matched_title = true;
                                     }
-                                }
-                            }
-                        }
-                    }
-                }
-                if matched_title {
-                    if let Some((w, h)) = Self::viewable_window_size(conn, win) {
+                if matched_title
+                    && let Some((w, h)) = Self::viewable_window_size(conn, win) {
                         let area = (w as u32) * (h as u32);
                         let best_area = best
                             .map(|(_, bw, bh)| (bw as u32) * (bh as u32))
@@ -425,14 +414,12 @@ mod platform {
                             best = Some((win, w, h));
                         }
                     }
-                }
-                if let Ok(tree_cookie) = conn.query_tree(win) {
-                    if let Ok(tree) = tree_cookie.reply() {
+                if let Ok(tree_cookie) = conn.query_tree(win)
+                    && let Ok(tree) = tree_cookie.reply() {
                         for child in tree.children {
                             stack.push(child);
                         }
                     }
-                }
             }
             best
         }
@@ -461,8 +448,8 @@ mod platform {
             let wcy = wy + (wh as i32) / 2;
 
             let mut monitors = Vec::new();
-            if let Some(cookie) = mon_cookie {
-                if let Ok(reply) = cookie.reply() {
+            if let Some(cookie) = mon_cookie
+                && let Ok(reply) = cookie.reply() {
                     for m in reply.monitors {
                         if m.width > 0 && m.height > 0 {
                             monitors.push(MonitorRect {
@@ -474,7 +461,6 @@ mod platform {
                         }
                     }
                 }
-            }
 
             let mut monitor_index = None;
             for (idx, m) in monitors.iter().enumerate() {
@@ -610,7 +596,7 @@ mod platform {
                 return false;
             };
 
-            if !self.shm_disabled && self.shm.as_ref().map_or(true, |s| s.cap < need) {
+            if !self.shm_disabled && self.shm.as_ref().is_none_or(|s| s.cap < need) {
                 if let Some(mut old) = self.shm.take() {
                     old.destroy(Some(conn));
                 }
@@ -660,6 +646,12 @@ mod platform {
             self.fallback_buf.copy_from_slice(&img.data[..need]);
             bgra_to_rgba_in_place(&mut self.fallback_buf[..need]);
             true
+        }
+    }
+
+    impl Default for WindowCapturer {
+        fn default() -> Self {
+            Self::new()
         }
     }
 }

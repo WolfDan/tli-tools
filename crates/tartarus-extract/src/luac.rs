@@ -391,8 +391,8 @@ pub fn parse_multi_language_bin(
                                 as usize;
                         let val_start = k2_end + 8;
                         let val_end = val_start.saturating_add(vlen);
-                        if flag == 0 && vlen <= 32768 && val_end <= n {
-                            if let (Ok(k), Ok(v)) = (
+                        if flag == 0 && vlen <= 32768 && val_end <= n
+                            && let (Ok(k), Ok(v)) = (
                                 std::str::from_utf8(&data[k1_start..k1_end]),
                                 std::str::from_utf8(&data[val_start..val_end]),
                             ) {
@@ -400,7 +400,6 @@ pub fn parse_multi_language_bin(
                                 i = val_end;
                                 continue;
                             }
-                        }
                     }
                 }
             }

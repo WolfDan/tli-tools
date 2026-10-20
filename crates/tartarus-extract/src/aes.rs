@@ -241,7 +241,7 @@ fn decrypt_aes256_ecb_soft(buf: &mut [u8], key: &[u8; 32]) {
         }
     }
 
-    for block in buf.chunks_exact_mut(16) {
+    for block in buf.as_chunks_mut::<16>().0 {
         let mut s = [0u8; 16];
         for i in 0..16 {
             s[i] = block[i] ^ rks[14][i];

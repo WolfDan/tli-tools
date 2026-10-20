@@ -12,20 +12,18 @@ pub fn read_process_rss_mb() -> f64 {
     use std::io::Read;
     if let Ok(mut file) = std::fs::File::open("/proc/self/statm") {
         let mut buf = [0u8; 128];
-        if let Ok(n) = file.read(&mut buf) {
-            if let Ok(statm) = std::str::from_utf8(&buf[..n]) {
+        if let Ok(n) = file.read(&mut buf)
+            && let Ok(statm) = std::str::from_utf8(&buf[..n]) {
                 let mut parts = statm.split_whitespace();
                 let _size = parts.next();
-                if let (Some(res_str), Some(shared_str)) = (parts.next(), parts.next()) {
-                    if let (Ok(resident), Ok(shared)) =
+                if let (Some(res_str), Some(shared_str)) = (parts.next(), parts.next())
+                    && let (Ok(resident), Ok(shared)) =
                         (res_str.parse::<u64>(), shared_str.parse::<u64>())
                     {
                         let private_pages = resident.saturating_sub(shared);
                         return (private_pages as f64) * (4096.0 / (1024.0 * 1024.0));
                     }
-                }
             }
-        }
     }
     0.0
 }
