@@ -10,7 +10,11 @@ pub const DEFAULT_AES_KEY: [u8; 32] = [
 ];
 
 pub fn parse_hex_key(s: &str) -> Result<[u8; 32], String> {
-    let clean = s.trim().strip_prefix("0x").or_else(|| s.trim().strip_prefix("0X")).unwrap_or(s.trim());
+    let clean = s
+        .trim()
+        .strip_prefix("0x")
+        .or_else(|| s.trim().strip_prefix("0X"))
+        .unwrap_or(s.trim());
     if clean.len() != 64 {
         return Err(format!(
             "AES-256 hex key must be 64 hex chars (32 bytes), got {} chars",
@@ -176,7 +180,9 @@ const INV_SBOX: [u8; 256] = [
     0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d,
 ];
 
-const RCON: [u8; 11] = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36];
+const RCON: [u8; 11] = [
+    0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36,
+];
 
 #[inline]
 const fn gmul(mut a: u8, mut b: u8) -> u8 {

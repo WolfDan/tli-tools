@@ -3,18 +3,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::{
-    div, px, rgb, rgba, Context, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    Pixels, Point, Render, SharedString, Styled, Window,
+    Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Point, Render,
+    SharedString, Styled, Window, div, px, rgb, rgba,
 };
 use tartarus_core::{
-    cell_label, tier_name, BoardStep, CellEvent, CellKind, CellModel, FixedVec, GameMode, RunPhase,
-    ALL_TOOLS, BEASTS, CHALLENGE_DAYS, OFFICE,
+    ALL_TOOLS, BEASTS, BoardStep, CHALLENGE_DAYS, CellEvent, CellKind, CellModel, FixedVec,
+    GameMode, OFFICE, RunPhase, cell_label, tier_name,
 };
 use tartarus_scan::RING;
 
 use crate::state::{
-    read_process_rss_mb, DisplayTarget, OverlaySnapshot, OverlayWindowState, PanelLayout,
-    SharedWorkerChannels, UiToWorker, WorkerToUi,
+    DisplayTarget, OverlaySnapshot, OverlayWindowState, PanelLayout, SharedWorkerChannels,
+    UiToWorker, WorkerToUi, read_process_rss_mb,
 };
 use crate::tray::ControlCommand;
 
@@ -225,12 +225,7 @@ impl OverlayView {
         }
     }
 
-    fn finish_drag(
-        &mut self,
-        pos: Point<Pixels>,
-        win: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn finish_drag(&mut self, pos: Point<Pixels>, win: &mut Window, cx: &mut Context<Self>) {
         if let Some(start) = self.drag_start.take() {
             let dx = f32::from(pos.x - start.x);
             let dy = f32::from(pos.y - start.y);
@@ -321,11 +316,7 @@ impl OverlayView {
                     .child(
                         div()
                             .text_size(px(11.5))
-                            .text_color(if folded {
-                                rgb(0xeadfc5)
-                            } else {
-                                rgb(0x959dab)
-                            })
+                            .text_color(if folded { rgb(0xeadfc5) } else { rgb(0x959dab) })
                             .child(subtitle),
                     ),
             )
@@ -963,11 +954,9 @@ impl OverlayView {
                         } else {
                             "Swap OK"
                         }),
-                        (3, 2) => SharedString::from(if model.devour_used {
-                            "Ate"
-                        } else {
-                            "Eat OK"
-                        }),
+                        (3, 2) => {
+                            SharedString::from(if model.devour_used { "Ate" } else { "Eat OK" })
+                        }
                         (4, 2) => SharedString::from(model.start_event.as_str().to_uppercase()),
                         _ => SharedString::from(""),
                     };
@@ -995,11 +984,8 @@ impl OverlayView {
 
         // Selected cell editor controls
         let sel_cell = model.cells[sel as usize];
-        let edit_title = SharedString::from(format!(
-            "Cell {:02} ({})",
-            sel + 1,
-            sel_cell.short_label()
-        ));
+        let edit_title =
+            SharedString::from(format!("Cell {:02} ({})", sel + 1, sel_cell.short_label()));
 
         let pos_row = div()
             .flex()
@@ -1207,17 +1193,9 @@ impl OverlayView {
                     .px(px(6.0))
                     .py(px(2.0))
                     .rounded(px(4.0))
-                    .bg(if active {
-                        rgb(0x243b39)
-                    } else {
-                        rgb(0x1f242c)
-                    })
+                    .bg(if active { rgb(0x243b39) } else { rgb(0x1f242c) })
                     .border_1()
-                    .border_color(if active {
-                        rgb(0x5fc4b8)
-                    } else {
-                        rgb(0x545e6d)
-                    })
+                    .border_color(if active { rgb(0x5fc4b8) } else { rgb(0x545e6d) })
                     .cursor_pointer()
                     .text_size(px(10.0))
                     .text_color(rgb(0xeadfc5))
@@ -1246,17 +1224,9 @@ impl OverlayView {
                     .px(px(5.0))
                     .py(px(2.0))
                     .rounded(px(4.0))
-                    .bg(if active {
-                        rgb(0x243b39)
-                    } else {
-                        rgb(0x171b21)
-                    })
+                    .bg(if active { rgb(0x243b39) } else { rgb(0x171b21) })
                     .border_1()
-                    .border_color(if active {
-                        rgb(0x5fc4b8)
-                    } else {
-                        rgb(0x353c47)
-                    })
+                    .border_color(if active { rgb(0x5fc4b8) } else { rgb(0x353c47) })
                     .cursor_pointer()
                     .text_size(px(10.0))
                     .text_color(rgb(0xe3e6eb))
@@ -1300,17 +1270,9 @@ impl OverlayView {
                     .px(px(6.0))
                     .py(px(2.0))
                     .rounded(px(4.0))
-                    .bg(if active {
-                        rgb(0x243b39)
-                    } else {
-                        rgb(0x171b21)
-                    })
+                    .bg(if active { rgb(0x243b39) } else { rgb(0x171b21) })
                     .border_1()
-                    .border_color(if active {
-                        rgb(0x5fc4b8)
-                    } else {
-                        rgb(0x353c47)
-                    })
+                    .border_color(if active { rgb(0x5fc4b8) } else { rgb(0x353c47) })
                     .cursor_pointer()
                     .text_size(px(10.0))
                     .text_color(rgb(0xe3e6eb))
@@ -1469,24 +1431,12 @@ impl OverlayView {
                         .px(px(5.0))
                         .py(px(2.0))
                         .rounded(px(3.0))
-                        .bg(if held {
-                            rgb(0x243b39)
-                        } else {
-                            rgb(0x0f1216)
-                        })
+                        .bg(if held { rgb(0x243b39) } else { rgb(0x0f1216) })
                         .border_1()
-                        .border_color(if held {
-                            rgb(0x5fc4b8)
-                        } else {
-                            rgb(0x353c47)
-                        })
+                        .border_color(if held { rgb(0x5fc4b8) } else { rgb(0x353c47) })
                         .cursor_pointer()
                         .text_size(px(9.5))
-                        .text_color(if held {
-                            rgb(0xeadfc5)
-                        } else {
-                            rgb(0x959dab)
-                        })
+                        .text_color(if held { rgb(0xeadfc5) } else { rgb(0x959dab) })
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _ev, _win, cx| {
@@ -1510,22 +1460,12 @@ impl OverlayView {
     }
 
     fn render_status_dot(label: &'static str, active: bool) -> impl IntoElement {
-        let dot_color = if active {
-            rgb(0x86c497)
-        } else {
-            rgb(0xe0675f)
-        };
+        let dot_color = if active { rgb(0x86c497) } else { rgb(0xe0675f) };
         div()
             .flex()
             .items_center()
             .gap(px(4.0))
-            .child(
-                div()
-                    .w(px(7.0))
-                    .h(px(7.0))
-                    .rounded(px(4.0))
-                    .bg(dot_color),
-            )
+            .child(div().w(px(7.0)).h(px(7.0)).rounded(px(4.0)).bg(dot_color))
             .child(
                 div()
                     .text_size(px(10.5))
@@ -1713,7 +1653,12 @@ impl Render for OverlayView {
                 .flex()
                 .flex_col()
                 .child(header);
-            return div().size_full().flex().flex_col().items_start().child(card);
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_start()
+                .child(card);
         }
 
         let mut body = div()
@@ -1748,6 +1693,11 @@ impl Render for OverlayView {
             .child(body)
             .child(footer);
 
-        div().size_full().flex().flex_col().items_start().child(card)
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_start()
+            .child(card)
     }
 }

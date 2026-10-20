@@ -74,8 +74,8 @@ pub const CARD_LIFT: f64 = 0.045;
 
 #[inline]
 pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
-    use std::simd::prelude::*;
     use std::simd::StdFloat;
+    use std::simd::prelude::*;
     let n = a.len().min(b.len());
     let mut acc0 = f32x8::splat(0.0);
     let mut acc1 = f32x8::splat(0.0);
@@ -105,8 +105,8 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
 
 #[inline]
 fn normalize_zero_mean_in_place(v: &mut [f32], mean: f32) {
-    use std::simd::prelude::*;
     use std::simd::StdFloat;
+    use std::simd::prelude::*;
     let n = v.len();
     let vmean = f32x8::splat(mean);
     let mut nacc0 = f32x8::splat(0.0);
@@ -146,8 +146,8 @@ fn normalize_zero_mean_in_place(v: &mut [f32], mean: f32) {
 
 #[inline]
 fn cosine_simd_impl(a: &[f32], b: &[f32]) -> f32 {
-    use std::simd::prelude::*;
     use std::simd::StdFloat;
+    use std::simd::prelude::*;
     let n = a.len().min(b.len());
     let mut v_ab = f32x8::splat(0.0);
     let mut v_aa = f32x8::splat(0.0);
@@ -182,7 +182,10 @@ fn cosine_simd_impl(a: &[f32], b: &[f32]) -> f32 {
 #[inline]
 pub fn project(h: &[f64; 9], u: f64, v: f64) -> (f64, f64) {
     let w = h[6] * u + h[7] * v + h[8];
-    ((h[0] * u + h[1] * v + h[2]) / w, (h[3] * u + h[4] * v + h[5]) / w)
+    (
+        (h[0] * u + h[1] * v + h[2]) / w,
+        (h[3] * u + h[4] * v + h[5]) / w,
+    )
 }
 
 pub fn invert(m: &[f64; 9]) -> [f64; 9] {
@@ -347,8 +350,7 @@ impl<'a> ImageView<'a> {
             let s10 = self.sharp_px(ix0 + 1, iy0);
             let s01 = self.sharp_px(ix0, iy0 + 1);
             let s11 = self.sharp_px(ix0 + 1, iy0 + 1);
-            (s00 * (1.0 - fx) + s10 * fx) * (1.0 - fy)
-                + (s01 * (1.0 - fx) + s11 * fx) * fy
+            (s00 * (1.0 - fx) + s10 * fx) * (1.0 - fy) + (s01 * (1.0 - fx) + s11 * fx) * fy
         }
     }
 }
@@ -499,11 +501,11 @@ fn alloc_pre_faulted<T: Copy>(cap: usize, non_zero_val: T) -> Vec<T> {
 impl ScanScratchSlot {
     pub fn with_capacity() -> Self {
         Self {
-            sat: alloc_pre_faulted(1024 * 1024, 0u32),                 // 4 MB
+            sat: alloc_pre_faulted(1024 * 1024, 0u32), // 4 MB
             elig_coords: alloc_pre_faulted(256 * 1024, (0u16, 0u16, 0u16)), // 1.5 MB
-            hit_coords: alloc_pre_faulted(32 * 1024, (0u16, 0u16)),    // 128 KB
-            mask: alloc_pre_faulted(3 * 1024 * 1024, 0u8),             // 3 MB
-            stack: alloc_pre_faulted(8 * 1024, (0u32, 0u32)),          // 64 KB
+            hit_coords: alloc_pre_faulted(32 * 1024, (0u16, 0u16)), // 128 KB
+            mask: alloc_pre_faulted(3 * 1024 * 1024, 0u8), // 3 MB
+            stack: alloc_pre_faulted(8 * 1024, (0u32, 0u32)), // 64 KB
         }
     }
 
@@ -925,8 +927,8 @@ struct PyrLevel {
 
 #[inline(always)]
 fn ncc_accum_simd_impl(vals: &[f32], tv: &[f32]) -> (f32, f32, f32) {
-    use std::simd::prelude::*;
     use std::simd::StdFloat;
+    use std::simd::prelude::*;
     let n = vals.len().min(tv.len());
     let mut v_sx = f32x8::splat(0.0);
     let mut v_sxx = f32x8::splat(0.0);
@@ -1080,106 +1082,111 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
     let cx = (min_x + max_x) * 0.5;
     let cy = (min_y + max_y) * 0.5;
 
-    let score_direct_gray = |sub_pts: &[(i32, i32, f32)], sub_tv: &[f32], s: f64, ox: f64, oy: f64| -> f64 {
-        let m = sub_pts.len();
-        let wi = w as isize;
-        let hi = h as isize;
-        let mut buf = [0.0_f32; 450];
-        for i in 0..m {
-            let xi = (ox + (sub_pts[i].0 as f64) * s) as isize;
-            let yi = (oy + (sub_pts[i].1 as f64) * s) as isize;
-            buf[i] = img.gray_px(xi.clamp(0, wi - 1), yi.clamp(0, hi - 1));
-        }
-        ncc_score_slice(&buf[..m], sub_tv)
-    };
+    let score_direct_gray =
+        |sub_pts: &[(i32, i32, f32)], sub_tv: &[f32], s: f64, ox: f64, oy: f64| -> f64 {
+            let m = sub_pts.len();
+            let wi = w as isize;
+            let hi = h as isize;
+            let mut buf = [0.0_f32; 450];
+            for i in 0..m {
+                let xi = (ox + (sub_pts[i].0 as f64) * s) as isize;
+                let yi = (oy + (sub_pts[i].1 as f64) * s) as isize;
+                buf[i] = img.gray_px(xi.clamp(0, wi - 1), yi.clamp(0, hi - 1));
+            }
+            ncc_score_slice(&buf[..m], sub_tv)
+        };
 
-    let score_direct_sharp_sub = |sub_pts: &[(i32, i32, f32)], sub_tv: &[f32], s: f64, ox: f64, oy: f64| -> f64 {
-        let m = sub_pts.len();
-        let mut buf = [0.0_f32; 1800];
-        for i in 0..m {
-            buf[i] = img.sample_sharp(
-                ox + (sub_pts[i].0 as f64) * s,
-                oy + (sub_pts[i].1 as f64) * s,
-            );
-        }
-        ncc_score_slice(&buf[..m], sub_tv)
-    };
+    let score_direct_sharp_sub =
+        |sub_pts: &[(i32, i32, f32)], sub_tv: &[f32], s: f64, ox: f64, oy: f64| -> f64 {
+            let m = sub_pts.len();
+            let mut buf = [0.0_f32; 1800];
+            for i in 0..m {
+                buf[i] = img.sample_sharp(
+                    ox + (sub_pts[i].0 as f64) * s,
+                    oy + (sub_pts[i].1 as f64) * s,
+                );
+            }
+            ncc_score_slice(&buf[..m], sub_tv)
+        };
 
     // Zero-allocation refinement around a candidate (s, tx, ty):
     // 1. 225-point gate via img.gray_px (~0.4us)
     // 2. Fast exact-center check when stationary (~4us)
     // 3. 3-scale 1.0px integer grid search with 450 points + 0.5px peak refinement on winning scale
-    let refine_near_direct = |cand_s: f64, cand_tx: f64, cand_ty: f64, min_accept: f64| -> Option<BoardLoc> {
-        let coarse_check = score_direct_gray(c8_pts, c8_tv, cand_s, cand_tx, cand_ty);
-        if coarse_check < (min_accept - 0.16).max(0.46) {
-            return None;
-        }
-        if coarse_check >= (min_accept - 0.08).max(0.68) {
-            let exact = score_direct_sharp_sub(pts, tv, cand_s, cand_tx, cand_ty);
-            if exact >= min_accept.max(0.78) {
-                return Some(BoardLoc {
-                    s: cand_s,
-                    tx: cand_tx,
-                    ty: cand_ty,
-                    score: exact,
+    let refine_near_direct =
+        |cand_s: f64, cand_tx: f64, cand_ty: f64, min_accept: f64| -> Option<BoardLoc> {
+            let coarse_check = score_direct_gray(c8_pts, c8_tv, cand_s, cand_tx, cand_ty);
+            if coarse_check < (min_accept - 0.16).max(0.46) {
+                return None;
+            }
+            if coarse_check >= (min_accept - 0.08).max(0.68) {
+                let exact = score_direct_sharp_sub(pts, tv, cand_s, cand_tx, cand_ty);
+                if exact >= min_accept.max(0.78) {
+                    return Some(BoardLoc {
+                        s: cand_s,
+                        tx: cand_tx,
+                        ty: cand_ty,
+                        score: exact,
+                        w,
+                        h,
+                        by_labels: false,
+                        cells_matched: 0,
+                    });
+                }
+            }
+            let mut best_1px = (cand_s, cand_tx, cand_ty, -2.0_f64);
+            for i in -1isize..=1 {
+                let sc = cand_s * (1.0 + (i as f64) * 0.0025);
+                let bx = cand_tx - (sc - cand_s) * cx;
+                let by = cand_ty - (sc - cand_s) * cy;
+                for dy in -2isize..=2 {
+                    for dx in -2isize..=2 {
+                        let tx = bx + (dx as f64);
+                        let ty = by + (dy as f64);
+                        let v = score_direct_gray(c4_pts, c4_tv, sc, tx, ty);
+                        if v > best_1px.3 {
+                            best_1px = (sc, tx, ty, v);
+                        }
+                    }
+                }
+            }
+            if best_1px.3 < (min_accept - 0.08).max(0.50) {
+                return None;
+            }
+            let (sc, cx_tx, cy_ty, _) = best_1px;
+            let mut best_fine = (sc, cx_tx, cy_ty, -2.0_f64);
+            for hdy in -1isize..=1 {
+                let ty = cy_ty + (hdy as f64) * 0.5;
+                for hdx in -1isize..=1 {
+                    let tx = cx_tx + (hdx as f64) * 0.5;
+                    let v = score_direct_sharp_sub(pts, tv, sc, tx, ty);
+                    if v > best_fine.3 {
+                        best_fine = (sc, tx, ty, v);
+                    }
+                }
+            }
+
+            if best_fine.3 >= min_accept {
+                Some(BoardLoc {
+                    s: best_fine.0,
+                    tx: best_fine.1,
+                    ty: best_fine.2,
+                    score: best_fine.3,
                     w,
                     h,
                     by_labels: false,
                     cells_matched: 0,
-                });
+                })
+            } else {
+                None
             }
-        }
-        let mut best_1px = (cand_s, cand_tx, cand_ty, -2.0_f64);
-        for i in -1isize..=1 {
-            let sc = cand_s * (1.0 + (i as f64) * 0.0025);
-            let bx = cand_tx - (sc - cand_s) * cx;
-            let by = cand_ty - (sc - cand_s) * cy;
-            for dy in -2isize..=2 {
-                for dx in -2isize..=2 {
-                    let tx = bx + (dx as f64);
-                    let ty = by + (dy as f64);
-                    let v = score_direct_gray(c4_pts, c4_tv, sc, tx, ty);
-                    if v > best_1px.3 {
-                        best_1px = (sc, tx, ty, v);
-                    }
-                }
-            }
-        }
-        if best_1px.3 < (min_accept - 0.08).max(0.50) {
-            return None;
-        }
-        let (sc, cx_tx, cy_ty, _) = best_1px;
-        let mut best_fine = (sc, cx_tx, cy_ty, -2.0_f64);
-        for hdy in -1isize..=1 {
-            let ty = cy_ty + (hdy as f64) * 0.5;
-            for hdx in -1isize..=1 {
-                let tx = cx_tx + (hdx as f64) * 0.5;
-                let v = score_direct_sharp_sub(pts, tv, sc, tx, ty);
-                if v > best_fine.3 {
-                    best_fine = (sc, tx, ty, v);
-                }
-            }
-        }
-
-        if best_fine.3 >= min_accept {
-            Some(BoardLoc {
-                s: best_fine.0,
-                tx: best_fine.1,
-                ty: best_fine.2,
-                score: best_fine.3,
-                w,
-                h,
-                by_labels: false,
-                cells_matched: 0,
-            })
-        } else {
-            None
-        }
-    };
+        };
 
     if let Some(hloc) = hint {
         if hloc.w == w && hloc.h == h {
-            if let Some(near) = refine_near_direct(hloc.s, hloc.tx, hloc.ty, 0.65_f64.max(hloc.score - 0.08)) {
+            if let Some(near) =
+                refine_near_direct(hloc.s, hloc.tx, hloc.ty, 0.65_f64.max(hloc.score - 0.08))
+            {
                 return Some(near);
             }
         }
@@ -1194,10 +1201,22 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
     }
     let s_w = (w as f64) / 1344.0;
     for &(cand_s, cand_tx, cand_ty) in &[
-        (s_w, (w as f64) * 0.5 - 658.0 * s_w, (h as f64) * 0.5 - 370.5 * s_w),
+        (
+            s_w,
+            (w as f64) * 0.5 - 658.0 * s_w,
+            (h as f64) * 0.5 - 370.5 * s_w,
+        ),
         (s_w, (w as f64) * 0.5 - 658.0 * s_w, 0.0),
-        (s_w, ((w as f64) - 1344.0 * s_w) * 0.5, ((h as f64) - 756.0 * s_w) * 0.5),
-        (s_win, (w as f64) * 0.5 - 658.0 * s_win, (h as f64) * 0.5 - 370.5 * s_win),
+        (
+            s_w,
+            ((w as f64) - 1344.0 * s_w) * 0.5,
+            ((h as f64) - 756.0 * s_w) * 0.5,
+        ),
+        (
+            s_win,
+            (w as f64) * 0.5 - 658.0 * s_win,
+            (h as f64) * 0.5 - 370.5 * s_win,
+        ),
     ] {
         if let Some(near) = refine_near_direct(cand_s, cand_tx, cand_ty, 0.75) {
             return Some(near);
@@ -1318,7 +1337,15 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
         }
     }
 
-    let score_slice = |g: &[f32], lw_u: usize, lh_u: usize, pxs: &[f64], pys: &[f64], ox: f64, oy: f64, nearest: bool| -> f64 {
+    let score_slice = |g: &[f32],
+                       lw_u: usize,
+                       lh_u: usize,
+                       pxs: &[f64],
+                       pys: &[f64],
+                       ox: f64,
+                       oy: f64,
+                       nearest: bool|
+     -> f64 {
         let mut sx = 0.0_f32;
         let mut sxx = 0.0_f32;
         let mut sxt = 0.0_f32;
@@ -1350,9 +1377,10 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
         }
     };
 
-    let score_pre = |lv: &PyrLevel, pxs: &[f64], pys: &[f64], ox: f64, oy: f64, nearest: bool| -> f64 {
-        score_slice(&lv.g, lv.w, lv.h, pxs, pys, ox, oy, nearest)
-    };
+    let score_pre =
+        |lv: &PyrLevel, pxs: &[f64], pys: &[f64], ox: f64, oy: f64, nearest: bool| -> f64 {
+            score_slice(&lv.g, lv.w, lv.h, pxs, pys, ox, oy, nearest)
+        };
 
     // Fallback multi-scale pyramid for non-standard/cropped images
     let (g2, w2, h2) = half_gray_of(img);
@@ -1405,17 +1433,11 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
                 2usize
             } else {
                 1usize
-            } ;
+            };
             let lw = lv.w as isize;
             let lh = lv.h as isize;
-            let dxs: Vec<isize> = c4_pts
-                .iter()
-                .map(|p| ((p.0 as f64) * k) as isize)
-                .collect();
-            let dys: Vec<isize> = c4_pts
-                .iter()
-                .map(|p| ((p.1 as f64) * k) as isize)
-                .collect();
+            let dxs: Vec<isize> = c4_pts.iter().map(|p| ((p.0 as f64) * k) as isize).collect();
+            let dys: Vec<isize> = c4_pts.iter().map(|p| ((p.1 as f64) * k) as isize).collect();
             let mut row_bases = vec![0usize; cn];
             let mut best: Option<(isize, isize, f64)> = None;
             for oy in (oy0..=oy1).step_by(step) {
@@ -1623,7 +1645,15 @@ pub fn padlock_at(img: &ImageView<'_>, x: f64, y: f64, k: f64) -> f32 {
             Vec::new()
         } else {
             let mut stack = Vec::with_capacity(64);
-            blobs_from_mask_hits(&mut mask[..n_px], &hit_coords[..hit_len], &mut stack, w, h, bx0, by0)
+            blobs_from_mask_hits(
+                &mut mask[..n_px],
+                &hit_coords[..hit_len],
+                &mut stack,
+                w,
+                h,
+                bx0,
+                by0,
+            )
         }
     } else {
         let mut slot = ScanScratchSlot::default();
@@ -1656,8 +1686,10 @@ pub fn face_vector(gray: &[f32], w: usize, h: usize, x: f64, y: f64, k: f64) -> 
     let mut mean = 0.0_f32;
     for j in 0..FACE_GY {
         for i in 0..FACE_GX {
-            let px = x + k * (FACE_X0 + ((FACE_X1 - FACE_X0) * ((i as f64) + 0.5)) / (FACE_GX as f64));
-            let py = y + k * (FACE_Y0 + ((FACE_Y1 - FACE_Y0) * ((j as f64) + 0.5)) / (FACE_GY as f64));
+            let px =
+                x + k * (FACE_X0 + ((FACE_X1 - FACE_X0) * ((i as f64) + 0.5)) / (FACE_GX as f64));
+            let py =
+                y + k * (FACE_Y0 + ((FACE_Y1 - FACE_Y0) * ((j as f64) + 0.5)) / (FACE_GY as f64));
             let val = sample(gray, w, h, px, py);
             v[j * FACE_GX + i] = val;
             mean += val;
@@ -2124,7 +2156,9 @@ pub fn read_cell_with_slot(
     let frame = frame_rarity(img, x, y, k);
 
     // If a borderline padlock was found, only override it if the face template & frame clearly show an inmate
-    if lock > 0.40 && !(face.score > 0.62 && (frame.colored > 0.08 || (face.score - face.second) > 0.12)) {
+    if lock > 0.40
+        && !(face.score > 0.62 && (frame.colored > 0.08 || (face.score - face.second) > 0.12))
+    {
         return ScannedCell {
             n,
             kind: ScannedCellKind::Locked,
@@ -2233,12 +2267,18 @@ pub fn find_warden_with_slot(
     loc: &BoardLoc,
     slot: &mut ScanScratchSlot,
 ) -> Option<WardenRead> {
-    let corners = [(0.15, -0.15), (4.85, -0.15), (4.85, 2.3), (0.15, 2.3)]
-        .map(|(u, v)| loc.at(u, v));
+    let corners =
+        [(0.15, -0.15), (4.85, -0.15), (4.85, 2.3), (0.15, 2.3)].map(|(u, v)| loc.at(u, v));
     let min_x = corners.iter().map(|c| c.0).fold(f64::INFINITY, f64::min);
-    let max_x = corners.iter().map(|c| c.0).fold(f64::NEG_INFINITY, f64::max);
+    let max_x = corners
+        .iter()
+        .map(|c| c.0)
+        .fold(f64::NEG_INFINITY, f64::max);
     let min_y = corners.iter().map(|c| c.1).fold(f64::INFINITY, f64::min);
-    let max_y = corners.iter().map(|c| c.1).fold(f64::NEG_INFINITY, f64::max);
+    let max_y = corners
+        .iter()
+        .map(|c| c.1)
+        .fold(f64::NEG_INFINITY, f64::max);
 
     // Central courtyard (u in 1.25..3.75, v in 0.72..1.40) is > 0.55 grid units from all ARROW points
     let (ix0, iy0) = loc.at(1.25, 0.72);
@@ -2676,18 +2716,16 @@ pub fn text_lines_radii_with_slot(
         let cur_row = (sy + 1) * sat_stride;
         sat[cur_row] = 0;
         let mut row_sum = 0u32;
-        let l_q0 =
-            (77 * (data[0] as u32) + 150 * (data[1] as u32) + 29 * (data[2] as u32)) >> 6;
+        let l_q0 = (77 * (data[0] as u32) + 150 * (data[1] as u32) + 29 * (data[2] as u32)) >> 6;
         for sx in 0..r_max {
             row_sum += l_q0;
             sat[cur_row + sx + 1] = sat[prev_row + sx + 1] + row_sum;
         }
         for x in 0..w {
             let o = x * 4;
-            let l_q = (77 * (data[o] as u32)
-                + 150 * (data[o + 1] as u32)
-                + 29 * (data[o + 2] as u32))
-                >> 6;
+            let l_q =
+                (77 * (data[o] as u32) + 150 * (data[o + 1] as u32) + 29 * (data[o + 2] as u32))
+                    >> 6;
             row_sum += l_q;
             sat[cur_row + r_max + x + 1] = sat[prev_row + r_max + x + 1] + row_sum;
         }
@@ -2715,8 +2753,7 @@ pub fn text_lines_radii_with_slot(
         let cur_row = (sy + 1) * sat_stride;
         sat[cur_row] = 0;
         let mut row_sum = 0u32;
-        let l_q0 =
-            (77 * (data[0] as u32) + 150 * (data[1] as u32) + 29 * (data[2] as u32)) >> 6;
+        let l_q0 = (77 * (data[0] as u32) + 150 * (data[1] as u32) + 29 * (data[2] as u32)) >> 6;
         for sx in 0..r_max {
             row_sum += l_q0;
             sat[cur_row + sx + 1] = sat[prev_row + sx + 1] + row_sum;
@@ -2938,10 +2975,7 @@ pub fn locate_by_labels_with_slot(
     .unwrap_or_default()
     {
         for p in &line.pieces {
-            if p.words.len() != 1
-                || p.words[0].glyphs.is_empty()
-                || p.words[0].glyphs.len() > 2
-            {
+            if p.words.len() != 1 || p.words[0].glyphs.is_empty() || p.words[0].glyphs.len() > 2 {
                 continue;
             }
             let r = read_number(img, &p.words[0].glyphs, line.h, &ALLOWED_CELLS);
@@ -3322,9 +3356,7 @@ pub fn refine_doors_with_warden(doors: &mut Option<DoorsRead>, warden_cell: Opti
     if d.candidates.is_empty() {
         return;
     }
-    if let Some((cells, conf)) =
-        solve_door_assignment(&d.candidates, d.office_card, warden_cell)
-    {
+    if let Some((cells, conf)) = solve_door_assignment(&d.candidates, d.office_card, warden_cell) {
         d.cells = cells;
         d.conf = conf;
     }
@@ -3388,8 +3420,7 @@ fn read_doors_from_lines(img: &ImageView<'_>, lines_by_r: &[Vec<Line>]) -> Optio
                 continue;
             }
             let fit: f32 = group.iter().map(|d| d.4).sum();
-            if group.len() > best_group.len()
-                || (group.len() == best_group.len() && fit < best_fit)
+            if group.len() > best_group.len() || (group.len() == best_group.len() && fit < best_fit)
             {
                 best_group = group;
                 best_fit = fit;
@@ -3402,24 +3433,15 @@ fn read_doors_from_lines(img: &ImageView<'_>, lines_by_r: &[Vec<Line>]) -> Optio
         all_pieces.iter().any(|p| {
             let cap = p.glyphs[0].h as f64;
             let mid = (p.y0 + p.y1) as f64 * 0.5;
-            if (cap - h).abs() > 0.35 * h
-                || !best_group.iter().any(|c| (c.2 - mid).abs() < 2.2 * h)
+            if (cap - h).abs() > 0.35 * h || !best_group.iter().any(|c| (c.2 - mid).abs() < 2.2 * h)
             {
                 return false;
             }
-            if best_group
-                .iter()
-                .any(|c| c.0.x0 < p.x1 && p.x0 < c.0.x1)
-            {
+            if best_group.iter().any(|c| c.0.x0 < p.x1 && p.x0 < c.0.x1) {
                 return false;
             }
             let span = ((p.x1 - p.x0) as f64) / cap;
-            let glyph_fill: f64 = p
-                .glyphs
-                .iter()
-                .map(|g| g.w.max(1) as f64)
-                .sum::<f64>()
-                / cap;
+            let glyph_fill: f64 = p.glyphs.iter().map(|g| g.w.max(1) as f64).sum::<f64>() / cap;
             (9.5..=20.0).contains(&span) && glyph_fill >= 5.5 && p.glyphs.len() >= 10
         })
     } else {
@@ -3489,8 +3511,7 @@ fn extract_days_from_lines(img: &ImageView<'_>, lines: &[Line]) -> Option<(u8, f
             .iter()
             .copied()
             .filter(|g| {
-                (g.w as f64) >= 0.25 * (g.h as f64)
-                    && (g.h as f64) >= (img.height as f64) * 0.016
+                (g.w as f64) >= 0.25 * (g.h as f64) && (g.h as f64) >= (img.height as f64) * 0.016
             })
             .collect();
         for i in 0..glyphs.len() {
@@ -3659,7 +3680,13 @@ pub fn find_label_with_slot(
     best.map(|b| b.1)
 }
 
-pub fn art_feature(img: &ImageView<'_>, x0: i32, y0: i32, x1: i32, y1: i32) -> ([f32; 72], [f32; 13]) {
+pub fn art_feature(
+    img: &ImageView<'_>,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+) -> ([f32; 72], [f32; 13]) {
     let gx = 4usize;
     let gy = 6usize;
     let mut grid = [0.0_f32; 72];
@@ -3723,7 +3750,12 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 }
 
 #[inline]
-pub fn art_similarity(a_grid: &[f32; 72], a_hist: &[f32; 13], b_grid: &[f32; 72], b_hist: &[f32; 13]) -> f32 {
+pub fn art_similarity(
+    a_grid: &[f32; 72],
+    a_hist: &[f32; 13],
+    b_grid: &[f32; 72],
+    b_hist: &[f32; 13],
+) -> f32 {
     let am = a_grid.iter().sum::<f32>() / 72.0;
     let bm = b_grid.iter().sum::<f32>() / 72.0;
     let mut ac = [0.0_f32; 72];
@@ -3806,11 +3838,7 @@ pub fn read_tools_with_slot(
                 n += 1;
             }
         }
-        if n > 0 {
-            sum / (n as f64)
-        } else {
-            0.0
-        }
+        if n > 0 { sum / (n as f64) } else { 0.0 }
     };
 
     let card_frame_edge = |x0: f64, y0: f64, x1: f64, y1: f64| -> f64 {
@@ -3828,10 +3856,18 @@ pub fn read_tools_with_slot(
             best
         };
         let mut edges = [
-            step(&|o| mean_v(x0 + o - w, ya, x0 + o - 1.0, yb) - mean_v(x0 + o + 1.0, ya, x0 + o + w, yb)),
-            step(&|o| mean_v(x1 + o - w, ya, x1 + o - 1.0, yb) - mean_v(x1 + o + 1.0, ya, x1 + o + w, yb)),
-            step(&|o| mean_v(xa, y0 + o - w, xb, y0 + o - 1.0) - mean_v(xa, y0 + o + 1.0, xb, y0 + o + w)),
-            step(&|o| mean_v(xa, y1 + o - w, xb, y1 + o - 1.0) - mean_v(xa, y1 + o + 1.0, xb, y1 + o + w)),
+            step(&|o| {
+                mean_v(x0 + o - w, ya, x0 + o - 1.0, yb) - mean_v(x0 + o + 1.0, ya, x0 + o + w, yb)
+            }),
+            step(&|o| {
+                mean_v(x1 + o - w, ya, x1 + o - 1.0, yb) - mean_v(x1 + o + 1.0, ya, x1 + o + w, yb)
+            }),
+            step(&|o| {
+                mean_v(xa, y0 + o - w, xb, y0 + o - 1.0) - mean_v(xa, y0 + o + 1.0, xb, y0 + o + w)
+            }),
+            step(&|o| {
+                mean_v(xa, y1 + o - w, xb, y1 + o - 1.0) - mean_v(xa, y1 + o + 1.0, xb, y1 + o + w)
+            }),
         ];
         edges.sort_by(|a, b| a.partial_cmp(b).unwrap());
         (edges[1] + edges[2]) * 0.5
@@ -3991,7 +4027,11 @@ pub fn read_tools_with_slot(
                 }
             }
         }
-        let second = if second_sc.is_finite() { second_sc } else { 0.0 };
+        let second = if second_sc.is_finite() {
+            second_sc
+        } else {
+            0.0
+        };
         let margin = best_sc - second;
         let conf = ((best_sc - 0.60) * 2.5 + margin * 5.0).clamp(0.1, 1.0);
         out.push(ScannedTool {
@@ -4051,13 +4091,9 @@ pub fn read_chromatic_with_slot(
     }
     let light_share = |x: f64, y: f64| -> f64 {
         let a = ((x - 18.0 * u).round() as isize).max(x0 as isize) as usize;
-        let b = ((x + 18.0 * u).round() as isize)
-            .min(x1 as isize)
-            .max(0) as usize;
+        let b = ((x + 18.0 * u).round() as isize).min(x1 as isize).max(0) as usize;
         let c = ((y - 18.0 * u).round() as isize).max(y0 as isize) as usize;
-        let d = ((y + 18.0 * u).round() as isize)
-            .min(y1 as isize)
-            .max(0) as usize;
+        let d = ((y + 18.0 * u).round() as isize).min(y1 as isize).max(0) as usize;
         if b < a || d < c {
             return 0.0;
         }
@@ -4472,7 +4508,11 @@ pub fn scan_pick_with_slot(
         if !top_raw_sc.is_finite() || top_raw_sc < 0.80 {
             return None;
         }
-        let second = if second_sc.is_finite() { second_sc } else { 0.0 };
+        let second = if second_sc.is_finite() {
+            second_sc
+        } else {
+            0.0
+        };
         let margin = top_sc - second;
         let eff_sc = top_sc.max(top_raw_sc);
         let conf = if eff_sc < 0.82 {
@@ -4487,9 +4527,7 @@ pub fn scan_pick_with_slot(
         };
     }
     // Enforce game-rule invariant: the 3 offered instruments in a pick are always distinct
-    if cards[0].sim == cards[1].sim
-        || cards[1].sim == cards[2].sim
-        || cards[0].sim == cards[2].sim
+    if cards[0].sim == cards[1].sim || cards[1].sim == cards[2].sim || cards[0].sim == cards[2].sim
     {
         return None;
     }
@@ -4605,7 +4643,8 @@ pub fn read_objective_title_with_slot(
                     &words[..]
                 };
                 let mid_x = ((p.x0 + p.x1) as f64) * 0.5;
-                let centered = (mid_x - (img.width as f64) * 0.5).abs() <= (img.width as f64) * 0.12;
+                let centered =
+                    (mid_x - (img.width as f64) * 0.5).abs() <= (img.width as f64) * 0.12;
                 for &(id, want) in patterns {
                     if has_obj_prefix && matches!(id, TitleRead::StartEvent(_)) {
                         continue;
@@ -4673,8 +4712,8 @@ pub fn read_hud_objective_with_slot(
         (ObjectiveId::Incident, &[7, 6, 8, 1, 5, 3], false),
         (ObjectiveId::Incident, &[7, 6, 8], false),
     ];
-    let x1 = (loc.at(0.0, 0.0).0.min(loc.at(0.0, 3.0).0) - 40.0 * loc.s)
-        .min((img.width as f64) * 0.30);
+    let x1 =
+        (loc.at(0.0, 0.0).0.min(loc.at(0.0, 3.0).0) - 40.0 * loc.s).min((img.width as f64) * 0.30);
     let mut y0 = (loc.ty + 15.0 * loc.s).max(0.0);
     let y1 = (loc.ty + 185.0 * loc.s).min((img.height as f64) * 0.30);
     let probe_x0 = (20.0 * loc.s).max(0.0);
@@ -4797,8 +4836,8 @@ fn read_decision_from_lines(
         return None;
     }
     let x0 = (loc.at(0.0, 0.0).0.min(loc.at(0.0, 3.0).0) - 40.0 * loc.s).max(0.0);
-    let x1 = (loc.at(5.0, 0.0).0.max(loc.at(5.0, 3.0).0) + 40.0 * loc.s)
-        .min((img.width - 1) as f64);
+    let x1 =
+        (loc.at(5.0, 0.0).0.max(loc.at(5.0, 3.0).0) + 40.0 * loc.s).min((img.width - 1) as f64);
 
     let mut title = false;
     let mut pick_cell = false;
@@ -4839,17 +4878,9 @@ fn read_decision_from_lines(
                     } else if near(&words, &[4, 4, 8]) {
                         title = true;
                     }
-                } else if p.words.len() <= 2
-                    && (6..=8).contains(&n)
-                    && span > 2.8
-                    && span < 6.8
-                {
+                } else if p.words.len() <= 2 && (6..=8).contains(&n) && span > 2.8 && span < 6.8 {
                     labels.push((p.x0, p.x1, line.mid, line.h));
-                } else if p.words.len() == 1
-                    && (4..=5).contains(&n)
-                    && span > 1.8
-                    && span < 4.2
-                {
+                } else if p.words.len() == 1 && (4..=5).contains(&n) && span > 1.8 && span < 4.2 {
                     hunts.push((p.x0, p.x1, line.mid, line.h));
                 } else if n == 3 && span > 1.5 && span < 3.2 {
                     end = true;
@@ -4920,9 +4951,9 @@ fn read_decision_from_lines(
         let same_row = ends
             .iter()
             .any(|&(ex0, emid, eh)| hx1 < ex0 && (hmid - emid).abs() < (eh as f64) * 0.6)
-            || labels
-                .iter()
-                .any(|&(lx0, _, lmid, lh)| (hx0 - lx0).abs() > 2 * lh && (hmid - lmid).abs() < (lh as f64) * 0.6);
+            || labels.iter().any(|&(lx0, _, lmid, lh)| {
+                (hx0 - lx0).abs() > 2 * lh && (hmid - lmid).abs() < (lh as f64) * 0.6
+            });
         if same_row && red_by(hx0, hx1, hmid, hh) < 0.01 {
             hunt = true;
         }
@@ -4956,9 +4987,7 @@ fn read_decision_from_lines(
     }
     let row = ends.iter().any(|&(ex0, emid, eh)| {
         lefts.iter().any(|&(lx1, lmid)| {
-            (lmid - emid).abs() < (eh as f64) * 0.5
-                && lx1 < ex0
-                && (ex0 - lx1) < 30 * eh
+            (lmid - emid).abs() < (eh as f64) * 0.5 && lx1 < ex0 && (ex0 - lx1) < 30 * eh
         })
     });
     if !title && !(row && (consume || replace)) {
@@ -5124,120 +5153,107 @@ pub fn scan_image_with_options_and_arena(
     } = arena;
 
     let mut cells = [ScannedCell::default(); 16];
-    let ((warden, event_blobs, cells_ms), (((bottom_lines, mut doors), (days, (tools, chromatic))), ocr_ms)) =
-        rayon::join(
-            || {
-                let t_cells = std::time::Instant::now();
-                let (w, eb) = rayon::join(
+    let (
+        (warden, event_blobs, cells_ms),
+        (((bottom_lines, mut doors), (days, (tools, chromatic))), ocr_ms),
+    ) = rayon::join(
+        || {
+            let t_cells = std::time::Instant::now();
+            let (w, eb) = rayon::join(
+                || {
+                    cells
+                        .par_iter_mut()
+                        .zip(cell_slots.par_iter_mut())
+                        .enumerate()
+                        .for_each(|(n, (out, cslot))| {
+                            *out = read_cell_with_slot(img, &loc, n as u8, cslot);
+                        });
+                },
+                || {
+                    rayon::join(
+                        || find_warden_with_slot(img, &loc, slot0),
+                        || find_event_blobs_with_slot(img, &loc, slot5),
+                    )
+                },
+            )
+            .1;
+            (w, eb, t_cells.elapsed().as_secs_f64() * 1000.0)
+        },
+        || {
+            if loc.by_labels {
+                (((Vec::new(), None), (None, (FixedVec::new(), None))), 0.0)
+            } else {
+                let t_ocr = std::time::Instant::now();
+                let res = rayon::join(
                     || {
-                        cells
-                            .par_iter_mut()
-                            .zip(cell_slots.par_iter_mut())
-                            .enumerate()
-                            .for_each(|(n, (out, cslot))| {
-                                *out = read_cell_with_slot(img, &loc, n as u8, cslot);
+                        if !has_chain && bottom < (img.height as f64) - 20.0 {
+                            let max_h = (50.0 * loc.s).max(24.0);
+                            let by1 = (bottom + 215.0 * loc.s)
+                                .min((img.height as f64 - 16.0 * loc.s).max(bottom + 40.0))
+                                .min((img.height - 1) as f64);
+                            let mut lines_by_r = text_lines_radii_with_slot(
+                                img,
+                                bx0,
+                                bottom,
+                                bx1,
+                                by1,
+                                6.0,
+                                max_h,
+                                &radii[1..3],
+                                0.34,
+                                slot1,
+                            );
+                            let fast_doors = read_doors_from_lines(img, &lines_by_r);
+                            let fast_dec = if fast_doors.is_none() {
+                                read_decision_from_lines(img, &loc, &lines_by_r)
+                            } else {
+                                None
+                            };
+                            let dec_complete = fast_dec.is_some_and(|d| {
+                                d.office || d.ratway || (d.end && (d.replace || d.consume))
                             });
+                            if fast_doors.is_some()
+                                || dec_complete
+                                || lines_by_r.iter().all(|v| v.is_empty())
+                            {
+                                (lines_by_r, fast_doors)
+                            } else {
+                                let rem = [radii[0], radii[3]];
+                                let extra = text_lines_radii_with_slot(
+                                    img, bx0, bottom, bx1, by1, 6.0, max_h, &rem, 0.34, slot1,
+                                );
+                                lines_by_r.extend(extra);
+                                let doors = read_doors_from_lines(img, &lines_by_r);
+                                (lines_by_r, doors)
+                            }
+                        } else {
+                            (Vec::new(), None)
+                        }
                     },
                     || {
                         rayon::join(
-                            || find_warden_with_slot(img, &loc, slot0),
-                            || find_event_blobs_with_slot(img, &loc, slot5),
+                            || {
+                                if opts.skip_days {
+                                    None
+                                } else {
+                                    read_days_with_slot(img, &loc, slot2)
+                                }
+                            },
+                            || {
+                                rayon::join(
+                                    || read_tools_with_slot(img, &loc, slot3).0,
+                                    || read_chromatic_with_slot(img, &loc, slot4),
+                                )
+                            },
                         )
                     },
-                )
-                .1;
-                (w, eb, t_cells.elapsed().as_secs_f64() * 1000.0)
-            },
-            || {
-                if loc.by_labels {
-                    (((Vec::new(), None), (None, (FixedVec::new(), None))), 0.0)
-                } else {
-                    let t_ocr = std::time::Instant::now();
-                    let res = rayon::join(
-                        || {
-                            if !has_chain && bottom < (img.height as f64) - 20.0 {
-                                let max_h = (50.0 * loc.s).max(24.0);
-                                let by1 = (bottom + 215.0 * loc.s)
-                                    .min((img.height as f64 - 16.0 * loc.s).max(bottom + 40.0))
-                                    .min((img.height - 1) as f64);
-                                let mut lines_by_r = text_lines_radii_with_slot(
-                                    img,
-                                    bx0,
-                                    bottom,
-                                    bx1,
-                                    by1,
-                                    6.0,
-                                    max_h,
-                                    &radii[1..3],
-                                    0.34,
-                                    slot1,
-                                );
-                                let fast_doors = read_doors_from_lines(img, &lines_by_r);
-                                let fast_dec = if fast_doors.is_none() {
-                                    read_decision_from_lines(img, &loc, &lines_by_r)
-                                } else {
-                                    None
-                                };
-                                let dec_complete = fast_dec.is_some_and(|d| {
-                                    d.office || d.ratway || (d.end && (d.replace || d.consume))
-                                });
-                                if fast_doors.is_some()
-                                    || dec_complete
-                                    || lines_by_r.iter().all(|v| v.is_empty())
-                                {
-                                    (lines_by_r, fast_doors)
-                                } else {
-                                    let rem = [radii[0], radii[3]];
-                                    let extra = text_lines_radii_with_slot(
-                                        img,
-                                        bx0,
-                                        bottom,
-                                        bx1,
-                                        by1,
-                                        6.0,
-                                        max_h,
-                                        &rem,
-                                        0.34,
-                                        slot1,
-                                    );
-                                    lines_by_r.extend(extra);
-                                    let doors = read_doors_from_lines(img, &lines_by_r);
-                                    (lines_by_r, doors)
-                                }
-                            } else {
-                                (Vec::new(), None)
-                            }
-                        },
-                        || {
-                            rayon::join(
-                                || {
-                                    if opts.skip_days {
-                                        None
-                                    } else {
-                                        read_days_with_slot(img, &loc, slot2)
-                                    }
-                                },
-                                || {
-                                    rayon::join(
-                                        || read_tools_with_slot(img, &loc, slot3).0,
-                                        || read_chromatic_with_slot(img, &loc, slot4),
-                                    )
-                                },
-                            )
-                        },
-                    );
-                    (res, t_ocr.elapsed().as_secs_f64() * 1000.0)
-                }
-            },
-        );
-    let events = match_events_from_blobs(&event_blobs, &loc, &cells, warden.as_ref());
-    let chain = read_chain_screen_with_banner(
-        img,
-        &loc,
-        &cells,
-        warden.as_ref(),
-        chain_banner,
+                );
+                (res, t_ocr.elapsed().as_secs_f64() * 1000.0)
+            }
+        },
     );
+    let events = match_events_from_blobs(&event_blobs, &loc, &cells, warden.as_ref());
+    let chain = read_chain_screen_with_banner(img, &loc, &cells, warden.as_ref(), chain_banner);
 
     refine_doors_with_warden(&mut doors, warden.map(|w| w.cell));
 

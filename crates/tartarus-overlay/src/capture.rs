@@ -184,7 +184,7 @@ pub fn is_torchlight_title(title: &str) -> bool {
 #[cfg(target_os = "linux")]
 mod platform {
     use super::{
-        bgra_to_rgba_in_place, is_torchlight_title, CapturedFrame, GameWindowPlacement, MonitorRect,
+        CapturedFrame, GameWindowPlacement, MonitorRect, bgra_to_rgba_in_place, is_torchlight_title,
     };
     use x11rb::connection::Connection;
     use x11rb::protocol::randr::ConnectionExt as _;
@@ -402,8 +402,7 @@ mod platform {
                     }
                 }
                 if !matched_title {
-                    if let Ok(cookie) =
-                        conn.get_property(false, win, wm_name, x11rb::NONE, 0, 256)
+                    if let Ok(cookie) = conn.get_property(false, win, wm_name, x11rb::NONE, 0, 256)
                     {
                         if let Ok(reply) = cookie.reply() {
                             if !reply.value.is_empty() {
@@ -667,14 +666,13 @@ mod platform {
 
 #[cfg(target_os = "windows")]
 mod platform {
-    use super::{bgra_to_rgba_in_place, is_torchlight_title, CapturedFrame, GameWindowPlacement};
+    use super::{CapturedFrame, GameWindowPlacement, bgra_to_rgba_in_place, is_torchlight_title};
     use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-        GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-        SRCCOPY,
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
+        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
     };
-    use windows_sys::Win32::Storage::Xps::{PrintWindow, PW_RENDERFULLCONTENT};
+    use windows_sys::Win32::Storage::Xps::{PW_RENDERFULLCONTENT, PrintWindow};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetClientRect, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IsIconic,
         IsWindowVisible,
@@ -728,10 +726,7 @@ mod platform {
                 let mut hwnd = self.cached_hwnd;
                 if hwnd.is_null() || IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
                     hwnd = std::ptr::null_mut();
-                    EnumWindows(
-                        Some(Self::enum_proc),
-                        (&mut hwnd as *mut HWND) as LPARAM,
-                    );
+                    EnumWindows(Some(Self::enum_proc), (&mut hwnd as *mut HWND) as LPARAM);
                     self.cached_hwnd = hwnd;
                 }
                 !hwnd.is_null()

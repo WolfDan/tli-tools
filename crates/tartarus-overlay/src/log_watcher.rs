@@ -420,9 +420,9 @@ impl LogWatcher {
         } else if line.contains("S16BoardColoredPop Run") {
             let after = self.last_action_at.and_then(|act| {
                 if now.duration_since(act).as_millis() <= 6000 {
-                    let is_consume = self
-                        .last_eat_at
-                        .map_or(false, |eat| eat + std::time::Duration::from_millis(500) >= act);
+                    let is_consume = self.last_eat_at.map_or(false, |eat| {
+                        eat + std::time::Duration::from_millis(500) >= act
+                    });
                     Some(if is_consume {
                         TreasureOrigin::Consume
                     } else {

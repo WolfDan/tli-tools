@@ -88,13 +88,15 @@ impl PakVfs {
 
         let per_pak: Vec<Vec<PakEntryMeta>> = pak_files
             .par_iter()
-            .filter_map(|(path, is_premount)| match read_pak_index(path, &key, *is_premount) {
-                Ok(list) => Some(list),
-                Err(e) => {
-                    eprintln!("WARN: skipping {}: {e}", path.display());
-                    None
-                }
-            })
+            .filter_map(
+                |(path, is_premount)| match read_pak_index(path, &key, *is_premount) {
+                    Ok(list) => Some(list),
+                    Err(e) => {
+                        eprintln!("WARN: skipping {}: {e}", path.display());
+                        None
+                    }
+                },
+            )
             .collect();
 
         let mut entries = BTreeMap::new();
@@ -215,8 +217,8 @@ pub fn read_pak_index(
     key: &[u8; 32],
     is_premount: bool,
 ) -> Result<Vec<PakEntryMeta>, String> {
-    let mut file = File::open(pak_path)
-        .map_err(|e| format!("Failed to open {}: {e}", pak_path.display()))?;
+    let mut file =
+        File::open(pak_path).map_err(|e| format!("Failed to open {}: {e}", pak_path.display()))?;
     let file_size = file
         .seek(SeekFrom::End(0))
         .map_err(|e| format!("Failed to seek {}: {e}", pak_path.display()))?;
@@ -667,4 +669,3 @@ pub fn discover_game_dir() -> Option<PathBuf> {
 
     None
 }
-

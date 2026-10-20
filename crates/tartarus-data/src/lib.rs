@@ -208,7 +208,9 @@ pub fn canonical_beasts() -> Vec<S16BeastEntry> {
             normal_portrait_asset: "UI_T_V2_S16BoardCell_101".to_string(),
             jailed_portrait_asset: "UI_T_V2_S16BoardCell_045".to_string(),
             special_mark_asset: Some("UI_S16Gameplay_RelicSP_03".to_string()),
-            special_mark_desc: Some("Ivory / Tusk Mark (#141 Iron Tongs of Lust: Mammoth)".to_string()),
+            special_mark_desc: Some(
+                "Ivory / Tusk Mark (#141 Iron Tongs of Lust: Mammoth)".to_string(),
+            ),
         },
         S16BeastEntry {
             beast: "lion".to_string(),
@@ -216,7 +218,9 @@ pub fn canonical_beasts() -> Vec<S16BeastEntry> {
             normal_portrait_asset: "UI_T_V2_S16BoardCell_102".to_string(),
             jailed_portrait_asset: "UI_T_V2_S16BoardCell_047".to_string(),
             special_mark_asset: Some("UI_S16Gameplay_RelicSP_04".to_string()),
-            special_mark_desc: Some("Prey Mark (#143 Blood-Stained Trap: Berserk Lion)".to_string()),
+            special_mark_desc: Some(
+                "Prey Mark (#143 Blood-Stained Trap: Berserk Lion)".to_string(),
+            ),
         },
         S16BeastEntry {
             beast: "wolf".to_string(),
@@ -232,7 +236,9 @@ pub fn canonical_beasts() -> Vec<S16BeastEntry> {
             normal_portrait_asset: "UI_T_V2_S16BoardCell_104".to_string(),
             jailed_portrait_asset: "UI_T_V2_S16BoardCell_048".to_string(),
             special_mark_asset: Some("UI_S16Gameplay_RelicSP_02".to_string()),
-            special_mark_desc: Some("Rat Nest Mark (#147 Squirming Iron Box: Colossal Rat)".to_string()),
+            special_mark_desc: Some(
+                "Rat Nest Mark (#147 Squirming Iron Box: Colossal Rat)".to_string(),
+            ),
         },
     ]
 }
@@ -407,7 +413,12 @@ pub fn extract_s16_game_database(vfs: &PakVfs, lang: &str) -> Result<S16GameData
 /// keyed by short asset name (e.g. `"UI_S16Gameplay_RelicIcon_01"`, `"UI_Img_S16Gameplay_Jail_Bg_Normal"`).
 pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetImage> {
     let mut map: BTreeMap<String, DecodedAssetImage> = BTreeMap::new();
-    let filters = ["s16gameplay", "mercenary_style", "s16mercenary", "s16boardcell"];
+    let filters = [
+        "s16gameplay",
+        "mercenary_style",
+        "s16mercenary",
+        "s16boardcell",
+    ];
 
     for meta in vfs.entries.values() {
         let vpath = &meta.virtual_path;
@@ -427,10 +438,9 @@ pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetI
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default();
-                if map
-                    .get(&short_name)
-                    .is_some_and(|prev| prev.virtual_path.contains("/NoAtlas/") && !vpath.contains("/NoAtlas/"))
-                {
+                if map.get(&short_name).is_some_and(|prev| {
+                    prev.virtual_path.contains("/NoAtlas/") && !vpath.contains("/NoAtlas/")
+                }) {
                     continue;
                 }
                 map.insert(
@@ -470,10 +480,10 @@ pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetI
     for (atlas_path, list) in by_atlas {
         if let Ok(atlas_tex) = vfs.decode_texture(&atlas_path) {
             for (vpath, info) in list {
-                let cw = (info.width as usize)
-                    .min(atlas_tex.width.saturating_sub(info.uv_x as usize));
-                let ch = (info.height as usize)
-                    .min(atlas_tex.height.saturating_sub(info.uv_y as usize));
+                let cw =
+                    (info.width as usize).min(atlas_tex.width.saturating_sub(info.uv_x as usize));
+                let ch =
+                    (info.height as usize).min(atlas_tex.height.saturating_sub(info.uv_y as usize));
                 if cw < 12 || ch < 12 {
                     continue;
                 }
@@ -531,7 +541,12 @@ pub fn hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     (h, s, max)
 }
 
-pub fn alpha_bbox_thresh(rgba: &[u8], w: usize, h: usize, thresh: u8) -> (usize, usize, usize, usize) {
+pub fn alpha_bbox_thresh(
+    rgba: &[u8],
+    w: usize,
+    h: usize,
+    thresh: u8,
+) -> (usize, usize, usize, usize) {
     let mut x0 = w;
     let mut y0 = h;
     let mut x1 = 0usize;
@@ -697,7 +712,10 @@ pub fn compute_art_feature_region(
 
 /// Synthesizes a `([f32; 72], [f32; 13])` feature vector from a decoded game icon texture
 /// using its alpha bounding box and the target UI backdrop color.
-pub fn synthesize_icon_feature(img: &DecodedAssetImage, bg_rgb: (f32, f32, f32)) -> ([f32; 72], [f32; 13]) {
+pub fn synthesize_icon_feature(
+    img: &DecodedAssetImage,
+    bg_rgb: (f32, f32, f32),
+) -> ([f32; 72], [f32; 13]) {
     let (x0, y0, x1, y1) = alpha_bbox(&img.rgba8, img.width, img.height);
     compute_art_feature_region(&img.rgba8, img.width, img.height, x0, y0, x1, y1, bg_rgb)
 }
@@ -708,61 +726,171 @@ pub fn synthesize_icon_feature(img: &DecodedAssetImage, bg_rgb: (f32, f32, f32))
 
 fn glyph_5x7(c: char) -> [u8; 7] {
     match c.to_ascii_uppercase() {
-        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
-        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
-        'D' => [0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100],
-        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
-        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100],
-        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
-        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
-        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
-        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-        'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
-        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
-        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
-        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
-        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
-        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
-        'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
-        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
-        '3' => [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
-        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-        '5' => [0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110],
-        '6' => [0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
-        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100],
-        ',' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b01000],
-        ':' => [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000],
-        ';' => [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b01000],
-        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
-        '_' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111],
-        '(' => [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010],
-        ')' => [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000],
-        '[' => [0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110],
-        ']' => [0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110],
-        '/' => [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
-        '#' => [0b01010, 0b11111, 0b01010, 0b01010, 0b11111, 0b01010, 0b00000],
-        '\'' => [0b00100, 0b00100, 0b01000, 0b00000, 0b00000, 0b00000, 0b00000],
-        '"' => [0b01010, 0b01010, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
-        '+' => [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
-        '%' => [0b11001, 0b11010, 0b00010, 0b00100, 0b01000, 0b01011, 0b10011],
-        '&' => [0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101],
-        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
-        '?' => [0b01110, 0b10001, 0b00010, 0b00100, 0b00100, 0b00000, 0b00100],
+        'A' => [
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'B' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
+        ],
+        'C' => [
+            0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
+        ],
+        'D' => [
+            0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100,
+        ],
+        'E' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+        ],
+        'F' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'G' => [
+            0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110,
+        ],
+        'H' => [
+            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'I' => [
+            0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        'J' => [
+            0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100,
+        ],
+        'K' => [
+            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
+        ],
+        'L' => [
+            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+        ],
+        'M' => [
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+        ],
+        'N' => [
+            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
+        ],
+        'O' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'P' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'Q' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
+        ],
+        'R' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ],
+        'S' => [
+            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        'T' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'U' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'V' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
+        ],
+        'W' => [
+            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001,
+        ],
+        'X' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
+        ],
+        'Y' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'Z' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
+        ],
+        '0' => [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ],
+        '3' => [
+            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110,
+        ],
+        '6' => [
+            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
+        ],
+        '.' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100,
+        ],
+        ',' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b01000,
+        ],
+        ':' => [
+            0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000,
+        ],
+        ';' => [
+            0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b01000,
+        ],
+        '-' => [
+            0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000,
+        ],
+        '_' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111,
+        ],
+        '(' => [
+            0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010,
+        ],
+        ')' => [
+            0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000,
+        ],
+        '[' => [
+            0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110,
+        ],
+        ']' => [
+            0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110,
+        ],
+        '/' => [
+            0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000,
+        ],
+        '#' => [
+            0b01010, 0b11111, 0b01010, 0b01010, 0b11111, 0b01010, 0b00000,
+        ],
+        '\'' => [
+            0b00100, 0b00100, 0b01000, 0b00000, 0b00000, 0b00000, 0b00000,
+        ],
+        '"' => [
+            0b01010, 0b01010, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000,
+        ],
+        '+' => [
+            0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000,
+        ],
+        '%' => [
+            0b11001, 0b11010, 0b00010, 0b00100, 0b01000, 0b01011, 0b10011,
+        ],
+        '&' => [
+            0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101,
+        ],
+        '!' => [
+            0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100,
+        ],
+        '?' => [
+            0b01110, 0b10001, 0b00010, 0b00100, 0b00100, 0b00000, 0b00100,
+        ],
         _ => [0; 7],
     }
 }
@@ -948,9 +1076,22 @@ pub fn render_catalog_relics_png(
         );
 
         let tx = x0 + 92;
-        let hdr = format!("#{} [{}] {}", relic.id, relic.js_sim.to_uppercase(), relic.name);
+        let hdr = format!(
+            "#{} [{}] {}",
+            relic.id,
+            relic.js_sim.to_uppercase(),
+            relic.name
+        );
         let hdr_trunc: String = hdr.chars().take(51).collect();
-        draw_bitmap_label(&mut buf, width, height, tx, y0 + 8, &hdr_trunc, [255, 220, 130, 255]);
+        draw_bitmap_label(
+            &mut buf,
+            width,
+            height,
+            tx,
+            y0 + 8,
+            &hdr_trunc,
+            [255, 220, 130, 255],
+        );
 
         let trig_str = format!("WHEN: {}", relic.trigger_text);
         let trig_lines = wrap_text_lines(&trig_str, 51, 2);
@@ -1014,8 +1155,20 @@ pub fn render_catalog_beasts_and_cells_png(
             [28, 25, 34, 255],
         );
 
-        let title = format!("{} ({})", b.display_name.to_uppercase(), b.beast.to_uppercase());
-        draw_bitmap_label(&mut buf, width, height, 28, y0 + 12, &title, [255, 220, 130, 255]);
+        let title = format!(
+            "{} ({})",
+            b.display_name.to_uppercase(),
+            b.beast.to_uppercase()
+        );
+        draw_bitmap_label(
+            &mut buf,
+            width,
+            height,
+            28,
+            y0 + 12,
+            &title,
+            [255, 220, 130, 255],
+        );
 
         if let Some(norm) = textures.get(&b.normal_portrait_asset) {
             blit_scaled(
@@ -1036,7 +1189,10 @@ pub fn render_catalog_beasts_and_cells_png(
                 height,
                 260,
                 y0 + 98,
-                &format!("NORMAL: {}", b.normal_portrait_asset.trim_start_matches("UI_T_V2_")),
+                &format!(
+                    "NORMAL: {}",
+                    b.normal_portrait_asset.trim_start_matches("UI_T_V2_")
+                ),
                 [190, 235, 190, 255],
             );
         }
@@ -1060,7 +1216,10 @@ pub fn render_catalog_beasts_and_cells_png(
                 height,
                 470,
                 y0 + 98,
-                &format!("JAILED: {}", b.jailed_portrait_asset.trim_start_matches("UI_T_V2_")),
+                &format!(
+                    "JAILED: {}",
+                    b.jailed_portrait_asset.trim_start_matches("UI_T_V2_")
+                ),
                 [170, 220, 255, 255],
             );
         }
@@ -1154,9 +1313,22 @@ pub fn render_catalog_gifts_themes_events_png(
                 img.height,
             );
         }
-        let hdr = format!("GIFT #{} [{}] {}", gift.id, gift.js_sim.to_uppercase(), gift.name);
+        let hdr = format!(
+            "GIFT #{} [{}] {}",
+            gift.id,
+            gift.js_sim.to_uppercase(),
+            gift.name
+        );
         let hdr_t: String = hdr.chars().take(34).collect();
-        draw_bitmap_label(&mut buf, width, height, x0 + 84, y0 + 10, &hdr_t, [255, 220, 130, 255]);
+        draw_bitmap_label(
+            &mut buf,
+            width,
+            height,
+            x0 + 84,
+            y0 + 10,
+            &hdr_t,
+            [255, 220, 130, 255],
+        );
         draw_bitmap_label(
             &mut buf,
             width,
@@ -1197,9 +1369,22 @@ pub fn render_catalog_gifts_themes_events_png(
                 img.height,
             );
         }
-        let hdr = format!("THEME #{} [{}] {}", theme.id, theme.js_sim.to_uppercase(), theme.name);
+        let hdr = format!(
+            "THEME #{} [{}] {}",
+            theme.id,
+            theme.js_sim.to_uppercase(),
+            theme.name
+        );
         let hdr_t: String = hdr.chars().take(34).collect();
-        draw_bitmap_label(&mut buf, width, height, x0 + 84, y0 + 10, &hdr_t, [255, 220, 130, 255]);
+        draw_bitmap_label(
+            &mut buf,
+            width,
+            height,
+            x0 + 84,
+            y0 + 10,
+            &hdr_t,
+            [255, 220, 130, 255],
+        );
         draw_bitmap_label(
             &mut buf,
             width,
@@ -1209,7 +1394,10 @@ pub fn render_catalog_gifts_themes_events_png(
             theme.icon_asset.trim_start_matches("UI_S16Gameplay_"),
             [150, 200, 240, 255],
         );
-        for (li, line) in wrap_text_lines(&theme.effect_text, 34, 5).iter().enumerate() {
+        for (li, line) in wrap_text_lines(&theme.effect_text, 34, 5)
+            .iter()
+            .enumerate()
+        {
             draw_bitmap_label(
                 &mut buf,
                 width,
@@ -1236,9 +1424,22 @@ pub fn render_catalog_gifts_themes_events_png(
         let x0 = 16 + idx * 250;
         let y0 = 284;
         fill_rect(&mut buf, width, height, x0, y0, 240, 74, [28, 25, 34, 255]);
-        let hdr = format!("TASK #{} [{}] {}", task.id, task.js_sim.to_uppercase(), task.name);
+        let hdr = format!(
+            "TASK #{} [{}] {}",
+            task.id,
+            task.js_sim.to_uppercase(),
+            task.name
+        );
         let hdr_t: String = hdr.chars().take(38).collect();
-        draw_bitmap_label(&mut buf, width, height, x0 + 8, y0 + 8, &hdr_t, [255, 220, 130, 255]);
+        draw_bitmap_label(
+            &mut buf,
+            width,
+            height,
+            x0 + 8,
+            y0 + 8,
+            &hdr_t,
+            [255, 220, 130, 255],
+        );
         let desc = format!("{} (Need: {})", task.desc_text, task.progress_param);
         for (li, line) in wrap_text_lines(&desc, 38, 3).iter().enumerate() {
             draw_bitmap_label(
@@ -1289,7 +1490,15 @@ pub fn render_catalog_gifts_themes_events_png(
             ev.weight
         );
         let hdr_t: String = hdr.chars().take(64).collect();
-        draw_bitmap_label(&mut buf, width, height, x0 + 10, y0 + 8, &hdr_t, [255, 220, 130, 255]);
+        draw_bitmap_label(
+            &mut buf,
+            width,
+            height,
+            x0 + 10,
+            y0 + 8,
+            &hdr_t,
+            [255, 220, 130, 255],
+        );
         for (li, line) in wrap_text_lines(&ev.desc_text, 64, 5).iter().enumerate() {
             draw_bitmap_label(
                 &mut buf,
@@ -1477,10 +1686,7 @@ impl TtfFont {
             if p + 8 > b.len() {
                 return None;
             }
-            (
-                read_u32_be(b, p) as usize,
-                read_u32_be(b, p + 4) as usize,
-            )
+            (read_u32_be(b, p) as usize, read_u32_be(b, p + 4) as usize)
         };
         if o0 >= o1 {
             None
@@ -1489,7 +1695,10 @@ impl TtfFont {
         }
     }
 
-    pub fn glyph_segments(&self, gid: u16) -> Option<(i16, i16, i16, i16, Vec<(f32, f32, f32, f32)>)> {
+    pub fn glyph_segments(
+        &self,
+        gid: u16,
+    ) -> Option<(i16, i16, i16, i16, Vec<(f32, f32, f32, f32)>)> {
         let (g0, _g1) = self.glyph_offset_range(gid)?;
         let b = &self.data;
         let num_contours = read_i16_be(b, g0);
@@ -1632,7 +1841,12 @@ impl TtfFont {
 
     /// Rasterizes a single glyph into a padded `4x4`-supersampled + `3x3`-box-blurred grayscale buffer,
     /// returning `(canvas_w, canvas_h, blur_buf, bbox_x0, bbox_y0, bbox_w, bbox_h)`.
-    pub fn rasterize_char(&self, ch: char, target_h: usize, pad: usize) -> Option<(usize, usize, Vec<f32>, f64, f64, f64, f64)> {
+    pub fn rasterize_char(
+        &self,
+        ch: char,
+        target_h: usize,
+        pad: usize,
+    ) -> Option<(usize, usize, Vec<f32>, f64, f64, f64, f64)> {
         let gid = self.glyph_index(ch as u32);
         let (x_min, y_min, x_max, y_max, segs) = self.glyph_segments(gid)?;
         let fw = (x_max - x_min).max(1) as f32;
@@ -1658,7 +1872,8 @@ impl TtfFont {
                     }
                     xs_hit.sort_by(|a, b| a.partial_cmp(b).unwrap());
                     for sx in 0..4 {
-                        let fx = (x_min as f32) + (((px as f32) + ((sx as f32) + 0.5) * 0.25) / scale);
+                        let fx =
+                            (x_min as f32) + (((px as f32) + ((sx as f32) + 0.5) * 0.25) / scale);
                         let mut inside = false;
                         for &xh in &xs_hit {
                             if fx >= xh {
@@ -1706,7 +1921,12 @@ impl TtfFont {
     }
 
     /// Rasterizes a multi-character text string (such as `"Go to Cell"`) into a padded blurred canvas.
-    pub fn rasterize_text(&self, text: &str, scale: f32, pad: usize) -> Option<(usize, usize, Vec<f32>, f64, f64, f64, f64)> {
+    pub fn rasterize_text(
+        &self,
+        text: &str,
+        scale: f32,
+        pad: usize,
+    ) -> Option<(usize, usize, Vec<f32>, f64, f64, f64, f64)> {
         let mut pen_x = 0.0f32;
         let mut all_segs: Vec<(f32, f32, f32, f32)> = Vec::new();
         let mut min_x = f32::INFINITY;
@@ -1897,9 +2117,12 @@ fn composite_rgba_scaled(
             let fa = (fg.rgba8[fi + 3] as f32) / 255.0;
             if fa > 0.01 {
                 let oi = (py as usize * bg.width + px as usize) * 4;
-                out[oi] = ((fg.rgba8[fi] as f32) * fa + (out[oi] as f32) * (1.0 - fa)).round() as u8;
-                out[oi + 1] = ((fg.rgba8[fi + 1] as f32) * fa + (out[oi + 1] as f32) * (1.0 - fa)).round() as u8;
-                out[oi + 2] = ((fg.rgba8[fi + 2] as f32) * fa + (out[oi + 2] as f32) * (1.0 - fa)).round() as u8;
+                out[oi] =
+                    ((fg.rgba8[fi] as f32) * fa + (out[oi] as f32) * (1.0 - fa)).round() as u8;
+                out[oi + 1] = ((fg.rgba8[fi + 1] as f32) * fa + (out[oi + 1] as f32) * (1.0 - fa))
+                    .round() as u8;
+                out[oi + 2] = ((fg.rgba8[fi + 2] as f32) * fa + (out[oi + 2] as f32) * (1.0 - fa))
+                    .round() as u8;
             }
         }
     }
@@ -1926,11 +2149,7 @@ fn composite_portrait_on_shield(
 
             let px = (x as isize) - ox;
             let py = (y as isize) - oy;
-            if px >= 0
-                && px < portrait.width as isize
-                && py >= 0
-                && py < portrait.height as isize
-            {
+            if px >= 0 && px < portrait.width as isize && py >= 0 && py < portrait.height as isize {
                 let p_idx = (py as usize * portrait.width + px as usize) * 4;
                 let pa = (portrait.rgba8[p_idx + 3] as f32) / 255.0;
                 r = (portrait.rgba8[p_idx] as f32) * pa + r * (1.0 - pa);
@@ -2121,7 +2340,9 @@ pub fn synthesize_digits_and_prefix(
     let mut prefixes = Vec::new();
     for font in &fonts {
         let scale = 22.0 / (font.units_per_em as f32);
-        let Some((cw, ch_px, blur, bx0, by0, pw, ph)) = font.rasterize_text("Go to Cell", scale, 16) else {
+        let Some((cw, ch_px, blur, bx0, by0, pw, ph)) =
+            font.rasterize_text("Go to Cell", scale, 16)
+        else {
             continue;
         };
         let pcx = bx0 + pw * 0.5;
@@ -2220,7 +2441,9 @@ pub fn render_catalog_board_layout_png(
     );
 
     if let Some(bg) = textures.get("UI_Img_S16Gameplay_Jail_Bg_Normal") {
-        blit_scaled(&mut buf, width, height, 16, 36, 1280, 768, &bg.rgba8, bg.width, bg.height);
+        blit_scaled(
+            &mut buf, width, height, 16, 36, 1280, 768, &bg.rgba8, bg.width, bg.height,
+        );
     }
 
     let (pts, room_boxes) = synthesize_board_points_and_rooms(textures)?;
@@ -2231,9 +2454,27 @@ pub fn render_catalog_board_layout_png(
         let w = (rw as usize * 1280) / 3200;
         let h = (rh as usize * 768) / 1920;
         fill_rect(&mut buf, width, height, x0, y0, w, 2, [80, 220, 255, 255]);
-        fill_rect(&mut buf, width, height, x0, y0 + h, w, 2, [80, 220, 255, 255]);
+        fill_rect(
+            &mut buf,
+            width,
+            height,
+            x0,
+            y0 + h,
+            w,
+            2,
+            [80, 220, 255, 255],
+        );
         fill_rect(&mut buf, width, height, x0, y0, 2, h, [80, 220, 255, 255]);
-        fill_rect(&mut buf, width, height, x0 + w, y0, 2, h, [80, 220, 255, 255]);
+        fill_rect(
+            &mut buf,
+            width,
+            height,
+            x0 + w,
+            y0,
+            2,
+            h,
+            [80, 220, 255, 255],
+        );
         draw_bitmap_label(
             &mut buf,
             width,
@@ -2251,11 +2492,28 @@ pub fn render_catalog_board_layout_png(
         let by = (ry as f64) * S_1344_TO_BG + OY_1344_TO_BG;
         let px = 16 + ((bx * 1280.0 / 3200.0).round() as usize);
         let py = 36 + ((by * 768.0 / 1920.0).round() as usize);
-        fill_rect(&mut buf, width, height, px.saturating_sub(1), py.saturating_sub(1), 3, 3, [90, 255, 130, 255]);
+        fill_rect(
+            &mut buf,
+            width,
+            height,
+            px.saturating_sub(1),
+            py.saturating_sub(1),
+            3,
+            3,
+            [90, 255, 130, 255],
+        );
     }
 
     // Right sidebar: 8 Route & Action Medallions
-    draw_bitmap_label(&mut buf, width, height, 1316, 40, "ROUTE & ACTION SPRITES", [250, 210, 120, 255]);
+    draw_bitmap_label(
+        &mut buf,
+        width,
+        height,
+        1316,
+        40,
+        "ROUTE & ACTION SPRITES",
+        [250, 210, 120, 255],
+    );
     let specs: [(&str, &str); 8] = [
         ("CELL DOOR", "UI_S16Gameplay_Route_01"),
         ("WARDEN OFFICE", "UI_S16Gameplay_Route_02"),
@@ -2268,11 +2526,39 @@ pub fn render_catalog_board_layout_png(
     ];
     for (i, (label, asset)) in specs.iter().enumerate() {
         let y0 = 64 + i * 92;
-        fill_rect(&mut buf, width, height, 1316, y0, 268, 84, [28, 25, 34, 255]);
+        fill_rect(
+            &mut buf,
+            width,
+            height,
+            1316,
+            y0,
+            268,
+            84,
+            [28, 25, 34, 255],
+        );
         if let Some(tex) = textures.get(*asset) {
-            blit_scaled(&mut buf, width, height, 1324, y0 + 10, 64, 64, &tex.rgba8, tex.width, tex.height);
+            blit_scaled(
+                &mut buf,
+                width,
+                height,
+                1324,
+                y0 + 10,
+                64,
+                64,
+                &tex.rgba8,
+                tex.width,
+                tex.height,
+            );
         }
-        draw_bitmap_label(&mut buf, width, height, 1398, y0 + 22, label, [255, 220, 130, 255]);
+        draw_bitmap_label(
+            &mut buf,
+            width,
+            height,
+            1398,
+            y0 + 22,
+            label,
+            [255, 220, 130, 255],
+        );
         draw_bitmap_label(
             &mut buf,
             width,
@@ -2301,7 +2587,15 @@ pub fn render_catalog_board_layout_png(
                 let x0 = 16 + d * 96;
                 let y0 = 848;
                 fill_rect(&mut buf, width, height, x0, y0, 86, 120, [28, 25, 34, 255]);
-                draw_bitmap_label(&mut buf, width, height, x0 + 10, y0 + 8, &format!("DIGIT {d}"), [255, 220, 130, 255]);
+                draw_bitmap_label(
+                    &mut buf,
+                    width,
+                    height,
+                    x0 + 10,
+                    y0 + 8,
+                    &format!("DIGIT {d}"),
+                    [255, 220, 130, 255],
+                );
                 if let Some((cw, ch_px, blur, _, _, _, _)) = font.rasterize_char(ch, 48, 8) {
                     for py in 0..ch_px.min(84) {
                         for px in 0..cw.min(72) {
@@ -2315,9 +2609,19 @@ pub fn render_catalog_board_layout_png(
             let x0 = 990;
             let y0 = 848;
             fill_rect(&mut buf, width, height, x0, y0, 594, 120, [28, 25, 34, 255]);
-            draw_bitmap_label(&mut buf, width, height, x0 + 12, y0 + 8, "PREFIX: 'GO TO CELL'", [255, 220, 130, 255]);
+            draw_bitmap_label(
+                &mut buf,
+                width,
+                height,
+                x0 + 12,
+                y0 + 8,
+                "PREFIX: 'GO TO CELL'",
+                [255, 220, 130, 255],
+            );
             let scale = 42.0 / (font.units_per_em as f32);
-            if let Some((cw, ch_px, blur, _, _, _, _)) = font.rasterize_text("Go to Cell", scale, 10) {
+            if let Some((cw, ch_px, blur, _, _, _, _)) =
+                font.rasterize_text("Go to Cell", scale, 10)
+            {
                 for py in 0..ch_px.min(84) {
                     for px in 0..cw.min(560) {
                         let v = blur[py * cw + px].clamp(0.0, 255.0) as u8;
@@ -2450,10 +2754,26 @@ pub fn generate_cv_data_rs(
 
     // 3. Beast Faces (18x22 = 396) synthesized from UI_T_V2_S16BoardCell_101..104 & 045/047/050/048 on 046
     for (const_name, norm_name, jail_name) in [
-        ("FACES_LION", "UI_T_V2_S16BoardCell_102", "UI_T_V2_S16BoardCell_047"),
-        ("FACES_MAMMOTH", "UI_T_V2_S16BoardCell_101", "UI_T_V2_S16BoardCell_045"),
-        ("FACES_RAT", "UI_T_V2_S16BoardCell_104", "UI_T_V2_S16BoardCell_048"),
-        ("FACES_WOLF", "UI_T_V2_S16BoardCell_103", "UI_T_V2_S16BoardCell_050"),
+        (
+            "FACES_LION",
+            "UI_T_V2_S16BoardCell_102",
+            "UI_T_V2_S16BoardCell_047",
+        ),
+        (
+            "FACES_MAMMOTH",
+            "UI_T_V2_S16BoardCell_101",
+            "UI_T_V2_S16BoardCell_045",
+        ),
+        (
+            "FACES_RAT",
+            "UI_T_V2_S16BoardCell_104",
+            "UI_T_V2_S16BoardCell_048",
+        ),
+        (
+            "FACES_WOLF",
+            "UI_T_V2_S16BoardCell_103",
+            "UI_T_V2_S16BoardCell_050",
+        ),
     ] {
         let norm_tex = textures
             .get(norm_name)
@@ -2714,10 +3034,16 @@ mod tests {
     fn test_strip_rich_text_and_glyphs() {
         let raw = "Requires <Red>1</> fewer beast; grants +50% 'Rainbow' [145]!";
         let clean = strip_rich_text(raw);
-        assert_eq!(clean, "Requires 1 fewer beast; grants +50% 'Rainbow' [145]!");
+        assert_eq!(
+            clean,
+            "Requires 1 fewer beast; grants +50% 'Rainbow' [145]!"
+        );
         for ch in ['#', '\'', '+', '%', ';', '!', '?', '"', '[', ']'] {
             let g = glyph_5x7(ch);
-            assert!(g.iter().any(|&row| row != 0), "Glyph for {ch:?} should not be blank");
+            assert!(
+                g.iter().any(|&row| row != 0),
+                "Glyph for {ch:?} should not be blank"
+            );
         }
     }
 
@@ -2729,7 +3055,10 @@ mod tests {
             124, 125, 126, 127, 131, 132, 141, 142, 143, 144, 145, 146, 147, 148,
         ] {
             let sim = map_relic_id_to_sim(id);
-            assert_ne!(sim, "unknown", "Active relic {id} must map to a known sim key");
+            assert_ne!(
+                sim, "unknown",
+                "Active relic {id} must map to a known sim key"
+            );
             assert!(sims.insert(sim), "Duplicate sim key {sim} for relic {id}");
         }
         assert_eq!(sims.len(), 31);
@@ -2741,7 +3070,10 @@ mod tests {
         for id in 1..=5 {
             let sim = map_task_id_to_sim(id);
             assert_ne!(sim, "other", "Task {id} must not map to 'other'");
-            assert!(tasks.insert(sim), "Duplicate task sim key {sim} for task {id}");
+            assert!(
+                tasks.insert(sim),
+                "Duplicate task sim key {sim} for task {id}"
+            );
         }
         assert_eq!(tasks.len(), 5);
         assert_eq!(map_task_id_to_sim(4), "incident");
@@ -2752,15 +3084,18 @@ mod tests {
         ] {
             let sim = map_event_id_to_sim(id);
             assert_ne!(sim, "unknown", "Event {id} must map to a known sim key");
-            assert!(events.insert(sim), "Duplicate event sim key {sim} for event {id}");
+            assert!(
+                events.insert(sim),
+                "Duplicate event sim key {sim} for event {id}"
+            );
         }
         assert_eq!(events.len(), 17);
     }
 
     #[test]
     fn test_cv_data_uses_tool_id_enum() {
-        let cv_data_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../tartarus-scan/src/cv_data.rs");
+        let cv_data_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../tartarus-scan/src/cv_data.rs");
         let content = fs::read_to_string(&cv_data_path).expect("read cv_data.rs");
         let mut updated = content.clone();
         if !updated.contains("use tartarus_core::ToolId;") {
@@ -2788,4 +3123,3 @@ mod tests {
         assert!(updated.contains("pub sim: ToolId,"));
     }
 }
-

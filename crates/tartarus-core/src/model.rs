@@ -818,10 +818,7 @@ impl BoardModel {
             let Some(lion) = st.cells[n].inmate else {
                 continue;
             };
-            let target_inmate = st
-                .cells
-                .get(prey.cell as usize)
-                .and_then(|tc| tc.inmate);
+            let target_inmate = st.cells.get(prey.cell as usize).and_then(|tc| tc.inmate);
             let Some(target) = target_inmate else {
                 problems.push(format!(
                     "The prey mark from cell {} needs a same-rarity meal for the Lion in cell {}.",
@@ -839,10 +836,7 @@ impl BoardModel {
                 continue;
             }
             let already = st.prey_slice().iter().any(|l| {
-                l.lion == target.id
-                    || l.prey == target.id
-                    || l.lion == lion.id
-                    || l.prey == lion.id
+                l.lion == target.id || l.prey == target.id || l.lion == lion.id || l.prey == lion.id
             });
             if already {
                 problems.push(format!(
@@ -1084,9 +1078,7 @@ impl BoardModel {
                     olen = 4;
                 } else {
                     for &t in self.choice.slice() {
-                        if !st.has_tool(t)
-                            && !opts[..olen].contains(&ChoiceId::Tool(t))
-                            && olen < 4
+                        if !st.has_tool(t) && !opts[..olen].contains(&ChoiceId::Tool(t)) && olen < 4
                         {
                             opts[olen] = ChoiceId::Tool(t);
                             olen += 1;
@@ -1328,11 +1320,7 @@ impl BoardModel {
 
         if let Some(ch) = st.challenge.as_ref() {
             m.ch.vouchers = ch.vouchers;
-            m.ch.contracts = [
-                ch.contracts[0].id,
-                ch.contracts[1].id,
-                ch.contracts[2].id,
-            ];
+            m.ch.contracts = [ch.contracts[0].id, ch.contracts[1].id, ch.contracts[2].id];
             if let Some(b) = ch.contracts.iter().find_map(|c| c.bounty) {
                 m.ch.bounty = b;
             }
@@ -1418,7 +1406,12 @@ pub fn format_expect_text(goal: SolveGoal, o: &OptionRank, max_days: u8) -> Stri
 impl BoardModel {
     /// Runs both the instant strategy pick and multi-threaded Monte Carlo playouts (`rayon`)
     /// to produce a complete `AdviceSnapshot` for the overlay.
-    pub fn evaluate(&self, playout_budget_total: usize, budget_ms: u64, seed: u32) -> AdviceSnapshot {
+    pub fn evaluate(
+        &self,
+        playout_budget_total: usize,
+        budget_ms: u64,
+        seed: u32,
+    ) -> AdviceSnapshot {
         let t0 = std::time::Instant::now();
         let mut checks_vec = FixedVec::new();
         for n in 0..16u8 {
@@ -1432,7 +1425,9 @@ impl BoardModel {
             return AdviceSnapshot {
                 working: false,
                 move_text: "The Warden\u{2019}s Treasure: check the board first".to_string(),
-                why: "Press View Prison Status in the game, wait a second on the board, then return.".to_string(),
+                why:
+                    "Press View Prison Status in the game, wait a second on the board, then return."
+                        .to_string(),
                 treasure_wait: true,
                 tools_to_confirm,
                 checks: checks_vec,
@@ -1494,7 +1489,8 @@ impl BoardModel {
             .as_ref()
             .and_then(|pick| ranked.iter().find(|o| o.action.same_action(&pick.action)));
 
-        let (rec_action, rec_label, rec_why, rec_live, rec_rounds, rec_opt) = if let Some(l) = live {
+        let (rec_action, rec_label, rec_why, rec_live, rec_rounds, rec_opt) = if let Some(l) = live
+        {
             if let Some(m) = mine {
                 let p = inst.as_ref().unwrap();
                 if m.action.same_action(&l.action) || l.mean - m.mean <= 1.96 * m.gap_se {
@@ -1503,21 +1499,49 @@ impl BoardModel {
                     } else {
                         format!("{} The live check rates it about equal to the best.", p.why)
                     };
-                    (Some(p.action), m.label.clone(), why, true, summary.rounds, Some(m))
+                    (
+                        Some(p.action),
+                        m.label.clone(),
+                        why,
+                        true,
+                        summary.rounds,
+                        Some(m),
+                    )
                 } else {
                     let why = format!(
                         "The playouts found a better move than the strategy\u{2019}s pick ({}).",
                         p.label
                     );
-                    (Some(l.action), l.label.clone(), why, true, summary.rounds, Some(l))
+                    (
+                        Some(l.action),
+                        l.label.clone(),
+                        why,
+                        true,
+                        summary.rounds,
+                        Some(l),
+                    )
                 }
             } else {
-                let why = "The playouts found a better move than the strategy\u{2019}s pick."
-                    .to_string();
-                (Some(l.action), l.label.clone(), why, true, summary.rounds, Some(l))
+                let why =
+                    "The playouts found a better move than the strategy\u{2019}s pick.".to_string();
+                (
+                    Some(l.action),
+                    l.label.clone(),
+                    why,
+                    true,
+                    summary.rounds,
+                    Some(l),
+                )
             }
         } else if let Some(p) = inst.as_ref() {
-            (Some(p.action), p.label.clone(), p.why.clone(), false, 0, mine)
+            (
+                Some(p.action),
+                p.label.clone(),
+                p.why.clone(),
+                false,
+                0,
+                mine,
+            )
         } else if ranked.len() == 1 {
             let r0 = &ranked[0];
             (
@@ -1572,10 +1596,7 @@ impl BoardModel {
             format!("Live check: {} playouts per option", summary.rounds)
         };
 
-        let max_mean = ranked
-            .iter()
-            .map(|o| o.mean)
-            .fold(0.01f64, f64::max);
+        let max_mean = ranked.iter().map(|o| o.mean).fold(0.01f64, f64::max);
 
         let mut option_rows = Vec::new();
         if ranked.len() > 1 {
@@ -1610,8 +1631,8 @@ impl BoardModel {
             }
         }
 
-        let close = ranked.len() >= 2
-            && (ranked[0].mean - ranked[1].mean) < 1.96 * ranked[1].gap_se;
+        let close =
+            ranked.len() >= 2 && (ranked[0].mean - ranked[1].mean) < 1.96 * ranked[1].gap_se;
         let note = if close {
             "The top moves are within the margin of error: either is fine.".to_string()
         } else {

@@ -153,7 +153,8 @@ pub fn parse_uasset_names(uasset: &[u8]) -> Vec<String> {
             if let Some((_, next_off)) = read_fstring(uasset, off) {
                 off = next_off;
                 off += 4; // PackageFlags
-                if let (Some(nc), Some(no)) = (read_i32_le(uasset, off), read_i32_le(uasset, off + 4))
+                if let (Some(nc), Some(no)) =
+                    (read_i32_le(uasset, off), read_i32_le(uasset, off + 4))
                     && nc > 0
                     && no > 0
                 {
@@ -225,7 +226,7 @@ pub fn decode_texture2d(
 fn find_ascii_pixel_format(buf: &[u8]) -> Option<PixelFormat> {
     for i in 0..buf.len().saturating_sub(6) {
         if &buf[i..i + 3] == b"PF_" {
-            let end = buf[i.. (i + 24).min(buf.len())]
+            let end = buf[i..(i + 24).min(buf.len())]
                 .iter()
                 .position(|&b| b == 0 || !b.is_ascii_graphic())
                 .unwrap_or(0);
@@ -281,9 +282,14 @@ fn try_parse_platform_data(
                 continue;
             }
             let mip0_off = mip_table_off + 8;
-            if let Some((width, height, mip_bytes)) =
-                parse_single_mip(uexp, ubulk, mip0_off, format, plat_size_x as usize, plat_size_y as usize)
-                && let Ok(rgba8) = decode_mip_to_rgba8(mip_bytes, width, height, format)
+            if let Some((width, height, mip_bytes)) = parse_single_mip(
+                uexp,
+                ubulk,
+                mip0_off,
+                format,
+                plat_size_x as usize,
+                plat_size_y as usize,
+            ) && let Ok(rgba8) = decode_mip_to_rgba8(mip_bytes, width, height, format)
             {
                 return Some(DecodedTexture {
                     width,
@@ -331,10 +337,7 @@ fn parse_single_mip<'a>(
         let sx = read_i32_le(uexp, after_bulk_hdr + elem_count)? as usize;
         let sy = read_i32_le(uexp, after_bulk_hdr + elem_count + 4)? as usize;
         let sz = read_i32_le(uexp, after_bulk_hdr + elem_count + 8).unwrap_or(1);
-        if sx > 0
-            && sy > 0
-            && (1..=64).contains(&sz)
-            && format.mip_byte_size(sx, sy) == elem_count
+        if sx > 0 && sy > 0 && (1..=64).contains(&sz) && format.mip_byte_size(sx, sy) == elem_count
         {
             return Some((sx, sy, &uexp[after_bulk_hdr..after_bulk_hdr + elem_count]));
         }

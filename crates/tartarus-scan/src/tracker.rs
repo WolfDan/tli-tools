@@ -1,15 +1,15 @@
 use crate::cv::{
-    read_hud_objective_with_slot, read_objective_title_with_slot,
-    scan_image_with_options_and_arena, scan_pick_with_slot, BoardLoc, ImageView, PickScreenRead,
-    ScanArena, ScanOptions, ScanProfile, ScanResult, ScannedCellKind, ScannedTool, TitleRead,
+    BoardLoc, ImageView, PickScreenRead, ScanArena, ScanOptions, ScanProfile, ScanResult,
+    ScannedCellKind, ScannedTool, TitleRead, read_hud_objective_with_slot,
+    read_objective_title_with_slot, scan_image_with_options_and_arena, scan_pick_with_slot,
 };
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 use tartarus_core::{
-    Beast, BoardModel, BoardRunStage, BoardStep, CellEvent, CellKind, CellModel, ChoiceId,
-    ChoiceModel, FixedVec, GameMode, GameParams, ObjectiveId, PendingKind, RunPhase, SimAction,
-    StartEventId, ToolId, ToolsPrompt, TreasureOrigin, TreasurePhase, BEASTS, CHALLENGE_DAYS,
-    OFFICE, SUPREME, TOOL_SURE,
+    BEASTS, Beast, BoardModel, BoardRunStage, BoardStep, CHALLENGE_DAYS, CellEvent, CellKind,
+    CellModel, ChoiceId, ChoiceModel, FixedVec, GameMode, GameParams, OFFICE, ObjectiveId,
+    PendingKind, RunPhase, SUPREME, SimAction, StartEventId, TOOL_SURE, ToolId, ToolsPrompt,
+    TreasureOrigin, TreasurePhase,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,7 +36,11 @@ fn pick_is_confident(pick: &PickScreenRead) -> bool {
     if pick.cards.iter().any(|c| c.score < 0.80) {
         return false;
     }
-    let mut scores: [f32; 3] = [pick.cards[0].score, pick.cards[1].score, pick.cards[2].score];
+    let mut scores: [f32; 3] = [
+        pick.cards[0].score,
+        pick.cards[1].score,
+        pick.cards[2].score,
+    ];
     scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     if scores[1] < 0.84 {
         return false;
@@ -160,7 +164,9 @@ impl RunTracker {
         let prev_day = self.model.day;
         let prev_max = self.model.max_days;
         if self.model.mode == GameMode::Challenge {
-            self.model.day = CHALLENGE_DAYS.saturating_sub(gt_left).clamp(1, CHALLENGE_DAYS);
+            self.model.day = CHALLENGE_DAYS
+                .saturating_sub(gt_left)
+                .clamp(1, CHALLENGE_DAYS);
         } else {
             self.model.max_days = max.clamp(1, 60);
             self.model.day = self.model.max_days.saturating_sub(gt_left).max(1);
@@ -507,7 +513,12 @@ impl RunTracker {
                     }
                 }
             }
-            let treasure_view = matches!(trigger, CaptureTrigger::Board { treasure_view: true });
+            let treasure_view = matches!(
+                trigger,
+                CaptureTrigger::Board {
+                    treasure_view: true
+                }
+            );
             if recognized && treasure_view {
                 custom_status = Some(self.use_treasure(Some(TreasureOrigin::View)));
             }
@@ -523,8 +534,7 @@ impl RunTracker {
             scan_res.profile.pick_ms += t_pick.elapsed().as_secs_f64() * 1000.0;
             if let Some(pick) = pick_opt {
                 if pick_is_confident(&pick) {
-                    let fresh_hint =
-                        matches!(trigger, CaptureTrigger::Instruments { fresh: true });
+                    let fresh_hint = matches!(trigger, CaptureTrigger::Instruments { fresh: true });
                     let is_fresh = fresh_hint
                         || !self.phase.is_active()
                         || self
@@ -621,7 +631,9 @@ impl RunTracker {
             .unwrap_or(0);
         let extra = m.extra_slots.max(phantom);
 
-        if same_run && (!known.is_empty() || !offer.is_empty() || base.stage == BoardRunStage::Opening) {
+        if same_run
+            && (!known.is_empty() || !offer.is_empty() || base.stage == BoardRunStage::Opening)
+        {
             // Self-heal any existing slot if a much higher confidence read disagrees
             // (e.g. when a transient overlay occlusion caused an initial misread).
             for i in 0..out.len().min(read.len()) {
@@ -642,9 +654,7 @@ impl RunTracker {
                     .collect();
                 seen.as_mut_slice()
                     .sort_by(|a, b| b.conf.partial_cmp(&a.conf).unwrap());
-                let advised = self
-                    .last_advised_tool
-                    .filter(|id| offer.contains(id));
+                let advised = self.last_advised_tool.filter(|id| offer.contains(id));
                 let take = seen.first().map(|t| t.sim).or(advised);
                 if let Some(t_id) = take {
                     out.push(ScannedTool {
@@ -715,8 +725,8 @@ impl RunTracker {
         let chain = r.chain.as_ref().unwrap();
 
         let warden = r.warden.map_or(base.warden, |w| w.cell);
-        let after =
-            base.warden == warden && (base.step == BoardStep::Manage || base.step == BoardStep::Chain);
+        let after = base.warden == warden
+            && (base.step == BoardStep::Manage || base.step == BoardStep::Chain);
         let walked = base.step == BoardStep::Patrol && base.has_dest(warden);
 
         if !after && !walked {
@@ -768,7 +778,9 @@ impl RunTracker {
             m.cells[w_idx] = cm;
         } else {
             checks |= 1u16 << w_idx;
-            notes.push("The eater in the warden's cell wasn't read: set it as it is now.".to_string());
+            notes.push(
+                "The eater in the warden's cell wasn't read: set it as it is now.".to_string(),
+            );
         }
 
         let tier = if m.cells[w_idx].kind == CellKind::Inmate {
@@ -857,7 +869,9 @@ impl RunTracker {
         if let Some((cur, max)) = self.log_days.filter(|&(_, max)| max > 0) {
             let gt_left = max.saturating_sub(cur.max(1));
             if m.mode == GameMode::Challenge {
-                m.day = CHALLENGE_DAYS.saturating_sub(gt_left).clamp(1, CHALLENGE_DAYS);
+                m.day = CHALLENGE_DAYS
+                    .saturating_sub(gt_left)
+                    .clamp(1, CHALLENGE_DAYS);
             } else {
                 m.max_days = max.clamp(1, 60);
                 m.day = m.max_days.saturating_sub(gt_left).max(1);
@@ -959,9 +973,8 @@ impl RunTracker {
                         m.set_dest(n, true);
                     }
                 }
-                let two_door_tool = |id: ToolId| {
-                    matches!(id, ToolId::Forged | ToolId::Whip | ToolId::Stake)
-                };
+                let two_door_tool =
+                    |id: ToolId| matches!(id, ToolId::Forged | ToolId::Whip | ToolId::Stake);
                 let has_two_door_limit = base.tools.iter().copied().any(two_door_tool)
                     || r.tools
                         .iter()
@@ -1065,13 +1078,7 @@ impl RunTracker {
             }
         }
 
-        let mut tools = self.run_tools(
-            &r.tools,
-            base,
-            &mut m,
-            &mut notes,
-            r.loc.map(|l| l.s),
-        );
+        let mut tools = self.run_tools(&r.tools, base, &mut m, &mut notes, r.loc.map(|l| l.s));
         if r.decision.is_some_and(|d| d.hunt)
             && !tools.iter().any(|t| t.sim == ToolId::Trap)
             && tools.len() < 6

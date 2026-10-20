@@ -10,7 +10,9 @@ pub mod uasset;
 
 use std::collections::BTreeMap;
 
-pub use aes::{DEFAULT_AES_KEY, DEFAULT_AES_KEY_HEX, decrypt_aes256_ecb_in_place, parse_aes_key_hex};
+pub use aes::{
+    DEFAULT_AES_KEY, DEFAULT_AES_KEY_HEX, decrypt_aes256_ecb_in_place, parse_aes_key_hex,
+};
 pub use bc::{PixelFormat, crop_rgba8, decode_mip_to_rgba8, decode_png_rgba8, encode_png_rgba8};
 pub use luac::{
     LuaConfigTable, LuaValue, XDI_LUA_HEADER, decrypt_luac_bytes, extract_xdi_strings,
@@ -76,9 +78,8 @@ impl PakVfs {
         lang_code: &str,
         prefix_filter: Option<&str>,
     ) -> Result<BTreeMap<String, String>, String> {
-        let vpath = format!(
-            "UE_game/Content/Script/Data/language/config_multi_language_{lang_code}.bin"
-        );
+        let vpath =
+            format!("UE_game/Content/Script/Data/language/config_multi_language_{lang_code}.bin");
         let raw = self.read_path(&vpath)?;
         Ok(parse_multi_language_bin(&raw, prefix_filter))
     }

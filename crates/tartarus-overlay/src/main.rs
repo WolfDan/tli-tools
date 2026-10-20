@@ -11,12 +11,13 @@ use std::sync::{Arc, Mutex};
 
 use capture::{GameWindowPlacement, WindowCapturer};
 use gpui::{
+    App, AppContext, Bounds, DisplayId, Point, TitlebarOptions, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowDecorations, WindowKind, WindowOptions,
     layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions},
-    px, size, App, AppContext, Bounds, DisplayId, Point, TitlebarOptions, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowKind, WindowOptions,
+    px, size,
 };
 use state::{
-    initial_snapshot, DisplayTarget, OverlayWindowState, PanelLayout, SharedWorkerChannels,
+    DisplayTarget, OverlayWindowState, PanelLayout, SharedWorkerChannels, initial_snapshot,
 };
 use tray::ControlHub;
 use ui::OverlayView;
@@ -31,12 +32,7 @@ impl log::Log for StderrLogger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            eprintln!(
-                "[{} {}] {}",
-                record.level(),
-                record.target(),
-                record.args()
-            );
+            eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
         }
     }
 
@@ -162,7 +158,9 @@ pub fn open_overlay_window(cx: &mut App, mut state: OverlayWindowState) {
             Ok(_) => {
                 eprintln!(
                     "[tartarus-overlay] opened Wayland LayerShell overlay window (display_id={:?}, margin=({}, {}))",
-                    state.display_target.id(), state.margin_left, state.margin_top
+                    state.display_target.id(),
+                    state.margin_left,
+                    state.margin_top
                 );
                 return;
             }
@@ -195,13 +193,16 @@ pub fn open_overlay_window(cx: &mut App, mut state: OverlayWindowState) {
         ..Default::default()
     };
 
-    match cx.open_window(floating_options, move |window: &mut Window, cx: &mut App| {
-        window.activate_window();
-        let mut s = state_for_float;
-        s.display_target
-            .ensure_default(window.display(cx).map(|d| d.id()));
-        cx.new(|cx| OverlayView::from_state(s, cx))
-    }) {
+    match cx.open_window(
+        floating_options,
+        move |window: &mut Window, cx: &mut App| {
+            window.activate_window();
+            let mut s = state_for_float;
+            s.display_target
+                .ensure_default(window.display(cx).map(|d| d.id()));
+            cx.new(|cx| OverlayView::from_state(s, cx))
+        },
+    ) {
         Ok(_) => {
             eprintln!(
                 "[tartarus-overlay] opened Floating overlay window (display_id={:?})",

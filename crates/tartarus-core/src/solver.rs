@@ -347,11 +347,7 @@ pub fn apply_action(st: &mut SimState, action: &SimAction) -> bool {
             ref vault_ids,
             vault_len,
             escort,
-        } => st.deliver_mask(
-            cell_mask,
-            &vault_ids[..vault_len as usize],
-            escort,
-        ),
+        } => st.deliver_mask(cell_mask, &vault_ids[..vault_len as usize], escort),
         SimAction::Skip => st.skip_delivery(),
         SimAction::Close => st.cancel_early_delivery(),
         SimAction::Early => st.open_early_delivery(),
@@ -547,11 +543,7 @@ pub fn floor_dist(dist: &[f64; 5], floor: u8) -> [f64; 5] {
             }
         }
     }
-    if any {
-        normalize5(&kept)
-    } else {
-        *dist
-    }
+    if any { normalize5(&kept) } else { *dist }
 }
 
 #[inline]
@@ -1213,7 +1205,11 @@ pub fn stair(ctx: &Context, comp: &[u8; 24]) -> f64 {
         let mut fed = 0;
         let eats = ctx.eats_at(t as u8);
         for b in 0..4 {
-            if eats[b].slice().iter().any(|&f| comp[t * 4 + (f as usize)] > 0) {
+            if eats[b]
+                .slice()
+                .iter()
+                .any(|&f| comp[t * 4 + (f as usize)] > 0)
+            {
                 fed += 1;
             }
         }
@@ -1459,7 +1455,10 @@ pub fn appetite_value(ctx: &Context, low: u8, dist: &[f64; 5]) -> f64 {
 }
 
 pub fn hunt_pair_ev(st: &SimState, ctx: &Context, lion_tier: u8, prey_tier: u8) -> f64 {
-    let eff_rounds = st.params.prey_rounds.min(st.max_days.saturating_sub(st.day));
+    let eff_rounds = st
+        .params
+        .prey_rounds
+        .min(st.max_days.saturating_sub(st.day));
     if eff_rounds == 0 {
         return 0.0;
     }
@@ -1583,11 +1582,7 @@ pub fn execution_value(st: &SimState, ctx: &Context, tier: u8, beast: u8, comp: 
     let prey = BEASTS[beast as usize].primary_prey().idx();
     let mut count = 0u8;
     let mut lost = 0.0;
-    let max_t = if same {
-        tier as i16
-    } else {
-        (tier as i16) - 1
-    };
+    let max_t = if same { tier as i16 } else { (tier as i16) - 1 };
     for t in 0..=max_t {
         if same && t != (tier as i16) {
             continue;
@@ -1687,7 +1682,8 @@ pub fn event_worth_of_cell(
         match kind {
             EventKind::Execution => {
                 let (kcomp, _) = composition(st, cell_n as i16);
-                return (execution_value(st, ctx, tier, beast, &kcomp) - ctx.p.exec_margin).max(0.0);
+                return (execution_value(st, ctx, tier, beast, &kcomp) - ctx.p.exec_margin)
+                    .max(0.0);
             }
             EventKind::Trickster => {
                 if tier >= SUPREME {
@@ -1784,11 +1780,7 @@ pub fn expected_unknown_event_worth(st: &SimState, ctx: &Context, comp: &[u8; 24
         w_sum += w;
         v_sum += w * event_worth_of(st, ctx, comp, id);
     }
-    if w_sum > 0.0 {
-        v_sum / w_sum
-    } else {
-        0.0
-    }
+    if w_sum > 0.0 { v_sum / w_sum } else { 0.0 }
 }
 
 pub fn event_why(kind: EventKind) -> &'static str {
@@ -1812,9 +1804,7 @@ pub fn event_why(kind: EventKind) -> &'static str {
         EventKind::Usurp2 => "Usurpation II waits there: 1 random inmate rises 2 tiers",
         EventKind::Usurp3 => "Usurpation III waits there: 2 random inmates rise 2 tiers",
         EventKind::Usurp4 => "Usurpation IV waits there: every inmate rises 2 tiers",
-        EventKind::Ratway => {
-            "the Sewer Ratway waits there: a free move to any cell but the office"
-        }
+        EventKind::Ratway => "the Sewer Ratway waits there: a free move to any cell but the office",
         EventKind::Hunt => {
             "\"Treasure\" Hunt waits there: every locked door holding a Normal or Magic shows its rarity, so the rest hold Rare or better"
         }
@@ -1874,11 +1864,15 @@ pub fn office_values(st: &SimState, ctx: &Context, comp: &[u8; 24]) -> OfficeVal
     };
     let tyranny = if extra > 0 {
         (extra as f64) * bestow
-            + ((extra * INSTIGATE_EVENTS).min(free) as f64) * each * ctx.p.w_instigate * horizon_inst
+            + ((extra * INSTIGATE_EVENTS).min(free) as f64)
+                * each
+                * ctx.p.w_instigate
+                * horizon_inst
     } else {
         0.0
     };
-    let mut instigate = (INSTIGATE_EVENTS.min(free) as f64) * each * ctx.p.w_instigate * horizon_inst;
+    let mut instigate =
+        (INSTIGATE_EVENTS.min(free) as f64) * each * ctx.p.w_instigate * horizon_inst;
     if !st.milestone && st.params.rewards && st.objective_id == ObjectiveId::Incident && free > 0 {
         let need_prog = ObjectiveId::Incident.need();
         if st.objective_progress < need_prog {
@@ -2039,7 +2033,8 @@ pub fn patrol_scores_fast(st: &SimState, ctx: &mut Context) -> ([PatrolCellScore
             } else {
                 0.0
             };
-            score += p.w_open * ((sealed_cnt - (c.sealed as usize)) as f64) * ctx.open_value + dest_val;
+            score +=
+                p.w_open * ((sealed_cnt - (c.sealed as usize)) as f64) * ctx.open_value + dest_val;
         } else if c.sealed && c.nest_due.is_some() {
             score += p.w_nest;
         } else if c.sealed {
@@ -2206,7 +2201,10 @@ pub fn patrol_cell_why(st: &SimState, ctx: &mut Context, n: u8) -> String {
             .count();
         format!("the chain opens {} on the way", plural(sealed_cnt, "door"))
     } else if c.sealed && c.nest_due.is_some() {
-        format!("it destroys the rat nest due on day {}", c.nest_due.unwrap())
+        format!(
+            "it destroys the rat nest due on day {}",
+            c.nest_due.unwrap()
+        )
     } else if c.sealed {
         if c.seen && c.event.is_some() && !c.event_known {
             return "a special event waits behind the door".to_string();
@@ -2518,7 +2516,14 @@ pub fn swap_gain_here(st: &SimState, ctx: &mut Context) -> f64 {
         && st.can_devour_now()
         && st.used.devour_after_swap
         && gain > 0.08
-        && best_meal(ctx, inmate.tier, inmate.beast.idx() as u8, &mut kcomp, kcrowd).0 <= 0.0
+        && best_meal(
+            ctx,
+            inmate.tier,
+            inmate.beast.idx() as u8,
+            &mut kcomp,
+            kcrowd,
+        )
+        .0 <= 0.0
     {
         gain
     } else {
@@ -3432,9 +3437,7 @@ pub fn hide_future(st: &mut SimState, seed: u32) {
                 ObjectiveId::King => st.vault_len > 0 || st.stats.best >= RAINBOW,
                 ObjectiveId::Walk => false,
                 ObjectiveId::Doors => st.stats.opened >= (obj.need() as u16),
-                ObjectiveId::Consume => {
-                    (st.stats.devours + st.stats.chains) >= (obj.need() as u16)
-                }
+                ObjectiveId::Consume => (st.stats.devours + st.stats.chains) >= (obj.need() as u16),
                 ObjectiveId::Incident => false,
                 ObjectiveId::Other => false,
             };
@@ -3825,7 +3828,11 @@ pub fn candidates(st: &SimState) -> Vec<Candidate> {
         if let Some(inmate) = here.inmate {
             out.push(Candidate {
                 action: SimAction::Swap,
-                label: format!("Replace the {} in {}", describe_inmate(inmate), cell_label(here.n)),
+                label: format!(
+                    "Replace the {} in {}",
+                    describe_inmate(inmate),
+                    cell_label(here.n)
+                ),
                 kind: None,
                 points: None,
                 extra: false,
@@ -3923,7 +3930,12 @@ pub struct PlayoutRow {
     pub best: u64,
 }
 
-pub fn summarize(rows: &[PlayoutRow], rounds: usize, target: usize, goal: SolveGoal) -> SolveSummary {
+pub fn summarize(
+    rows: &[PlayoutRow],
+    rounds: usize,
+    target: usize,
+    goal: SolveGoal,
+) -> SolveSummary {
     let mut stats: Vec<(usize, f64, f64, usize)> = rows
         .iter()
         .enumerate()
@@ -4151,7 +4163,11 @@ pub fn solve_parallel_with_candidates(
                 let ref_sealed_cell = rows.iter().find_map(|r| match r.action {
                     SimAction::Patrol { cell: c } => {
                         let cell = &base.cells[c as usize];
-                        if cell.sealed && cell.known == 0 && !cell.scratch && cell.nest_due.is_none() {
+                        if cell.sealed
+                            && cell.known == 0
+                            && !cell.scratch
+                            && cell.nest_due.is_none()
+                        {
                             Some(c as usize)
                         } else {
                             None
@@ -4162,7 +4178,9 @@ pub fn solve_parallel_with_candidates(
 
                 for (i, row) in rows.iter().enumerate() {
                     let mut trial = hidden_base;
-                    if let (Some(ref_c), SimAction::Patrol { cell: c }) = (ref_sealed_cell, row.action) {
+                    if let (Some(ref_c), SimAction::Patrol { cell: c }) =
+                        (ref_sealed_cell, row.action)
+                    {
                         let c_idx = c as usize;
                         if c_idx != ref_c {
                             let tc = &base.cells[c_idx];
@@ -4188,8 +4206,7 @@ pub fn solve_parallel_with_candidates(
                     round_out[i] = if is_challenge {
                         let ch = trial.challenge.as_ref().unwrap();
                         let passed = ch.settled && ch.passed;
-                        let val =
-                            (if passed { PASS_WEIGHT } else { 0.0 }) + (ch.score as f64);
+                        let val = (if passed { PASS_WEIGHT } else { 0.0 }) + (ch.score as f64);
                         (val, usize::from(passed), ch.score as u64, 0)
                     } else {
                         let val = trial.vault_len as f64;
@@ -4237,7 +4254,9 @@ pub fn solve_parallel_with_candidates(
         }
         rounds_done += count;
 
-        if early_stop && rounds_done < max_rollouts && should_stop_rows(&rows, rounds_done, 100, goal)
+        if early_stop
+            && rounds_done < max_rollouts
+            && should_stop_rows(&rows, rounds_done, 100, goal)
         {
             stopped = true;
         }
@@ -4320,11 +4339,7 @@ pub fn convoy_why(st: &SimState, cell_mask: u16, escort: EscortKind, p: &SolverP
     format!("{lead}{keep_text}{voucher_text}")
 }
 
-pub fn reason(
-    st: &SimState,
-    action: &SimAction,
-    params: Option<&'static SolverParams>,
-) -> String {
+pub fn reason(st: &SimState, action: &SimAction, params: Option<&'static SolverParams>) -> String {
     let p = params.unwrap_or_else(|| SolverParams::for_state(st));
     let mut ctx = Context::new(st, p);
     let here = &st.cells[st.position as usize];
@@ -4676,7 +4691,9 @@ pub fn simulate_tool_combos(runs_per_combo: usize, seed: u32) -> (f64, [f64; 31]
 }
 
 pub fn format_tool_combos_rs(base: f64, combo_1: &[f64; 31], combo_2: &[[f64; 31]; 31]) -> String {
-    let mut code = String::from("// Auto-generated by `tartarus-data --emit-combos` (pure-Rust Rayon simulation).\n");
+    let mut code = String::from(
+        "// Auto-generated by `tartarus-data --emit-combos` (pure-Rust Rayon simulation).\n",
+    );
     code.push_str(&format!("pub const COMBO_BASE: f64 = {base:.6};\n"));
     code.push_str("pub static COMBO_1: [f64; 31] = [\n");
     for x in combo_1 {
@@ -4701,4 +4718,3 @@ pub fn format_tool_combos_rs(base: f64, combo_1: &[f64; 31], combo_2: &[[f64; 31
     code.push_str("];\n");
     code
 }
-

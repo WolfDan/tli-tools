@@ -2,8 +2,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 #[cfg(target_os = "windows")]
 use global_hotkey::{
-    hotkey::{Code, HotKey, Modifiers},
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
+    hotkey::{Code, HotKey, Modifiers},
 };
 
 use crate::state::UiToWorker;
@@ -112,8 +112,8 @@ impl ControlHub {
 #[cfg(target_os = "linux")]
 fn run_linux_x11_hotkeys(tx: Sender<ControlCommand>, worker_tx: Sender<UiToWorker>) {
     use x11rb::connection::Connection;
-    use x11rb::protocol::xproto::{ConnectionExt, GrabMode, ModMask};
     use x11rb::protocol::Event;
+    use x11rb::protocol::xproto::{ConnectionExt, GrabMode, ModMask};
 
     let Ok((conn, screen_num)) = x11rb::connect(None) else {
         return;

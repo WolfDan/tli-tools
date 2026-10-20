@@ -6,7 +6,7 @@ use tartarus_scan::{CaptureTrigger, ImageView, RunTracker, ScanArena, ScanProfil
 
 use crate::capture::{GameWindowPlacement, StillnessTracker, WindowCapturer};
 use crate::log_watcher::{LogEvent, LogWatcher};
-use crate::state::{read_process_rss_mb, OverlaySnapshot, UiToWorker, WorkerToUi};
+use crate::state::{OverlaySnapshot, UiToWorker, WorkerToUi, read_process_rss_mb};
 
 const PLAYOUT_BUDGET: usize = 96_000;
 const SOLVE_BUDGET_MS: u64 = 85;

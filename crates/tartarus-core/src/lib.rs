@@ -41,8 +41,8 @@ mod tests {
         st.add_tool(ToolId::Rope);
         let gains2 = tool_gains(&st, &opts).expect("gains with held tool");
         assert!(!gains2[ToolId::Crown.idx()].is_nan());
-        let ro = reroll_odds(&st, &[ToolId::Ironbox, ToolId::Forged, ToolId::Axe])
-            .expect("reroll odds");
+        let ro =
+            reroll_odds(&st, &[ToolId::Ironbox, ToolId::Forged, ToolId::Axe]).expect("reroll odds");
         assert!(ro.next > ro.now);
     }
 
@@ -59,7 +59,10 @@ mod tests {
         assert_eq!(EventKind::Transfer.weight(), 20);
         assert_eq!(EventKind::Usurp1.weight(), 10);
         assert_eq!(EventKind::from_str("closed"), Some(EventKind::Trickster));
-        assert_eq!(EventKind::from_str("efficiency"), Some(EventKind::Execution));
+        assert_eq!(
+            EventKind::from_str("efficiency"),
+            Some(EventKind::Execution)
+        );
         assert_eq!(EventKind::from_str("whispers"), Some(EventKind::Crow));
         assert_eq!(EventKind::from_str("treasure"), Some(EventKind::Hunt));
         assert_eq!(ObjectiveId::from_str("devour"), Some(ObjectiveId::Consume));
@@ -143,13 +146,22 @@ mod tests {
         let ctx = Context::new(&st, &DEFAULT_SOLVER_PARAMS);
         assert!(ctx.guillotine);
         assert_eq!(ctx.min_meal(2, Beast::Wolf.idx() as u8), 0);
-        assert_eq!(ctx.meals_at(2, Beast::Wolf.idx() as u8, 0).slice(), &[Beast::Rat as u8]);
+        assert_eq!(
+            ctx.meals_at(2, Beast::Wolf.idx() as u8, 0).slice(),
+            &[Beast::Rat as u8]
+        );
 
         let odds = chain_odds(&st, 1, 2);
-        assert!((odds.bites - 1.25).abs() < 1e-6, "Guillotine wolf should eat tier-0 Rat + 25% chance to stay Wolf and chain into tier-2 Rat");
+        assert!(
+            (odds.bites - 1.25).abs() < 1e-6,
+            "Guillotine wolf should eat tier-0 Rat + 25% chance to stay Wolf and chain into tier-2 Rat"
+        );
         st.start_event = StartEventId::CageFight;
         let odds_cf = chain_odds(&st, 1, 2);
-        assert!((odds_cf.bites - 2.0).abs() < 1e-6, "With CageFight + Guillotine, Wolf stays Wolf and deterministically chains into tier-2 Rat");
+        assert!(
+            (odds_cf.bites - 2.0).abs() < 1e-6,
+            "With CageFight + Guillotine, Wolf stays Wolf and deterministically chains into tier-2 Rat"
+        );
     }
 
     #[test]
@@ -242,15 +254,26 @@ mod tests {
             dt_ms,
             (runs as f64) / (dt_ms / 1000.0)
         );
-        assert!(ev > 2.0, "Expected > 2.0 Rainbows/run with Crown+Rope, got {ev}");
+        assert!(
+            ev > 2.0,
+            "Expected > 2.0 Rainbows/run with Crown+Rope, got {ev}"
+        );
     }
 
     #[test]
     fn test_transfer_event_accepts_on_developed_board_and_foodchain_alias() {
-        assert_eq!(StartEventId::from_str("foodchain"), Some(StartEventId::CageFight));
+        assert_eq!(
+            StartEventId::from_str("foodchain"),
+            Some(StartEventId::CageFight)
+        );
 
         let mut st = SimState::new_blank(GameMode::Drill, true, 20);
-        for (cn, tier) in [(1usize, SUPREME), (2usize, 3), (3usize, SUPREME), (4usize, 3)] {
+        for (cn, tier) in [
+            (1usize, SUPREME),
+            (2usize, 3),
+            (3usize, SUPREME),
+            (4usize, 3),
+        ] {
             st.cells[cn].sealed = false;
             st.cells[cn].inmate = Some(Inmate {
                 id: cn as u16,
@@ -270,7 +293,10 @@ mod tests {
         );
         assert!(apply_action(&mut st, &SimAction::Event { accept: true }));
         let open_count = st.cells.iter().filter(|c| !c.sealed).count();
-        assert_eq!(open_count, 6, "Office + 4 open cells + 1 replicated sealed cell = 6 open cells");
+        assert_eq!(
+            open_count, 6,
+            "Office + 4 open cells + 1 replicated sealed cell = 6 open cells"
+        );
     }
 
     #[test]
@@ -314,9 +340,12 @@ mod tests {
             summary.options.len(),
             solve_ms,
             (total_playouts as f64) / (solve_ms / 1000.0),
-            summary.options.first().map(|r| r.label.as_str()).unwrap_or("none")
+            summary
+                .options
+                .first()
+                .map(|r| r.label.as_str())
+                .unwrap_or("none")
         );
         assert!(summary.done);
     }
 }
-

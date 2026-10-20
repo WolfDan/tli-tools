@@ -110,7 +110,10 @@ fn read_f64_le(buf: &[u8], pos: &mut usize) -> Result<f64, String> {
 /// Reads an XDI Lua 5.3 string where the length prefix has `+ 10` added to the byte length.
 fn read_xdi_string(buf: &[u8], pos: &mut usize) -> Result<String, String> {
     if *pos >= buf.len() {
-        return Err(format!("Unexpected EOF reading string length at 0x{:x}", *pos));
+        return Err(format!(
+            "Unexpected EOF reading string length at 0x{:x}",
+            *pos
+        ));
     }
     let lb = buf[*pos];
     *pos += 1;
@@ -382,11 +385,10 @@ pub fn parse_multi_language_bin(
                     let k2_start = k1_end + 4;
                     let k2_end = k2_start + klen;
                     if data[k1_start..k1_end] == data[k2_start..k2_end] {
-                        let flag =
-                            u32::from_le_bytes(data[k2_end..k2_end + 4].try_into().unwrap());
-                        let vlen = u32::from_le_bytes(
-                            data[k2_end + 4..k2_end + 8].try_into().unwrap(),
-                        ) as usize;
+                        let flag = u32::from_le_bytes(data[k2_end..k2_end + 4].try_into().unwrap());
+                        let vlen =
+                            u32::from_le_bytes(data[k2_end + 4..k2_end + 8].try_into().unwrap())
+                                as usize;
                         let val_start = k2_end + 8;
                         let val_end = val_start.saturating_add(vlen);
                         if flag == 0 && vlen <= 32768 && val_end <= n {
@@ -421,5 +423,8 @@ pub fn strip_rich_text(input: &str) -> String {
             _ => {}
         }
     }
-    out.replace("\\n", " ").split_whitespace().collect::<Vec<_>>().join(" ")
+    out.replace("\\n", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }

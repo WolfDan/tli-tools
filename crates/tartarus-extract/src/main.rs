@@ -78,7 +78,10 @@ fn run() -> Result<(), String> {
 
     match cmd {
         "list" => {
-            let filter = pos_args.get(1).map(|s| s.to_lowercase()).unwrap_or_default();
+            let filter = pos_args
+                .get(1)
+                .map(|s| s.to_lowercase())
+                .unwrap_or_default();
             let mut count = 0usize;
             for (vpath, meta) in &vfs.entries {
                 if filter.is_empty() || vpath.to_lowercase().contains(&filter) {
@@ -94,7 +97,10 @@ fn run() -> Result<(), String> {
                     count += 1;
                 }
             }
-            eprintln!("Matched {count} / {} total indexed files.", vfs.entries.len());
+            eprintln!(
+                "Matched {count} / {} total indexed files.",
+                vfs.entries.len()
+            );
         }
         "raw" => {
             let filter = pos_args
@@ -121,8 +127,9 @@ fn run() -> Result<(), String> {
             let ok_count = AtomicUsize::new(0);
             let err_count = AtomicUsize::new(0);
 
-            matched.par_iter().for_each(|meta| {
-                match vfs.read_entry(meta) {
+            matched
+                .par_iter()
+                .for_each(|meta| match vfs.read_entry(meta) {
                     Ok(bytes) => {
                         let dest = out_dir.join(&meta.virtual_path);
                         if let Some(parent) = dest.parent() {
@@ -138,8 +145,7 @@ fn run() -> Result<(), String> {
                         eprintln!("WARN: {}: {e}", meta.virtual_path);
                         err_count.fetch_add(1, Ordering::Relaxed);
                     }
-                }
-            });
+                });
 
             eprintln!(
                 "Done: {} extracted, {} failed.",
@@ -189,8 +195,9 @@ fn run() -> Result<(), String> {
             let ok_tex = AtomicUsize::new(0);
             let skip_tex = AtomicUsize::new(0);
 
-            uassets.par_iter().for_each(|meta| {
-                match vfs.decode_texture(&meta.virtual_path) {
+            uassets
+                .par_iter()
+                .for_each(|meta| match vfs.decode_texture(&meta.virtual_path) {
                     Ok(tex) => {
                         let rel_png = Path::new(&meta.virtual_path).with_extension("png");
                         let dest = out_dir.join(rel_png);
@@ -205,8 +212,7 @@ fn run() -> Result<(), String> {
                     Err(_) => {
                         skip_tex.fetch_add(1, Ordering::Relaxed);
                     }
-                }
-            });
+                });
 
             // 2. Group UPaperSprite assets by their parent atlas so each atlas is decoded only once
             let mut sprites_by_atlas: std::collections::BTreeMap<
@@ -223,8 +229,10 @@ fn run() -> Result<(), String> {
             }
 
             let ok_sprites = AtomicUsize::new(0);
-            let atlas_groups: Vec<(&String, &Vec<(&PakEntryMeta, tartarus_extract::PaperSpriteInfo)>)> =
-                sprites_by_atlas.iter().collect();
+            let atlas_groups: Vec<(
+                &String,
+                &Vec<(&PakEntryMeta, tartarus_extract::PaperSpriteInfo)>,
+            )> = sprites_by_atlas.iter().collect();
 
             atlas_groups.par_iter().for_each(|(atlas_path, list)| {
                 if let Ok(atlas_tex) = vfs.decode_texture(atlas_path) {
@@ -301,9 +309,7 @@ fn run() -> Result<(), String> {
             matched.par_iter().for_each(|meta| {
                 if let Ok(raw) = vfs.read_entry(meta) {
                     let dec = decrypt_luac_bytes(&raw);
-                    let dest_luac = out_dir
-                        .join(&meta.virtual_path)
-                        .with_extension("luac");
+                    let dest_luac = out_dir.join(&meta.virtual_path).with_extension("luac");
                     if let Some(parent) = dest_luac.parent() {
                         let _ = fs::create_dir_all(parent);
                     }

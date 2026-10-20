@@ -5583,6 +5583,7 @@ dependencies = [
 name = "tartarus-scan"
 version = "0.3.0"
 dependencies = [
+ "png",
  "rayon",
  "serde",
  "serde_json",
@@ -7106,6 +7107,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "workspace-hack"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.2",
  "bytemuck",
  "crc32fast",
  "either",

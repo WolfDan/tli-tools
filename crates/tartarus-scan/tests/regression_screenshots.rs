@@ -1,335 +1,12 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+mod common;
 
+use common::{fixture_path, load_png_rgba8};
 use tartarus_core::{BoardStep, CellKind, ObjectiveId, StartEventId, ToolId};
 use tartarus_scan::{
     CaptureTrigger, ImageView, RunTracker, ScanArena, ScanOptions, ScannedCellKind, TitleRead,
     read_objective_title_with_slot, scan_image_with_arena, scan_image_with_options_and_arena,
     scan_pick_with_slot,
 };
-
-fn workspace_root() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root")
-        .to_path_buf()
-}
-
-fn fixture_path(name: &str) -> PathBuf {
-    workspace_root().join("tests").join("fixtures").join(name)
-}
-
-struct BitReader<'a> {
-    data: &'a [u8],
-    byte_pos: usize,
-    bit_buf: u64,
-    bit_cnt: u32,
-}
-
-impl<'a> BitReader<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self {
-            data,
-            byte_pos: 0,
-            bit_buf: 0,
-            bit_cnt: 0,
-        }
-    }
-
-    #[inline]
-    fn ensure(&mut self, n: u32) {
-        while self.bit_cnt < n && self.byte_pos < self.data.len() {
-            self.bit_buf |= (self.data[self.byte_pos] as u64) << self.bit_cnt;
-            self.byte_pos += 1;
-            self.bit_cnt += 8;
-        }
-    }
-
-    #[inline]
-    fn read_bits(&mut self, n: u32) -> u32 {
-        if n == 0 {
-            return 0;
-        }
-        self.ensure(n);
-        let val = (self.bit_buf & ((1u64 << n) - 1)) as u32;
-        self.bit_buf >>= n;
-        self.bit_cnt -= n;
-        val
-    }
-
-    fn align_byte(&mut self) {
-        let rem = self.bit_cnt & 7;
-        self.bit_buf >>= rem;
-        self.bit_cnt -= rem;
-    }
-}
-
-struct HuffTable {
-    counts: [u16; 16],
-    symbols: Vec<u16>,
-}
-
-impl HuffTable {
-    fn build(lengths: &[u8]) -> Self {
-        let mut counts = [0u16; 16];
-        for &l in lengths {
-            if l > 0 {
-                counts[l as usize] += 1;
-            }
-        }
-        let mut offsets = [0u16; 16];
-        let mut total = 0u16;
-        for bits in 1..16 {
-            offsets[bits] = total;
-            total += counts[bits];
-        }
-        let mut symbols = vec![0u16; total as usize];
-        for (sym, &l) in lengths.iter().enumerate() {
-            if l > 0 {
-                let idx = offsets[l as usize] as usize;
-                symbols[idx] = sym as u16;
-                offsets[l as usize] += 1;
-            }
-        }
-        Self { counts, symbols }
-    }
-
-    #[inline]
-    fn decode(&self, br: &mut BitReader<'_>) -> u16 {
-        br.ensure(15);
-        let mut code = 0i32;
-        let mut first = 0i32;
-        let mut index = 0i32;
-        for len in 1..=15 {
-            code |= (br.bit_buf & 1) as i32;
-            br.bit_buf >>= 1;
-            br.bit_cnt -= 1;
-            let count = self.counts[len] as i32;
-            if code - count < first {
-                return self.symbols[(index + (code - first)) as usize];
-            }
-            index += count;
-            first += count;
-            first <<= 1;
-            code <<= 1;
-        }
-        panic!("invalid DEFLATE Huffman code");
-    }
-}
-
-fn inflate_zlib(zlib: &[u8], capacity: usize) -> Vec<u8> {
-    assert!(zlib.len() >= 6, "zlib stream too short");
-    let cmf = zlib[0];
-    let flg = zlib[1];
-    assert_eq!(cmf & 0x0F, 8, "unsupported zlib compression method");
-    let start = if (flg & 0x20) != 0 { 6 } else { 2 };
-    let mut br = BitReader::new(&zlib[start..]);
-    let mut out = Vec::with_capacity(capacity);
-
-    const LEN_BASE: [u16; 29] = [
-        3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115,
-        131, 163, 195, 227, 258,
-    ];
-    const LEN_EXTRA: [u8; 29] = [
-        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
-    ];
-    const DIST_BASE: [u16; 30] = [
-        1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
-        2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
-    ];
-    const DIST_EXTRA: [u8; 30] = [
-        0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12,
-        13, 13,
-    ];
-    const CL_ORDER: [usize; 19] = [
-        16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
-    ];
-
-    loop {
-        let bfinal = br.read_bits(1);
-        let btype = br.read_bits(2);
-        match btype {
-            0 => {
-                br.align_byte();
-                let len = br.read_bits(16) as usize;
-                let _nlen = br.read_bits(16);
-                for _ in 0..len {
-                    out.push(br.read_bits(8) as u8);
-                }
-            }
-            1 | 2 => {
-                let (lit_table, dist_table) = if btype == 1 {
-                    let mut ll = vec![0u8; 288];
-                    ll[0..=143].fill(8);
-                    ll[144..=255].fill(9);
-                    ll[256..=279].fill(7);
-                    ll[280..=287].fill(8);
-                    let dl = vec![5u8; 32];
-                    (HuffTable::build(&ll), HuffTable::build(&dl))
-                } else {
-                    let hlit = br.read_bits(5) as usize + 257;
-                    let hdist = br.read_bits(5) as usize + 1;
-                    let hclen = br.read_bits(4) as usize + 4;
-                    let mut cl_lens = [0u8; 19];
-                    for i in 0..hclen {
-                        cl_lens[CL_ORDER[i]] = br.read_bits(3) as u8;
-                    }
-                    let cl_table = HuffTable::build(&cl_lens);
-                    let mut lens = Vec::with_capacity(hlit + hdist);
-                    while lens.len() < hlit + hdist {
-                        let s = cl_table.decode(&mut br);
-                        match s {
-                            0..=15 => lens.push(s as u8),
-                            16 => {
-                                let prev = *lens.last().expect("repeat previous length");
-                                let rep = br.read_bits(2) as usize + 3;
-                                lens.extend(std::iter::repeat_n(prev, rep));
-                            }
-                            17 => {
-                                let rep = br.read_bits(3) as usize + 3;
-                                lens.extend(std::iter::repeat_n(0, rep));
-                            }
-                            18 => {
-                                let rep = br.read_bits(7) as usize + 11;
-                                lens.extend(std::iter::repeat_n(0, rep));
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
-                    (
-                        HuffTable::build(&lens[..hlit]),
-                        HuffTable::build(&lens[hlit..hlit + hdist]),
-                    )
-                };
-
-                loop {
-                    let sym = lit_table.decode(&mut br) as usize;
-                    if sym < 256 {
-                        out.push(sym as u8);
-                    } else if sym == 256 {
-                        break;
-                    } else {
-                        let l_idx = sym - 257;
-                        let length = LEN_BASE[l_idx] as usize
-                            + br.read_bits(LEN_EXTRA[l_idx] as u32) as usize;
-                        let d_sym = dist_table.decode(&mut br) as usize;
-                        let dist = DIST_BASE[d_sym] as usize
-                            + br.read_bits(DIST_EXTRA[d_sym] as u32) as usize;
-                        let start_idx = out.len() - dist;
-                        for i in 0..length {
-                            let b = out[start_idx + i];
-                            out.push(b);
-                        }
-                    }
-                }
-            }
-            _ => panic!("invalid DEFLATE block type {btype}"),
-        }
-        if bfinal != 0 {
-            break;
-        }
-    }
-    out
-}
-
-#[inline]
-fn paeth_predictor(a: u8, b: u8, c: u8) -> u8 {
-    let p = (a as i32) + (b as i32) - (c as i32);
-    let pa = (p - (a as i32)).abs();
-    let pb = (p - (b as i32)).abs();
-    let pc = (p - (c as i32)).abs();
-    if pa <= pb && pa <= pc {
-        a
-    } else if pb <= pc {
-        b
-    } else {
-        c
-    }
-}
-
-fn load_png_rgba8(path: &Path) -> (usize, usize, Vec<u8>) {
-    let png = fs::read(path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    assert!(
-        png.len() >= 8 && &png[0..8] == &[137, 80, 78, 71, 13, 10, 26, 10],
-        "invalid PNG signature in {}",
-        path.display()
-    );
-    let mut pos = 8usize;
-    let mut width = 0usize;
-    let mut height = 0usize;
-    let mut color_type = 0u8;
-    let mut idat = Vec::new();
-
-    while pos + 12 <= png.len() {
-        let len = u32::from_be_bytes(png[pos..pos + 4].try_into().unwrap()) as usize;
-        let tag = &png[pos + 4..pos + 8];
-        if pos + 12 + len > png.len() {
-            break;
-        }
-        let data = &png[pos + 8..pos + 8 + len];
-        if tag == b"IHDR" && len >= 13 {
-            width = u32::from_be_bytes(data[0..4].try_into().unwrap()) as usize;
-            height = u32::from_be_bytes(data[4..8].try_into().unwrap()) as usize;
-            let bit_depth = data[8];
-            color_type = data[9];
-            assert!(
-                bit_depth == 8 && (color_type == 2 || color_type == 6),
-                "unsupported PNG format in {}: bit_depth={bit_depth} color_type={color_type}",
-                path.display()
-            );
-        } else if tag == b"IDAT" {
-            idat.extend_from_slice(data);
-        } else if tag == b"IEND" {
-            break;
-        }
-        pos += 12 + len;
-    }
-
-    let bpp = if color_type == 6 { 4usize } else { 3usize };
-    let stride = width * bpp;
-    let raw = inflate_zlib(&idat, (stride + 1) * height);
-
-    let mut out = vec![0u8; width * height * 4];
-    let mut prev_row = vec![0u8; stride];
-    let mut cur_row = vec![0u8; stride];
-
-    for y in 0..height {
-        let row_start = y * (stride + 1);
-        let filter = raw[row_start];
-        let src = &raw[row_start + 1..row_start + 1 + stride];
-        for i in 0..stride {
-            let a = if i >= bpp { cur_row[i - bpp] } else { 0 };
-            let b = prev_row[i];
-            let c = if i >= bpp { prev_row[i - bpp] } else { 0 };
-            cur_row[i] = match filter {
-                0 => src[i],
-                1 => src[i].wrapping_add(a),
-                2 => src[i].wrapping_add(b),
-                3 => src[i].wrapping_add(((a as u16 + b as u16) >> 1) as u8),
-                4 => src[i].wrapping_add(paeth_predictor(a, b, c)),
-                _ => src[i],
-            };
-        }
-        let dst_row = &mut out[y * width * 4..(y + 1) * width * 4];
-        if bpp == 4 {
-            dst_row.copy_from_slice(&cur_row);
-        } else {
-            for x in 0..width {
-                let d = x * 4;
-                let s = x * 3;
-                dst_row[d] = cur_row[s];
-                dst_row[d + 1] = cur_row[s + 1];
-                dst_row[d + 2] = cur_row[s + 2];
-                dst_row[d + 3] = 255;
-            }
-        }
-        prev_row.copy_from_slice(&cur_row);
-    }
-
-    (width, height, out)
-}
 
 #[test]
 fn test_board_cell06_and_cell10_warden_localization() {
@@ -387,7 +64,10 @@ fn test_chain_consume_screens_never_recommend_end_day() {
         };
         let mut tracker = RunTracker::new();
         let (ok, _, _) = tracker.process_frame(&view, CaptureTrigger::Manual, &mut arena);
-        assert!(ok, "{filename}: should recognize board / chain consume screen");
+        assert!(
+            ok,
+            "{filename}: should recognize board / chain consume screen"
+        );
         assert!(
             tracker.model.step == BoardStep::Chain || tracker.model.step == BoardStep::Manage,
             "{filename}: expected Chain or Manage step, got {:?}",
@@ -491,7 +171,10 @@ fn test_pick_three_relics_and_start_event_popup() {
     );
     assert_eq!(tracker3.model.objective, ObjectiveId::Doors);
     assert!(
-        status3.as_deref().unwrap_or("").contains("Behind Cell Doors"),
+        status3
+            .as_deref()
+            .unwrap_or("")
+            .contains("Behind Cell Doors"),
         "expected status to mention Behind Cell Doors, got {:?}",
         status3
     );
@@ -541,8 +224,13 @@ fn test_day5_and_day13_supreme_jaws_chromatic_and_sequence() {
     assert_eq!(cells5[9].kind, ScannedCellKind::Inmate);
     assert_eq!(cells5[9].tier, 4, "Cell 10 (idx 9) is a Supreme Lion");
 
-    let (ok5, _, _) =
-        tracker.process_frame(&view5, CaptureTrigger::Board { treasure_view: false }, &mut arena);
+    let (ok5, _, _) = tracker.process_frame(
+        &view5,
+        CaptureTrigger::Board {
+            treasure_view: false,
+        },
+        &mut arena,
+    );
     assert!(ok5);
     assert_eq!(
         tracker.model.checks, 0,
@@ -581,7 +269,10 @@ fn test_day5_and_day13_supreme_jaws_chromatic_and_sequence() {
         "Day 13 screenshot shows 7 Chromatic Prisoners"
     );
     let cells13 = scan13.cells.expect("Day 13 cells");
-    assert!(cells13[3].jaws, "Cell 04 (idx 3) on Day 13 has a jaws badge");
+    assert!(
+        cells13[3].jaws,
+        "Cell 04 (idx 3) on Day 13 has a jaws badge"
+    );
     assert_eq!(cells13[9].tier, 4);
     assert!(
         cells13[9].jaws,
@@ -595,7 +286,9 @@ fn test_day5_and_day13_supreme_jaws_chromatic_and_sequence() {
 
     let (ok13, _, _) = tracker.process_frame(
         &view13,
-        CaptureTrigger::Board { treasure_view: false },
+        CaptureTrigger::Board {
+            treasure_view: false,
+        },
         &mut arena,
     );
     assert!(ok13);
@@ -667,8 +360,13 @@ fn test_cell06_above_supreme_jaws_cell07() {
     assert!(cells[6].jaws, "Cell 07 (idx 6) has a red jaws badge");
 
     let mut tracker = RunTracker::new();
-    let (ok, _, _) =
-        tracker.process_frame(&view, CaptureTrigger::Board { treasure_view: false }, &mut arena);
+    let (ok, _, _) = tracker.process_frame(
+        &view,
+        CaptureTrigger::Board {
+            treasure_view: false,
+        },
+        &mut arena,
+    );
     assert!(ok);
     assert_eq!(
         tracker.model.checks, 0,
@@ -687,7 +385,10 @@ fn test_office_instigate_bestow_decision() {
     };
     let mut arena = ScanArena::new();
     let scan = scan_image_with_arena(&view, None, &mut arena);
-    assert!(scan.ok, "board_day4_office_instigate_bestow.png must localize");
+    assert!(
+        scan.ok,
+        "board_day4_office_instigate_bestow.png must localize"
+    );
     assert_eq!(scan.warden.map(|w| w.cell), Some(0));
     assert_eq!(
         scan.decision.map(|d| d.office),
@@ -697,8 +398,13 @@ fn test_office_instigate_bestow_decision() {
     );
 
     let mut tracker = RunTracker::new();
-    let (ok, _, _) =
-        tracker.process_frame(&view, CaptureTrigger::Board { treasure_view: false }, &mut arena);
+    let (ok, _, _) = tracker.process_frame(
+        &view,
+        CaptureTrigger::Board {
+            treasure_view: false,
+        },
+        &mut arena,
+    );
     assert!(ok);
     assert!(tracker.last_board_had_cards);
     assert_eq!(tracker.model.warden, 0);
@@ -739,7 +445,9 @@ fn test_office_instigate_bestow_decision() {
     let mut early_tracker = RunTracker::new();
     let (ok_early, _, _) = early_tracker.process_frame(
         &early_view,
-        CaptureTrigger::Board { treasure_view: false },
+        CaptureTrigger::Board {
+            treasure_view: false,
+        },
         &mut arena,
     );
     assert!(ok_early);
@@ -773,8 +481,13 @@ fn test_hud_objective_and_scan_latency_benchmark() {
         data: &rgba,
     };
     let mut tracker = RunTracker::new();
-    let (ok, _, _) =
-        tracker.process_frame(&view, CaptureTrigger::Board { treasure_view: false }, &mut arena);
+    let (ok, _, _) = tracker.process_frame(
+        &view,
+        CaptureTrigger::Board {
+            treasure_view: false,
+        },
+        &mut arena,
+    );
     assert!(ok);
     assert_eq!(
         tracker.model.objective,
@@ -903,10 +616,14 @@ fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
             "profile: loc={:.2}ms cells={:.2}ms ocr={:.2}ms total={:.2}ms",
             res.profile.loc_ms, res.profile.cells_ms, res.profile.ocr_ms, res.profile.total_ms
         );
-        println!("warden={:?} days={:?} chromatic={:?}", res.warden, res.days, res.chromatic);
+        println!(
+            "warden={:?} days={:?} chromatic={:?}",
+            res.warden, res.days, res.chromatic
+        );
         println!("loc={:?}", res.loc);
         if let Some(loc) = res.loc {
-            let (t_list, lbl) = tartarus_scan::read_tools_with_slot(&view, &loc, &mut arena.slots[0]);
+            let (t_list, lbl) =
+                tartarus_scan::read_tools_with_slot(&view, &loc, &mut arena.slots[0]);
             println!("read_tools label={:?} tools={:?}", lbl, t_list.as_slice());
         }
         println!("doors={:?}", res.doors);
@@ -942,7 +659,10 @@ fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
             tracker.model.checks
         );
         println!("notes={:?}", tracker.last_notes);
-        println!("move_text='{}' elapsed={}ms", snap.move_text, snap.elapsed_ms);
+        println!(
+            "move_text='{}' elapsed={}ms",
+            snap.move_text, snap.elapsed_ms
+        );
         for opt in &snap.options {
             println!("  opt: '{}' -> {}", opt.label, opt.value_text);
         }
@@ -952,34 +672,61 @@ fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
     let mut seq_tracker = RunTracker::new();
     seq_tracker.log_days = Some((3, 20));
     let (w1, h1, rgba1) = load_png_rgba8(&fixture_path("board_day3_doors_7_11_12.png"));
-    let view1 = ImageView { width: w1, height: h1, data: &rgba1 };
+    let view1 = ImageView {
+        width: w1,
+        height: h1,
+        data: &rgba1,
+    };
     let (ok1, _, prof1) = seq_tracker.process_frame(
         &view1,
-        tartarus_scan::CaptureTrigger::Board { treasure_view: false },
+        tartarus_scan::CaptureTrigger::Board {
+            treasure_view: false,
+        },
         &mut arena,
     );
     assert!(ok1);
     assert_eq!(seq_tracker.model.tools.as_slice(), &[ToolId::Crown]);
-    assert!(prof1.total_ms < 5.0, "expected scan < 5ms, got {:.2}ms", prof1.total_ms);
+    assert!(
+        prof1.total_ms < 5.0,
+        "expected scan < 5ms, got {:.2}ms",
+        prof1.total_ms
+    );
     let snap1 = seq_tracker.model.evaluate(96_000, 85, 42);
-    assert!(snap1.elapsed_ms < 50, "expected solve < 50ms, got {}ms", snap1.elapsed_ms);
+    assert!(
+        snap1.elapsed_ms < 50,
+        "expected solve < 50ms, got {}ms",
+        snap1.elapsed_ms
+    );
     assert_eq!(snap1.options.len(), 3);
 
     seq_tracker.log_days = Some((4, 20));
     let (w2, h2, rgba2) = load_png_rgba8(&fixture_path("board_day4_doors_15_16_office.png"));
-    let view2 = ImageView { width: w2, height: h2, data: &rgba2 };
+    let view2 = ImageView {
+        width: w2,
+        height: h2,
+        data: &rgba2,
+    };
     let (ok2, _, prof2) = seq_tracker.process_frame(
         &view2,
-        tartarus_scan::CaptureTrigger::Board { treasure_view: false },
+        tartarus_scan::CaptureTrigger::Board {
+            treasure_view: false,
+        },
         &mut arena,
     );
     assert!(ok2);
     assert_eq!(seq_tracker.model.tools.as_slice(), &[ToolId::Crown]);
-    assert!(prof2.total_ms < 5.0, "expected scan < 5ms, got {:.2}ms", prof2.total_ms);
+    assert!(
+        prof2.total_ms < 5.0,
+        "expected scan < 5ms, got {:.2}ms",
+        prof2.total_ms
+    );
     let snap2 = seq_tracker.model.evaluate(96_000, 85, 42);
     assert_eq!(snap2.options.len(), 3);
     assert!(
-        snap2.options.iter().any(|o| o.label.contains("Interrogation Room")),
+        snap2
+            .options
+            .iter()
+            .any(|o| o.label.contains("Interrogation Room")),
         "expected Interrogation Room in options: {:?}",
         snap2.options
     );
@@ -987,10 +734,16 @@ fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
 
     seq_tracker.log_days = Some((11, 20));
     let (w3, h3, rgba3) = load_png_rgba8(&fixture_path("board_day11_cell11_lion_hunt_replace.png"));
-    let view3 = ImageView { width: w3, height: h3, data: &rgba3 };
+    let view3 = ImageView {
+        width: w3,
+        height: h3,
+        data: &rgba3,
+    };
     let (ok3, _, prof3) = seq_tracker.process_frame(
         &view3,
-        tartarus_scan::CaptureTrigger::Board { treasure_view: false },
+        tartarus_scan::CaptureTrigger::Board {
+            treasure_view: false,
+        },
         &mut arena,
     );
     assert!(ok3);
@@ -999,14 +752,37 @@ fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
         &[ToolId::Crown, ToolId::Trap],
         "expected mid-run Trap instrument to be recognized alongside Crown"
     );
-    assert!(!seq_tracker.model.no_swap, "expected Replace to be available");
-    assert!(!seq_tracker.model.no_devour, "expected Consume to be available");
-    assert!(prof3.total_ms < 5.0, "expected scan < 5ms, got {:.2}ms", prof3.total_ms);
+    assert!(
+        !seq_tracker.model.no_swap,
+        "expected Replace to be available"
+    );
+    assert!(
+        !seq_tracker.model.no_devour,
+        "expected Consume to be available"
+    );
+    assert!(
+        prof3.total_ms < 5.0,
+        "expected scan < 5ms, got {:.2}ms",
+        prof3.total_ms
+    );
     let snap3 = seq_tracker.model.evaluate(96_000, 85, 42);
-    assert_eq!(snap3.options.len(), 4, "expected Hunt, Replace, Consume, and End options");
+    assert_eq!(
+        snap3.options.len(),
+        4,
+        "expected Hunt, Replace, Consume, and End options"
+    );
     assert!(snap3.options.iter().any(|o| o.label.starts_with("Hunt:")));
-    assert!(snap3.options.iter().any(|o| o.label.starts_with("Replace ")));
-    assert!(snap3.options.iter().any(|o| o.label.starts_with("Consume ")));
+    assert!(
+        snap3
+            .options
+            .iter()
+            .any(|o| o.label.starts_with("Replace "))
+    );
+    assert!(
+        snap3
+            .options
+            .iter()
+            .any(|o| o.label.starts_with("Consume "))
+    );
     assert!(snap3.options.iter().any(|o| o.label == "End the day"));
 }
-

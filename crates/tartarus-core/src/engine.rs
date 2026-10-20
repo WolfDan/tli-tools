@@ -100,8 +100,7 @@ pub const fn tier_name(tier: u8) -> &'static str {
 }
 
 pub const CELL_LABELS: [&str; 16] = [
-    "01", "02", "03", "04", "05", "06", "07", "08",
-    "09", "10", "11", "12", "13", "14", "15", "16",
+    "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16",
 ];
 
 #[inline]
@@ -113,9 +112,24 @@ const INMATE_DESCRIPTIONS: [[&str; 4]; 6] = [
     ["Normal Mammoth", "Normal Lion", "Normal Wolf", "Normal Rat"],
     ["Magic Mammoth", "Magic Lion", "Magic Wolf", "Magic Rat"],
     ["Rare Mammoth", "Rare Lion", "Rare Wolf", "Rare Rat"],
-    ["Legendary Mammoth", "Legendary Lion", "Legendary Wolf", "Legendary Rat"],
-    ["Supreme Mammoth", "Supreme Lion", "Supreme Wolf", "Supreme Rat"],
-    ["Rainbow Mammoth", "Rainbow Lion", "Rainbow Wolf", "Rainbow Rat"],
+    [
+        "Legendary Mammoth",
+        "Legendary Lion",
+        "Legendary Wolf",
+        "Legendary Rat",
+    ],
+    [
+        "Supreme Mammoth",
+        "Supreme Lion",
+        "Supreme Wolf",
+        "Supreme Rat",
+    ],
+    [
+        "Rainbow Mammoth",
+        "Rainbow Lion",
+        "Rainbow Wolf",
+        "Rainbow Rat",
+    ],
 ];
 
 #[inline]
@@ -1865,7 +1879,9 @@ impl SimState {
 
         if is_patrol {
             if self.has_tool(ToolId::Dogtag)
-                && self.cells[cell_idx].inmate.is_some_and(|i| i.id == inmate.id && i.tier < RAINBOW)
+                && self.cells[cell_idx]
+                    .inmate
+                    .is_some_and(|i| i.id == inmate.id && i.tier < RAINBOW)
                 && next_rand(&mut self.rng) < 0.25
             {
                 self.promote(inmate.id, 1, false);
@@ -1884,7 +1900,9 @@ impl SimState {
             }
             if self.has_tool(ToolId::Fire)
                 && next_rand(&mut self.rng) < 0.35
-                && self.cells[cell_idx].inmate.is_some_and(|i| i.id == inmate.id)
+                && self.cells[cell_idx]
+                    .inmate
+                    .is_some_and(|i| i.id == inmate.id)
             {
                 let cur_inmate = self.cells[cell_idx].inmate.unwrap();
                 let (sealed, slen) = self.sealed_cells();
@@ -1993,7 +2011,7 @@ impl SimState {
                 continue;
             }
             if let Some(pos) = (0..self.prey_len as usize)
-                .find(|& idx| self.prey[idx].lion == link.lion && self.prey[idx].prey == link.prey)
+                .find(|&idx| self.prey[idx].lion == link.lion && self.prey[idx].prey == link.prey)
             {
                 if self.prey[pos].rounds <= 1 {
                     for j in (pos + 1)..(self.prey_len as usize) {
@@ -3051,9 +3069,10 @@ impl SimState {
                             beast: b,
                             tier: inmate.tier,
                         };
-                        let has_meal = self.cells.iter().any(|c| {
-                            !c.sealed && c.inmate.is_some_and(|o| self.can_eat(cand, o))
-                        });
+                        let has_meal = self
+                            .cells
+                            .iter()
+                            .any(|c| !c.sealed && c.inmate.is_some_and(|o| self.can_eat(cand, o)));
                         if has_meal {
                             possible[plen] = b;
                             plen += 1;

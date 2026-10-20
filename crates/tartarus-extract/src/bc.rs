@@ -286,14 +286,12 @@ const BC7_WEIGHTS_3: [u8; 8] = [0, 9, 18, 27, 37, 46, 55, 64];
 const BC7_WEIGHTS_4: [u8; 16] = [0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64];
 
 const BC7_PARTITIONS_2: [u16; 64] = [
-    0xCCCC, 0x8888, 0xEEEE, 0xECC8, 0xC880, 0xFEEC, 0xFEC8, 0xEC80,
-    0xC800, 0xFFEC, 0xFE80, 0xE800, 0xFFE8, 0xFF00, 0xFFF0, 0xF000,
-    0xF710, 0x008E, 0x7100, 0x08CE, 0x008C, 0x7310, 0x3100, 0x8CCE,
-    0x088C, 0x3110, 0x6666, 0x366C, 0x17E8, 0x0FF0, 0x718E, 0x399C,
-    0xAAAA, 0xF0F0, 0x5A5A, 0x33CC, 0x3C3C, 0x55AA, 0x9696, 0xA55A,
-    0x73CE, 0x13C8, 0x324C, 0x3BDC, 0x6996, 0xC33C, 0x9966, 0x0660,
-    0x0272, 0x04E4, 0x4E40, 0x2720, 0xC936, 0x936C, 0x39C6, 0x639C,
-    0x9336, 0x9CC6, 0x817E, 0xE718, 0xCCF0, 0x0FCC, 0x7744, 0xEE22,
+    0xCCCC, 0x8888, 0xEEEE, 0xECC8, 0xC880, 0xFEEC, 0xFEC8, 0xEC80, 0xC800, 0xFFEC, 0xFE80, 0xE800,
+    0xFFE8, 0xFF00, 0xFFF0, 0xF000, 0xF710, 0x008E, 0x7100, 0x08CE, 0x008C, 0x7310, 0x3100, 0x8CCE,
+    0x088C, 0x3110, 0x6666, 0x366C, 0x17E8, 0x0FF0, 0x718E, 0x399C, 0xAAAA, 0xF0F0, 0x5A5A, 0x33CC,
+    0x3C3C, 0x55AA, 0x9696, 0xA55A, 0x73CE, 0x13C8, 0x324C, 0x3BDC, 0x6996, 0xC33C, 0x9966, 0x0660,
+    0x0272, 0x04E4, 0x4E40, 0x2720, 0xC936, 0x936C, 0x39C6, 0x639C, 0x9336, 0x9CC6, 0x817E, 0xE718,
+    0xCCF0, 0x0FCC, 0x7744, 0xEE22,
 ];
 
 const BC7_PARTITIONS_3: [u32; 64] = [
@@ -308,24 +306,21 @@ const BC7_PARTITIONS_3: [u32; 64] = [
 ];
 
 const BC7_ANCHOR_2: [u8; 64] = [
-    15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15,
-    15,  2,  8,  2,  2,  8,  8, 15,  2,  8,  2,  2,  8,  8,  2,  2,
-    15, 15,  6,  8,  2,  8, 15, 15,  2,  8,  2,  2,  2, 15, 15,  6,
-     6,  2,  6,  8, 15, 15,  2,  2, 15, 15, 15, 15, 15,  2,  2, 15,
+    15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 2, 8, 2, 2, 8, 8, 15, 2, 8,
+    2, 2, 8, 8, 2, 2, 15, 15, 6, 8, 2, 8, 15, 15, 2, 8, 2, 2, 2, 15, 15, 6, 6, 2, 6, 8, 15, 15, 2,
+    2, 15, 15, 15, 15, 15, 2, 2, 15,
 ];
 
 const BC7_ANCHOR_3A: [u8; 64] = [
-     3,  3, 15, 15,  8,  3, 15, 15,  8,  8,  6,  6,  6,  5,  3,  3,
-     3,  3,  8, 15,  3,  3,  6, 10,  5,  8,  8,  6,  8,  5, 15, 15,
-     8, 15,  3,  5,  6, 10,  8, 15, 15,  3, 15,  5, 15, 15, 15, 15,
-     3, 15,  5,  5,  5,  8,  5, 10,  5, 10,  8, 13, 15, 12,  3,  3,
+    3, 3, 15, 15, 8, 3, 15, 15, 8, 8, 6, 6, 6, 5, 3, 3, 3, 3, 8, 15, 3, 3, 6, 10, 5, 8, 8, 6, 8, 5,
+    15, 15, 8, 15, 3, 5, 6, 10, 8, 15, 15, 3, 15, 5, 15, 15, 15, 15, 3, 15, 5, 5, 5, 8, 5, 10, 5,
+    10, 8, 13, 15, 12, 3, 3,
 ];
 
 const BC7_ANCHOR_3B: [u8; 64] = [
-    15,  8,  8,  3, 15, 15,  3,  8, 15, 15, 15, 15, 15, 15, 15,  8,
-    15,  8, 15,  3, 15,  8, 15,  8,  3, 15,  6, 10, 15, 15, 10,  8,
-    15,  3, 15, 10, 10,  8,  9, 10,  6, 15,  8, 15,  3,  6,  6,  8,
-    15,  3, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15,  3, 15, 15,  8,
+    15, 8, 8, 3, 15, 15, 3, 8, 15, 15, 15, 15, 15, 15, 15, 8, 15, 8, 15, 3, 15, 8, 15, 8, 3, 15, 6,
+    10, 15, 15, 10, 8, 15, 3, 15, 10, 10, 8, 9, 10, 6, 15, 8, 15, 3, 6, 6, 8, 15, 3, 15, 15, 15,
+    15, 15, 15, 15, 15, 15, 15, 3, 15, 15, 8,
 ];
 
 #[derive(Clone, Copy)]
@@ -343,21 +338,101 @@ struct ModeSpec {
 
 const BC7_MODES: [ModeSpec; 8] = [
     // Mode 0: 3 subsets, 4-bit part, R4G4B4 + per-endpoint P-bit, 3-bit index
-    ModeSpec { subsets: 3, part_bits: 4, rotation_bits: 0, idx_sel_bits: 0, color_bits: 4, alpha_bits: 0, ep_pbits: 1, idx_bits: 3, idx2_bits: 0 },
+    ModeSpec {
+        subsets: 3,
+        part_bits: 4,
+        rotation_bits: 0,
+        idx_sel_bits: 0,
+        color_bits: 4,
+        alpha_bits: 0,
+        ep_pbits: 1,
+        idx_bits: 3,
+        idx2_bits: 0,
+    },
     // Mode 1: 2 subsets, 6-bit part, R6G6B6 + shared P-bit per subset, 3-bit index
-    ModeSpec { subsets: 2, part_bits: 6, rotation_bits: 0, idx_sel_bits: 0, color_bits: 6, alpha_bits: 0, ep_pbits: 2, idx_bits: 3, idx2_bits: 0 },
+    ModeSpec {
+        subsets: 2,
+        part_bits: 6,
+        rotation_bits: 0,
+        idx_sel_bits: 0,
+        color_bits: 6,
+        alpha_bits: 0,
+        ep_pbits: 2,
+        idx_bits: 3,
+        idx2_bits: 0,
+    },
     // Mode 2: 3 subsets, 6-bit part, R5G5B5, 2-bit index
-    ModeSpec { subsets: 3, part_bits: 6, rotation_bits: 0, idx_sel_bits: 0, color_bits: 5, alpha_bits: 0, ep_pbits: 0, idx_bits: 2, idx2_bits: 0 },
+    ModeSpec {
+        subsets: 3,
+        part_bits: 6,
+        rotation_bits: 0,
+        idx_sel_bits: 0,
+        color_bits: 5,
+        alpha_bits: 0,
+        ep_pbits: 0,
+        idx_bits: 2,
+        idx2_bits: 0,
+    },
     // Mode 3: 2 subsets, 6-bit part, R7G7B7 + per-endpoint P-bit, 2-bit index
-    ModeSpec { subsets: 2, part_bits: 6, rotation_bits: 0, idx_sel_bits: 0, color_bits: 7, alpha_bits: 0, ep_pbits: 1, idx_bits: 2, idx2_bits: 0 },
+    ModeSpec {
+        subsets: 2,
+        part_bits: 6,
+        rotation_bits: 0,
+        idx_sel_bits: 0,
+        color_bits: 7,
+        alpha_bits: 0,
+        ep_pbits: 1,
+        idx_bits: 2,
+        idx2_bits: 0,
+    },
     // Mode 4: 1 subset, 2-bit rot, 1-bit idx_sel, R5G5B5 A6, 2-bit color idx, 3-bit alpha idx
-    ModeSpec { subsets: 1, part_bits: 0, rotation_bits: 2, idx_sel_bits: 1, color_bits: 5, alpha_bits: 6, ep_pbits: 0, idx_bits: 2, idx2_bits: 3 },
+    ModeSpec {
+        subsets: 1,
+        part_bits: 0,
+        rotation_bits: 2,
+        idx_sel_bits: 1,
+        color_bits: 5,
+        alpha_bits: 6,
+        ep_pbits: 0,
+        idx_bits: 2,
+        idx2_bits: 3,
+    },
     // Mode 5: 1 subset, 2-bit rot, R7G7B7 A8, 2-bit color idx, 2-bit alpha idx
-    ModeSpec { subsets: 1, part_bits: 0, rotation_bits: 2, idx_sel_bits: 0, color_bits: 7, alpha_bits: 8, ep_pbits: 0, idx_bits: 2, idx2_bits: 2 },
+    ModeSpec {
+        subsets: 1,
+        part_bits: 0,
+        rotation_bits: 2,
+        idx_sel_bits: 0,
+        color_bits: 7,
+        alpha_bits: 8,
+        ep_pbits: 0,
+        idx_bits: 2,
+        idx2_bits: 2,
+    },
     // Mode 6: 1 subset, R7G7B7A7 + per-endpoint P-bit, 4-bit index
-    ModeSpec { subsets: 1, part_bits: 0, rotation_bits: 0, idx_sel_bits: 0, color_bits: 7, alpha_bits: 7, ep_pbits: 1, idx_bits: 4, idx2_bits: 0 },
+    ModeSpec {
+        subsets: 1,
+        part_bits: 0,
+        rotation_bits: 0,
+        idx_sel_bits: 0,
+        color_bits: 7,
+        alpha_bits: 7,
+        ep_pbits: 1,
+        idx_bits: 4,
+        idx2_bits: 0,
+    },
     // Mode 7: 2 subsets, 6-bit part, R5G5B5A5 + per-endpoint P-bit, 2-bit index
-    ModeSpec { subsets: 2, part_bits: 6, rotation_bits: 0, idx_sel_bits: 0, color_bits: 5, alpha_bits: 5, ep_pbits: 1, idx_bits: 2, idx2_bits: 0 },
+    ModeSpec {
+        subsets: 2,
+        part_bits: 6,
+        rotation_bits: 0,
+        idx_sel_bits: 0,
+        color_bits: 5,
+        alpha_bits: 5,
+        ep_pbits: 1,
+        idx_bits: 2,
+        idx2_bits: 0,
+    },
 ];
 
 #[inline]
@@ -754,4 +829,3 @@ pub fn decode_png_rgba8(png: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
 
     Ok((width, height, out))
 }
-
