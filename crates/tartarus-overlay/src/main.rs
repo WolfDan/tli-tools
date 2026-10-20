@@ -23,24 +23,6 @@ use tray::ControlHub;
 use ui::OverlayView;
 use worker::spawn_worker;
 
-struct StderrLogger;
-
-impl log::Log for StderrLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Info
-    }
-
-    fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
-        }
-    }
-
-    fn flush(&self) {}
-}
-
-static LOGGER: StderrLogger = StderrLogger;
-
 pub fn resolve_game_display_id(
     cx: &App,
     placement: Option<&GameWindowPlacement>,
@@ -99,9 +81,10 @@ pub fn resolve_game_display_id(
     }
 
     if let Some(idx) = p.monitor_index
-        && let Some(d) = displays.get(idx) {
-            return Some(d.id());
-        }
+        && let Some(d) = displays.get(idx)
+    {
+        return Some(d.id());
+    }
     None
 }
 
@@ -249,20 +232,18 @@ pub fn open_overlay_window(cx: &mut App, mut state: OverlayWindowState) {
 
 fn main() {
     #[cfg(target_os = "linux")]
-    {
-        // Lock glibc M_MMAP_THRESHOLD (-3) to 128 KB so dynamic threshold adjustment
+    unsafe {
+        // Lock glibc M_MMAP_THRESHOLD to 128 KB so dynamic threshold adjustment
         // is disabled and temporary large buffers are never retained in thread arenas.
-        unsafe extern "C" {
-            fn mallopt(param: i32, value: i32) -> i32;
-        }
-        unsafe {
-            mallopt(-3, 128 * 1024);
-        }
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 128 * 1024);
     }
     rayon::broadcast(|_| {});
 
-    let _ = log::set_logger(&LOGGER);
-    log::set_max_level(log::LevelFilter::Info);
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(tracing_subscriber::filter::LevelFilter::INFO)
+        .without_time()
+        .init();
 
     eprintln!(
         "[tartarus-overlay] starting (WAYLAND_DISPLAY={:?}, DISPLAY={:?}, XDG_SESSION_TYPE={:?})",

@@ -58,14 +58,11 @@ mod tests {
         assert_eq!(EventKind::Archenemy.weight(), 30);
         assert_eq!(EventKind::Transfer.weight(), 20);
         assert_eq!(EventKind::Usurp1.weight(), 10);
-        assert_eq!(EventKind::from_str("closed"), Some(EventKind::Trickster));
-        assert_eq!(
-            EventKind::from_str("efficiency"),
-            Some(EventKind::Execution)
-        );
-        assert_eq!(EventKind::from_str("whispers"), Some(EventKind::Crow));
-        assert_eq!(EventKind::from_str("treasure"), Some(EventKind::Hunt));
-        assert_eq!(ObjectiveId::from_str("devour"), Some(ObjectiveId::Consume));
+        assert_eq!(EventKind::parse("closed"), Some(EventKind::Trickster));
+        assert_eq!(EventKind::parse("efficiency"), Some(EventKind::Execution));
+        assert_eq!(EventKind::parse("whispers"), Some(EventKind::Crow));
+        assert_eq!(EventKind::parse("treasure"), Some(EventKind::Hunt));
+        assert_eq!(ObjectiveId::parse("devour"), Some(ObjectiveId::Consume));
 
         // Test Usurp2 promotes 1 inmate by +2 tiers and unlocks Usurp3
         let mut st = SimState::new_blank(GameMode::Drill, false, 20);
@@ -263,7 +260,7 @@ mod tests {
     #[test]
     fn test_transfer_event_accepts_on_developed_board_and_foodchain_alias() {
         assert_eq!(
-            StartEventId::from_str("foodchain"),
+            StartEventId::parse("foodchain"),
             Some(StartEventId::CageFight)
         );
 

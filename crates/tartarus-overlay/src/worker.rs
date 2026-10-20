@@ -70,10 +70,8 @@ fn schedule_burst(
     }
 }
 
-fn send_snapshot(
-    worker_tx: &Sender<WorkerToUi>,
-    tracker: &RunTracker,
-    advice: AdviceSnapshot,
+#[derive(Clone, Copy, Debug, Default)]
+struct SnapshotMetrics {
     riot: bool,
     game_connected: bool,
     log_connected: bool,
@@ -81,23 +79,30 @@ fn send_snapshot(
     scan_ms: f64,
     scan_profile: ScanProfile,
     solve_ms: f64,
+}
+
+fn send_snapshot(
+    worker_tx: &Sender<WorkerToUi>,
+    tracker: &RunTracker,
+    advice: AdviceSnapshot,
+    metrics: SnapshotMetrics,
     status_text: String,
 ) {
-    let _ = worker_tx.send(WorkerToUi::Snapshot(OverlaySnapshot {
+    let _ = worker_tx.send(WorkerToUi::Snapshot(Box::new(OverlaySnapshot {
         model: tracker.model,
         advice,
         phase: tracker.phase,
-        riot,
+        riot: metrics.riot,
         notes: tracker.last_notes.clone(),
-        game_connected,
-        log_connected,
-        cap_ms,
-        scan_ms,
-        scan_profile,
-        solve_ms,
+        game_connected: metrics.game_connected,
+        log_connected: metrics.log_connected,
+        cap_ms: metrics.cap_ms,
+        scan_ms: metrics.scan_ms,
+        scan_profile: metrics.scan_profile,
+        solve_ms: metrics.solve_ms,
         rss_mb: read_process_rss_mb(),
         status_text,
-    }));
+    })));
 }
 
 pub fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>) {
@@ -172,13 +177,12 @@ pub fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>) {
                     &worker_tx,
                     &tracker,
                     last_advice.clone(),
-                    riot,
-                    game_connected,
-                    log_watcher.is_connected(),
-                    0.0,
-                    0.0,
-                    ScanProfile::default(),
-                    0.0,
+                    SnapshotMetrics {
+                        riot,
+                        game_connected,
+                        log_connected: log_watcher.is_connected(),
+                        ..SnapshotMetrics::default()
+                    },
                     status_text,
                 );
             }
@@ -326,7 +330,7 @@ pub fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>) {
                             Some("Advising Warden's Treasure on current board".into());
                     }
                     UiToWorker::UpdateModelAndRecheck(new_model) => {
-                        tracker.set_model(new_model);
+                        tracker.set_model(*new_model);
                         recheck_only = true;
                         status_override = Some("Rechecked edited board".into());
                     }
@@ -377,13 +381,13 @@ pub fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>) {
                         &worker_tx,
                         &tracker,
                         advice,
-                        riot,
-                        game_connected,
-                        log_watcher.is_connected(),
-                        0.0,
-                        0.0,
-                        ScanProfile::default(),
-                        solve_ms,
+                        SnapshotMetrics {
+                            riot,
+                            game_connected,
+                            log_connected: log_watcher.is_connected(),
+                            solve_ms,
+                            ..SnapshotMetrics::default()
+                        },
                         status_override
                             .unwrap_or_else(|| format!("Solved in {solve_ms:.1}ms")),
                     );
@@ -397,13 +401,12 @@ pub fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>) {
                         &worker_tx,
                         &tracker,
                         advice,
-                        riot,
-                        game_connected,
-                        log_watcher.is_connected(),
-                        0.0,
-                        0.0,
-                        ScanProfile::default(),
-                        0.0,
+                        SnapshotMetrics {
+                            riot,
+                            game_connected,
+                            log_connected: log_watcher.is_connected(),
+                            ..SnapshotMetrics::default()
+                        },
                         status_override.unwrap_or_else(|| {
                             if tracker.phase.is_run_over() {
                                 "Run over · Ready for the next run".into()
@@ -512,13 +515,15 @@ pub fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>) {
                                             &worker_tx,
                                             &tracker,
                                             advice,
-                                            riot,
-                                            true,
-                                            log_watcher.is_connected(),
-                                            cap_ms,
-                                            scan_ms,
-                                            scan_profile,
-                                            solve_ms,
+                                            SnapshotMetrics {
+                                                riot,
+                                                game_connected: true,
+                                                log_connected: log_watcher.is_connected(),
+                                                cap_ms,
+                                                scan_ms,
+                                                scan_profile,
+                                                solve_ms,
+                                            },
                                             status_text,
                                         );
                                     }
@@ -536,13 +541,12 @@ pub fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>) {
                                 &worker_tx,
                                 &tracker,
                                 advice,
-                                riot,
-                                false,
-                                log_watcher.is_connected(),
-                                0.0,
-                                0.0,
-                                ScanProfile::default(),
-                                0.0,
+                                SnapshotMetrics {
+                                    riot,
+                                    game_connected: false,
+                                    log_connected: log_watcher.is_connected(),
+                                    ..SnapshotMetrics::default()
+                                },
                                 "Torchlight: Infinite window not found".into(),
                             );
                         }

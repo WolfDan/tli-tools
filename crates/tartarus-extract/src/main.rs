@@ -40,33 +40,24 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let args: Vec<String> = env::args().skip(1).collect();
-    if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
+    let mut pargs = pico_args::Arguments::from_env();
+    if env::args_os().len() <= 1 || pargs.contains(["-h", "--help"]) {
         print_usage();
         return Ok(());
     }
 
-    let mut game_dir: Option<PathBuf> = None;
-    let mut key_hex = DEFAULT_AES_KEY_HEX.to_string();
-    let mut pos_args = Vec::new();
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--game-dir" => {
-                i += 1;
-                let val = args.get(i).ok_or("--game-dir requires a path")?;
-                game_dir = Some(PathBuf::from(val));
-            }
-            "--key" => {
-                i += 1;
-                let val = args.get(i).ok_or("--key requires a 64-hex-char AES key")?;
-                key_hex = val.clone();
-            }
-            other => pos_args.push(other.to_string()),
-        }
-        i += 1
-    }
+    let game_dir: Option<PathBuf> = pargs
+        .opt_value_from_str("--game-dir")
+        .map_err(|e| e.to_string())?;
+    let key_hex: String = pargs
+        .opt_value_from_str("--key")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| DEFAULT_AES_KEY_HEX.to_string());
+    let pos_args: Vec<String> = pargs
+        .finish()
+        .into_iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
 
     let game_dir = game_dir.or_else(discover_game_dir).ok_or_else(|| {
         "Could not auto-discover Torchlight: Infinite installation directory. Pass --game-dir <PATH> or set $TLI_GAME_DIR.".to_string()

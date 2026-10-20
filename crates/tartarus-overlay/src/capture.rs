@@ -191,17 +191,7 @@ mod platform {
     use x11rb::protocol::shm::{self, ConnectionExt as _};
     use x11rb::protocol::xproto::{ConnectionExt, ImageFormat, Window};
 
-    const IPC_PRIVATE: i32 = 0;
-    const IPC_CREAT: i32 = 0o1000;
-    const IPC_RMID: i32 = 0;
     const DEFAULT_CAP_BYTES: usize = 2560 * 1440 * 4;
-
-    unsafe extern "C" {
-        fn shmget(key: i32, size: usize, shmflg: i32) -> i32;
-        fn shmat(shmid: i32, shmaddr: *const core::ffi::c_void, shmflg: i32) -> *mut u8;
-        fn shmdt(shmaddr: *const core::ffi::c_void) -> i32;
-        fn shmctl(shmid: i32, cmd: i32, buf: *mut core::ffi::c_void) -> i32;
-    }
 
     struct ShmSegment {
         seg: shm::Seg,
@@ -215,14 +205,14 @@ mod platform {
     impl ShmSegment {
         fn new(conn: &x11rb::rust_connection::RustConnection, cap: usize) -> Option<Self> {
             conn.shm_query_version().ok()?.reply().ok()?;
-            let shmid = unsafe { shmget(IPC_PRIVATE, cap, IPC_CREAT | 0o600) };
+            let shmid = unsafe { libc::shmget(libc::IPC_PRIVATE, cap, libc::IPC_CREAT | 0o600) };
             if shmid < 0 {
                 return None;
             }
-            let addr = unsafe { shmat(shmid, std::ptr::null(), 0) };
+            let addr = unsafe { libc::shmat(shmid, std::ptr::null(), 0).cast::<u8>() };
             if addr.is_null() || addr == (usize::MAX as *mut u8) {
                 unsafe {
-                    shmctl(shmid, IPC_RMID, std::ptr::null_mut());
+                    libc::shmctl(shmid, libc::IPC_RMID, std::ptr::null_mut());
                 }
                 return None;
             }
@@ -230,8 +220,8 @@ mod platform {
                 Ok(s) => s,
                 Err(_) => {
                     unsafe {
-                        shmdt(addr as *const core::ffi::c_void);
-                        shmctl(shmid, IPC_RMID, std::ptr::null_mut());
+                        libc::shmdt(addr.cast::<libc::c_void>());
+                        libc::shmctl(shmid, libc::IPC_RMID, std::ptr::null_mut());
                     }
                     return None;
                 }
@@ -242,11 +232,11 @@ mod platform {
                 .and_then(|c| c.check().ok())
                 .is_some();
             unsafe {
-                shmctl(shmid, IPC_RMID, std::ptr::null_mut());
+                libc::shmctl(shmid, libc::IPC_RMID, std::ptr::null_mut());
             }
             if !attached {
                 unsafe {
-                    shmdt(addr as *const core::ffi::c_void);
+                    libc::shmdt(addr.cast::<libc::c_void>());
                 }
                 return None;
             }
@@ -278,7 +268,7 @@ mod platform {
             }
             if !self.addr.is_null() {
                 unsafe {
-                    shmdt(self.addr as *const core::ffi::c_void);
+                    libc::shmdt(self.addr.cast::<libc::c_void>());
                 }
                 self.addr = std::ptr::null_mut();
             }
@@ -391,35 +381,37 @@ mod platform {
                 let mut matched_title = false;
                 if let Ok(cookie) = conn.get_property(false, win, net_wm_name, utf8_string, 0, 256)
                     && let Ok(reply) = cookie.reply()
-                        && !reply.value.is_empty()
-                            && let Ok(title) = std::str::from_utf8(&reply.value)
-                                && is_torchlight_title(title) {
-                                    matched_title = true;
-                                }
+                    && !reply.value.is_empty()
+                    && let Ok(title) = std::str::from_utf8(&reply.value)
+                    && is_torchlight_title(title)
+                {
+                    matched_title = true;
+                }
                 if !matched_title
                     && let Ok(cookie) = conn.get_property(false, win, wm_name, x11rb::NONE, 0, 256)
-                        && let Ok(reply) = cookie.reply()
-                            && !reply.value.is_empty()
-                                && let Ok(title) = std::str::from_utf8(&reply.value)
-                                    && is_torchlight_title(title) {
-                                        matched_title = true;
-                                    }
-                if matched_title
-                    && let Some((w, h)) = Self::viewable_window_size(conn, win) {
-                        let area = (w as u32) * (h as u32);
-                        let best_area = best
-                            .map(|(_, bw, bh)| (bw as u32) * (bh as u32))
-                            .unwrap_or(0);
-                        if area >= best_area {
-                            best = Some((win, w, h));
-                        }
+                    && let Ok(reply) = cookie.reply()
+                    && !reply.value.is_empty()
+                    && let Ok(title) = std::str::from_utf8(&reply.value)
+                    && is_torchlight_title(title)
+                {
+                    matched_title = true;
+                }
+                if matched_title && let Some((w, h)) = Self::viewable_window_size(conn, win) {
+                    let area = (w as u32) * (h as u32);
+                    let best_area = best
+                        .map(|(_, bw, bh)| (bw as u32) * (bh as u32))
+                        .unwrap_or(0);
+                    if area >= best_area {
+                        best = Some((win, w, h));
                     }
+                }
                 if let Ok(tree_cookie) = conn.query_tree(win)
-                    && let Ok(tree) = tree_cookie.reply() {
-                        for child in tree.children {
-                            stack.push(child);
-                        }
+                    && let Ok(tree) = tree_cookie.reply()
+                {
+                    for child in tree.children {
+                        stack.push(child);
                     }
+                }
             }
             best
         }
@@ -449,18 +441,19 @@ mod platform {
 
             let mut monitors = Vec::new();
             if let Some(cookie) = mon_cookie
-                && let Ok(reply) = cookie.reply() {
-                    for m in reply.monitors {
-                        if m.width > 0 && m.height > 0 {
-                            monitors.push(MonitorRect {
-                                x: m.x as i32,
-                                y: m.y as i32,
-                                width: m.width as u32,
-                                height: m.height as u32,
-                            });
-                        }
+                && let Ok(reply) = cookie.reply()
+            {
+                for m in reply.monitors {
+                    if m.width > 0 && m.height > 0 {
+                        monitors.push(MonitorRect {
+                            x: m.x as i32,
+                            y: m.y as i32,
+                            width: m.width as u32,
+                            height: m.height as u32,
+                        });
                     }
                 }
+            }
 
             let mut monitor_index = None;
             for (idx, m) in monitors.iter().enumerate() {

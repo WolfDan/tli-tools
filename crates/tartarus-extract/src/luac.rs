@@ -2,7 +2,9 @@
 //! `DataCfg/config_*.out` VM table evaluator, and `config_multi_language_*.bin` parser.
 
 use std::collections::BTreeMap;
+use std::io::Cursor;
 
+use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 use serde::{Deserialize, Serialize};
 
 /// Xindong Lua 5.3 bytecode magic after decryption (`\x01XDI\x11\r\n\x1a\n\x01`).
@@ -71,71 +73,34 @@ pub struct LuaConfigTable {
     pub rows: BTreeMap<i64, BTreeMap<String, LuaValue>>,
 }
 
-fn read_u32_le(buf: &[u8], pos: &mut usize) -> Result<u32, String> {
-    if *pos + 4 > buf.len() {
-        return Err(format!("Unexpected EOF reading u32 at 0x{:x}", *pos));
-    }
-    let v = u32::from_le_bytes(buf[*pos..*pos + 4].try_into().unwrap());
-    *pos += 4;
-    Ok(v)
-}
-
-fn read_u64_le(buf: &[u8], pos: &mut usize) -> Result<u64, String> {
-    if *pos + 8 > buf.len() {
-        return Err(format!("Unexpected EOF reading u64 at 0x{:x}", *pos));
-    }
-    let v = u64::from_le_bytes(buf[*pos..*pos + 8].try_into().unwrap());
-    *pos += 8;
-    Ok(v)
-}
-
-fn read_i64_le(buf: &[u8], pos: &mut usize) -> Result<i64, String> {
-    if *pos + 8 > buf.len() {
-        return Err(format!("Unexpected EOF reading i64 at 0x{:x}", *pos));
-    }
-    let v = i64::from_le_bytes(buf[*pos..*pos + 8].try_into().unwrap());
-    *pos += 8;
-    Ok(v)
-}
-
-fn read_f64_le(buf: &[u8], pos: &mut usize) -> Result<f64, String> {
-    if *pos + 8 > buf.len() {
-        return Err(format!("Unexpected EOF reading f64 at 0x{:x}", *pos));
-    }
-    let v = f64::from_le_bytes(buf[*pos..*pos + 8].try_into().unwrap());
-    *pos += 8;
-    Ok(v)
-}
-
 /// Reads an XDI Lua 5.3 string where the length prefix has `+ 10` added to the byte length.
-fn read_xdi_string(buf: &[u8], pos: &mut usize) -> Result<String, String> {
-    if *pos >= buf.len() {
-        return Err(format!(
+fn read_xdi_string(cur: &mut Cursor<&[u8]>) -> Result<String, String> {
+    let lb = cur.read_u8().map_err(|_| {
+        format!(
             "Unexpected EOF reading string length at 0x{:x}",
-            *pos
-        ));
-    }
-    let lb = buf[*pos];
-    *pos += 1;
+            cur.position()
+        )
+    })?;
     let slen = if lb == 0xFF {
-        let raw = read_u64_le(buf, pos)? as usize;
+        let raw = cur.read_u64::<LittleEndian>().map_err(|e| e.to_string())? as usize;
         raw.saturating_sub(10)
     } else if lb == 0 {
         0
     } else {
         (lb as usize).saturating_sub(10)
     };
-    if *pos + slen > buf.len() {
-        return Err(format!(
+    let pos = cur.position() as usize;
+    let buf = *cur.get_ref();
+    let slice = buf.get(pos..pos + slen).ok_or_else(|| {
+        format!(
             "String length {} exceeds buffer at 0x{:x} (len={})",
             slen,
-            *pos,
+            pos,
             buf.len()
-        ));
-    }
-    let s = String::from_utf8_lossy(&buf[*pos..*pos + slen]).into_owned();
-    *pos += slen;
-    Ok(s)
+        )
+    })?;
+    cur.set_position((pos + slen) as u64);
+    Ok(String::from_utf8_lossy(slice).into_owned())
 }
 
 /// Parses a decrypted `\x01XDI` Lua 5.3 `DataCfg/config_*.out` file by decoding its constant pool
@@ -146,49 +111,51 @@ pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, Strin
     if dec.len() < 16 || &dec[..10] != XDI_LUA_HEADER {
         return Err("Buffer does not start with valid \\x01XDI Lua 5.3 header".to_string());
     }
-    let mut pos = 10usize;
-    let source_name = read_xdi_string(&dec, &mut pos)?;
+    let mut cur = Cursor::new(dec.as_slice());
+    cur.set_position(10);
+    let source_name = read_xdi_string(&mut cur)?;
 
     // Skip linedefined (4), lastlinedefined (4), numparams (1), is_vararg (1), maxstacksize (1)
-    if pos + 11 > dec.len() {
+    if (cur.position() as usize) + 11 > dec.len() {
         return Err("Unexpected EOF in Lua proto header".to_string());
     }
-    pos += 11;
+    cur.set_position(cur.position() + 11);
 
-    let sizecode = read_u32_le(&dec, &mut pos)? as usize;
-    if pos + sizecode * 4 > dec.len() {
+    let sizecode = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
+    if (cur.position() as usize) + sizecode * 4 > dec.len() {
         return Err("Unexpected EOF in Lua code section".to_string());
     }
     let mut code = Vec::with_capacity(sizecode);
     for _ in 0..sizecode {
-        code.push(read_u32_le(&dec, &mut pos)?);
+        code.push(cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())?);
     }
 
-    let sizek = read_u32_le(&dec, &mut pos)? as usize;
+    let sizek = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
     let mut consts = Vec::with_capacity(sizek);
     for _ in 0..sizek {
-        if pos >= dec.len() {
-            return Err("Unexpected EOF in Lua constant pool".to_string());
-        }
-        let tag = dec[pos];
-        pos += 1;
+        let tag = cur
+            .read_u8()
+            .map_err(|_| "Unexpected EOF in Lua constant pool".to_string())?;
         match tag {
             0x00 => consts.push(LuaValue::Nil),
             0x01 => {
-                if pos >= dec.len() {
-                    return Err("Unexpected EOF reading bool constant".to_string());
-                }
-                consts.push(LuaValue::Bool(dec[pos] != 0));
-                pos += 1;
+                let b = cur
+                    .read_u8()
+                    .map_err(|_| "Unexpected EOF reading bool constant".to_string())?;
+                consts.push(LuaValue::Bool(b != 0));
             }
-            0x03 => consts.push(LuaValue::Float(read_f64_le(&dec, &mut pos)?)),
-            0x13 => consts.push(LuaValue::Int(read_i64_le(&dec, &mut pos)?)),
-            0x04 | 0x14 => consts.push(LuaValue::Str(read_xdi_string(&dec, &mut pos)?)),
+            0x03 => consts.push(LuaValue::Float(
+                cur.read_f64::<LittleEndian>().map_err(|e| e.to_string())?,
+            )),
+            0x13 => consts.push(LuaValue::Int(
+                cur.read_i64::<LittleEndian>().map_err(|e| e.to_string())?,
+            )),
+            0x04 | 0x14 => consts.push(LuaValue::Str(read_xdi_string(&mut cur)?)),
             other => {
                 return Err(format!(
                     "Unsupported Lua constant tag 0x{:02x} at 0x{:x}",
                     other,
-                    pos - 1
+                    cur.position() - 1
                 ));
             }
         }
@@ -282,39 +249,38 @@ pub fn extract_xdi_strings(raw_or_dec: &[u8]) -> Result<(String, Vec<String>), S
     if dec.len() < 16 || &dec[..10] != XDI_LUA_HEADER {
         return Err("Buffer does not start with valid \\x01XDI Lua 5.3 header".to_string());
     }
-    let mut pos = 10usize;
+    let mut cur = Cursor::new(dec.as_slice());
+    cur.set_position(10);
     let mut strings = Vec::new();
-    let source_name = parse_proto_strings(&dec, &mut pos, &mut strings)?;
+    let source_name = parse_proto_strings(&mut cur, &mut strings)?;
     Ok((source_name, strings))
 }
 
 fn parse_proto_strings(
-    dec: &[u8],
-    pos: &mut usize,
+    cur: &mut Cursor<&[u8]>,
     out_strings: &mut Vec<String>,
 ) -> Result<String, String> {
-    let src = read_xdi_string(dec, pos)?;
-    if *pos + 11 > dec.len() {
+    let src = read_xdi_string(cur)?;
+    let dec_len = cur.get_ref().len();
+    if (cur.position() as usize) + 11 > dec_len {
         return Err("EOF in proto header".to_string());
     }
-    *pos += 11; // linedefined (4), lastlinedefined (4), numparams (1), is_vararg (1), maxstacksize (1)
+    cur.set_position(cur.position() + 11); // linedefined (4), lastlinedefined (4), numparams (1), is_vararg (1), maxstacksize (1)
 
-    let sizecode = read_u32_le(dec, pos)? as usize;
-    *pos += sizecode * 4;
+    let sizecode = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
+    cur.set_position(cur.position() + (sizecode * 4) as u64);
 
-    let sizek = read_u32_le(dec, pos)? as usize;
+    let sizek = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
     for _ in 0..sizek {
-        if *pos >= dec.len() {
+        let Ok(tag) = cur.read_u8() else {
             break;
-        }
-        let tag = dec[*pos];
-        *pos += 1;
+        };
         match tag {
             0x00 => {}
-            0x01 => *pos += 1,
-            0x03 | 0x13 => *pos += 8,
+            0x01 => cur.set_position(cur.position() + 1),
+            0x03 | 0x13 => cur.set_position(cur.position() + 8),
             0x04 | 0x14 => {
-                if let Ok(s) = read_xdi_string(dec, pos)
+                if let Ok(s) = read_xdi_string(cur)
                     && !s.is_empty()
                 {
                     out_strings.push(s);
@@ -325,28 +291,30 @@ fn parse_proto_strings(
     }
 
     // Upvalues: sizeupvalues (u32), each 2 bytes (instack: u8, idx: u8)
-    if let Ok(sizeup) = read_u32_le(dec, pos) {
+    if let Ok(sizeup) = cur.read_u32::<LittleEndian>() {
         let up_bytes = (sizeup as usize) * 2;
-        if *pos + up_bytes <= dec.len() {
-            *pos += up_bytes;
+        if (cur.position() as usize) + up_bytes <= dec_len {
+            cur.set_position(cur.position() + up_bytes as u64);
             // Child protos: sizep (u32)
-            if let Ok(sizep) = read_u32_le(dec, pos) {
+            if let Ok(sizep) = cur.read_u32::<LittleEndian>() {
                 for _ in 0..sizep {
-                    let _ = parse_proto_strings(dec, pos, out_strings);
+                    let _ = parse_proto_strings(cur, out_strings);
                 }
             }
             // Debug info: sizelineinfo (u32 * 4), sizelocvars, sizeupvalue_names
-            if let Ok(sizeline) = read_u32_le(dec, pos) {
-                *pos = (*pos + (sizeline as usize) * 4).min(dec.len());
-                if let Ok(sizelocvars) = read_u32_le(dec, pos) {
+            if let Ok(sizeline) = cur.read_u32::<LittleEndian>() {
+                cur.set_position(
+                    ((cur.position() as usize) + (sizeline as usize) * 4).min(dec_len) as u64,
+                );
+                if let Ok(sizelocvars) = cur.read_u32::<LittleEndian>() {
                     for _ in 0..sizelocvars {
-                        let _ = read_xdi_string(dec, pos);
-                        *pos = (*pos + 8).min(dec.len());
+                        let _ = read_xdi_string(cur);
+                        cur.set_position(((cur.position() as usize) + 8).min(dec_len) as u64);
                     }
                 }
-                if let Ok(sizeupnames) = read_u32_le(dec, pos) {
+                if let Ok(sizeupnames) = cur.read_u32::<LittleEndian>() {
                     for _ in 0..sizeupnames {
-                        let _ = read_xdi_string(dec, pos);
+                        let _ = read_xdi_string(cur);
                     }
                 }
             }
@@ -374,32 +342,32 @@ pub fn parse_multi_language_bin(
 
     let mut i = 0usize;
     while i + 16 <= n {
-        let klen = u32::from_le_bytes(data[i..i + 4].try_into().unwrap()) as usize;
+        let klen = LittleEndian::read_u32(&data[i..i + 4]) as usize;
         if (4..=256).contains(&klen) && i + 8 + 2 * klen + 8 <= n {
             let k1_start = i + 4;
             let k1_end = k1_start + klen;
             if prefix_bytes.is_empty() || data[k1_start..k1_end].starts_with(prefix_bytes) {
-                let klen2 =
-                    u32::from_le_bytes(data[k1_end..k1_end + 4].try_into().unwrap()) as usize;
+                let klen2 = LittleEndian::read_u32(&data[k1_end..k1_end + 4]) as usize;
                 if klen2 == klen {
                     let k2_start = k1_end + 4;
                     let k2_end = k2_start + klen;
                     if data[k1_start..k1_end] == data[k2_start..k2_end] {
-                        let flag = u32::from_le_bytes(data[k2_end..k2_end + 4].try_into().unwrap());
-                        let vlen =
-                            u32::from_le_bytes(data[k2_end + 4..k2_end + 8].try_into().unwrap())
-                                as usize;
+                        let flag = LittleEndian::read_u32(&data[k2_end..k2_end + 4]);
+                        let vlen = LittleEndian::read_u32(&data[k2_end + 4..k2_end + 8]) as usize;
                         let val_start = k2_end + 8;
                         let val_end = val_start.saturating_add(vlen);
-                        if flag == 0 && vlen <= 32768 && val_end <= n
+                        if flag == 0
+                            && vlen <= 32768
+                            && val_end <= n
                             && let (Ok(k), Ok(v)) = (
                                 std::str::from_utf8(&data[k1_start..k1_end]),
                                 std::str::from_utf8(&data[val_start..val_end]),
-                            ) {
-                                map.insert(k.to_string(), v.to_string());
-                                i = val_end;
-                                continue;
-                            }
+                            )
+                        {
+                            map.insert(k.to_string(), v.to_string());
+                            i = val_end;
+                            continue;
+                        }
                     }
                 }
             }
@@ -412,17 +380,12 @@ pub fn parse_multi_language_bin(
 
 /// Strips `<RichText...>` / `</>` / `<Img...>` markup tags and normalizes escaped newlines.
 pub fn strip_rich_text(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut in_tag = false;
-    for ch in input.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    out.replace("\\n", " ")
+    use std::sync::LazyLock;
+    static TAG_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"<[^>]*>").unwrap());
+    TAG_RE
+        .replace_all(input, "")
+        .replace("\\n", " ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")

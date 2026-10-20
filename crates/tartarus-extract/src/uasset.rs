@@ -1,5 +1,8 @@
 //! Cooked Unreal Engine 4.27 `.uasset` / `.uexp` / `.ubulk` parser for `UTexture2D` and `UPaperSprite`.
 
+use std::io::Cursor;
+
+use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 use serde::Serialize;
 
 use crate::bc::{PixelFormat, decode_mip_to_rgba8, encode_png_rgba8};
@@ -48,20 +51,19 @@ pub fn parse_paper_sprite(uasset: &[u8], uexp: &[u8]) -> Option<PaperSpriteInfo>
 
     let find_vec2d_prop = |prop_name_idx: i32| -> Option<(f32, f32)> {
         let mut pat = [0u8; 32];
-        pat[0..4].copy_from_slice(&prop_name_idx.to_le_bytes());
-        pat[8..12].copy_from_slice(&struct_idx.to_le_bytes());
-        pat[16..20].copy_from_slice(&8i32.to_le_bytes());
-        pat[24..28].copy_from_slice(&vec2d_idx.to_le_bytes());
+        LittleEndian::write_i32(&mut pat[0..4], prop_name_idx);
+        LittleEndian::write_i32(&mut pat[8..12], struct_idx);
+        LittleEndian::write_i32(&mut pat[16..20], 8);
+        LittleEndian::write_i32(&mut pat[24..28], vec2d_idx);
 
-        for i in 0..uexp.len().saturating_sub(57) {
-            if uexp[i..i + 32] == pat {
-                let val_off = i + 32 + 17; // 16-byte StructGuid + 1-byte PropertyGuid flag
-                let x = f32::from_le_bytes(uexp[val_off..val_off + 4].try_into().ok()?);
-                let y = f32::from_le_bytes(uexp[val_off + 4..val_off + 8].try_into().ok()?);
-                return Some((x, y));
-            }
+        let i = memchr::memmem::find(uexp, &pat)?;
+        let val_off = i + 32 + 17; // 16-byte StructGuid + 1-byte PropertyGuid flag
+        if val_off + 8 > uexp.len() {
+            return None;
         }
-        None
+        let x = LittleEndian::read_f32(&uexp[val_off..val_off + 4]);
+        let y = LittleEndian::read_f32(&uexp[val_off + 4..val_off + 8]);
+        Some((x, y))
     };
 
     let (uv_x, uv_y) = find_vec2d_prop(uv_idx).unwrap_or((0.0, 0.0));
@@ -79,27 +81,13 @@ pub fn parse_paper_sprite(uasset: &[u8], uexp: &[u8]) -> Option<PaperSpriteInfo>
     })
 }
 
-fn read_u32_le(buf: &[u8], off: usize) -> Option<u32> {
-    let b: [u8; 4] = buf.get(off..off + 4)?.try_into().ok()?;
-    Some(u32::from_le_bytes(b))
-}
-
-fn read_i32_le(buf: &[u8], off: usize) -> Option<i32> {
-    let b: [u8; 4] = buf.get(off..off + 4)?.try_into().ok()?;
-    Some(i32::from_le_bytes(b))
-}
-
-fn read_i64_le(buf: &[u8], off: usize) -> Option<i64> {
-    let b: [u8; 8] = buf.get(off..off + 8)?.try_into().ok()?;
-    Some(i64::from_le_bytes(b))
-}
-
-fn read_fstring(buf: &[u8], off: usize) -> Option<(String, usize)> {
-    let len = read_i32_le(buf, off)?;
-    let start = off + 4;
+fn read_fstring(cur: &mut Cursor<&[u8]>) -> Option<String> {
+    let len = cur.read_i32::<LittleEndian>().ok()?;
     if len == 0 {
-        return Some((String::new(), start));
+        return Some(String::new());
     }
+    let start = cur.position() as usize;
+    let buf = *cur.get_ref();
     if len < 0 {
         let chars = (-len) as usize;
         if chars > 4096 {
@@ -107,55 +95,56 @@ fn read_fstring(buf: &[u8], off: usize) -> Option<(String, usize)> {
         }
         let byte_len = chars * 2;
         let slice = buf.get(start..start + byte_len)?;
-        let u16s: Vec<u16> = slice
-            .as_chunks::<2>().0.iter()
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        let s = String::from_utf16_lossy(&u16s)
-            .trim_end_matches('\0')
-            .to_string();
-        Some((s, start + byte_len))
+        cur.set_position((start + byte_len) as u64);
+        let mut u16s = vec![0u16; chars];
+        LittleEndian::read_u16_into(slice, &mut u16s);
+        Some(
+            String::from_utf16_lossy(&u16s)
+                .trim_end_matches('\0')
+                .to_string(),
+        )
     } else {
         let byte_len = len as usize;
         if byte_len > 4096 {
             return None;
         }
         let slice = buf.get(start..start + byte_len)?;
-        let s = String::from_utf8_lossy(slice)
-            .trim_end_matches('\0')
-            .to_string();
-        Some((s, start + byte_len))
+        cur.set_position((start + byte_len) as u64);
+        Some(
+            String::from_utf8_lossy(slice)
+                .trim_end_matches('\0')
+                .to_string(),
+        )
     }
 }
 
 /// Parses the `FName` string table out of a cooked UE 4.27 `.uasset` header.
 pub fn parse_uasset_names(uasset: &[u8]) -> Vec<String> {
-    let Some(tag) = read_u32_le(uasset, 0) else {
-        return Vec::new();
-    };
-    if tag != PACKAGE_FILE_TAG {
+    if uasset.len() < 8 || LittleEndian::read_u32(uasset) != PACKAGE_FILE_TAG {
         return Vec::new();
     }
 
     // Try standard UE4 FPackageFileSummary layout and fallback scan for (name_count, name_offset)
     let mut candidates = Vec::new();
-    if let Some(legacy_ver) = read_i32_le(uasset, 4) {
-        let mut off = 8usize;
-        if legacy_ver != -4 {
-            off += 4; // LegacyUE3Version
-        }
-        off += 4 + 4 + 4; // FileVersionUE4, FileVersionLicenseeUE4, CustomVersionCount
-        if let Some(custom_count) = read_i32_le(uasset, off - 4)
-            && (0..=256).contains(&custom_count)
-        {
+    let legacy_ver = LittleEndian::read_i32(&uasset[4..]);
+    let mut off = 8usize;
+    if legacy_ver != -4 {
+        off += 4; // LegacyUE3Version
+    }
+    off += 4 + 4 + 4; // FileVersionUE4, FileVersionLicenseeUE4, CustomVersionCount
+    if let Some(cc_slice) = uasset.get(off - 4..off) {
+        let custom_count = LittleEndian::read_i32(cc_slice);
+        if (0..=256).contains(&custom_count) {
             off += (custom_count as usize) * 20; // FCustomVersion = GUID(16) + ver(4)
             off += 4; // TotalHeaderSize
-            if let Some((_, next_off)) = read_fstring(uasset, off) {
-                off = next_off;
-                off += 4; // PackageFlags
-                if let (Some(nc), Some(no)) =
-                    (read_i32_le(uasset, off), read_i32_le(uasset, off + 4))
-                    && nc > 0
+            let mut cur = Cursor::new(uasset);
+            cur.set_position(off as u64);
+            if read_fstring(&mut cur).is_some() {
+                cur.set_position(cur.position() + 4); // PackageFlags
+                if let (Ok(nc), Ok(no)) = (
+                    cur.read_i32::<LittleEndian>(),
+                    cur.read_i32::<LittleEndian>(),
+                ) && nc > 0
                     && no > 0
                 {
                     candidates.push((nc as usize, no as usize));
@@ -165,27 +154,27 @@ pub fn parse_uasset_names(uasset: &[u8]) -> Vec<String> {
     }
 
     for scan_off in (24..uasset.len().min(256)).step_by(4) {
-        if let (Some(nc), Some(no)) = (
-            read_i32_le(uasset, scan_off),
-            read_i32_le(uasset, scan_off + 4),
-        ) && (1..=4096).contains(&nc)
-            && (64..=uasset.len() as i32).contains(&no)
-        {
-            candidates.push((nc as usize, no as usize));
+        if let Some(slice) = uasset.get(scan_off..scan_off + 8) {
+            let nc = LittleEndian::read_i32(&slice[0..4]);
+            let no = LittleEndian::read_i32(&slice[4..8]);
+            if (1..=4096).contains(&nc) && (64..=uasset.len() as i32).contains(&no) {
+                candidates.push((nc as usize, no as usize));
+            }
         }
     }
 
     for (name_count, name_offset) in candidates {
         let mut names = Vec::with_capacity(name_count);
-        let mut cur = name_offset;
+        let mut cur = Cursor::new(uasset);
+        cur.set_position(name_offset as u64);
         let mut ok = true;
         for _ in 0..name_count {
-            if let Some((s, next)) = read_fstring(uasset, cur)
+            if let Some(s) = read_fstring(&mut cur)
                 && !s.is_empty()
-                && next + 4 <= uasset.len()
+                && (cur.position() as usize) + 4 <= uasset.len()
             {
                 names.push(s);
-                cur = next + 4; // NonCasePreservingHash(u16) + CasePreservingHash(u16)
+                cur.set_position(cur.position() + 4); // NonCasePreservingHash(u16) + CasePreservingHash(u16)
             } else {
                 ok = false;
                 break;
@@ -224,17 +213,15 @@ pub fn decode_texture2d(
 }
 
 fn find_ascii_pixel_format(buf: &[u8]) -> Option<PixelFormat> {
-    for i in 0..buf.len().saturating_sub(6) {
-        if &buf[i..i + 3] == b"PF_" {
-            let end = buf[i..(i + 24).min(buf.len())]
-                .iter()
-                .position(|&b| b == 0 || !b.is_ascii_graphic())
-                .unwrap_or(0);
-            if end > 3 {
-                let s = std::str::from_utf8(&buf[i..i + end]).ok()?;
-                if let Some(pf) = PixelFormat::from_name(s) {
-                    return Some(pf);
-                }
+    for i in memchr::memmem::find_iter(buf, b"PF_") {
+        let end = buf[i..(i + 24).min(buf.len())]
+            .iter()
+            .position(|&b| b == 0 || !b.is_ascii_graphic())
+            .unwrap_or(0);
+        if end > 3 {
+            let s = std::str::from_utf8(&buf[i..i + end]).ok()?;
+            if let Some(pf) = PixelFormat::from_name(s) {
+                return Some(pf);
             }
         }
     }
@@ -246,11 +233,11 @@ fn try_parse_platform_data(
     ubulk: Option<&[u8]>,
     names: &[String],
 ) -> Option<DecodedTexture> {
-    for i in 16..uexp.len().saturating_sub(16) {
-        if &uexp[i..i + 3] != b"PF_" {
+    for i in memchr::memmem::find_iter(uexp, b"PF_") {
+        if i < 16 || i + 16 > uexp.len() {
             continue;
         }
-        let str_len = read_i32_le(uexp, i - 4)?;
+        let str_len = LittleEndian::read_i32(&uexp[i - 4..i]);
         if !(4..=32).contains(&str_len) {
             continue;
         }
@@ -261,8 +248,8 @@ fn try_parse_platform_data(
         let pf_str = std::str::from_utf8(&uexp[i..str_end - 1]).ok()?;
         let format = PixelFormat::from_name(pf_str)?;
 
-        let plat_size_x = read_i32_le(uexp, i - 16)?;
-        let plat_size_y = read_i32_le(uexp, i - 12)?;
+        let plat_size_x = LittleEndian::read_i32(&uexp[i - 16..i - 12]);
+        let plat_size_y = LittleEndian::read_i32(&uexp[i - 12..i - 8]);
         if !(1..=16384).contains(&plat_size_x) || !(1..=16384).contains(&plat_size_y) {
             continue;
         }
@@ -272,12 +259,11 @@ fn try_parse_platform_data(
         // Note: Some UE4 builds have an extra SkipOffset (i64 or i32) before FirstMipToSerialize; check both offsets!
         for header_skip in [0usize, 4usize, 8usize] {
             let mip_table_off = str_end + header_skip;
-            let Some(_first_mip) = read_i32_le(uexp, mip_table_off) else {
+            let Some(hdr_slice) = uexp.get(mip_table_off..mip_table_off + 8) else {
                 continue;
             };
-            let Some(num_mips) = read_i32_le(uexp, mip_table_off + 4) else {
-                continue;
-            };
+            let _first_mip = LittleEndian::read_i32(&hdr_slice[0..4]);
+            let num_mips = LittleEndian::read_i32(&hdr_slice[4..8]);
             if !(1..=16).contains(&num_mips) {
                 continue;
             }
@@ -313,30 +299,34 @@ fn parse_single_mip<'a>(
     expected_w: usize,
     expected_h: usize,
 ) -> Option<(usize, usize, &'a [u8])> {
-    let b_cooked = read_i32_le(uexp, mip_off)?;
+    let mut cur = Cursor::new(uexp.get(mip_off..)?);
+    let b_cooked = cur.read_i32::<LittleEndian>().ok()?;
     if b_cooked != 1 {
         return None;
     }
-    let bulk_flags = read_u32_le(uexp, mip_off + 4)?;
+    let bulk_flags = cur.read_u32::<LittleEndian>().ok()?;
     let is_64bit = (bulk_flags & 0x2000) != 0;
 
     let (elem_count, size_on_disk, after_bulk_hdr) = if is_64bit {
-        let ec = read_i64_le(uexp, mip_off + 8)? as usize;
-        let sod = read_i64_le(uexp, mip_off + 16)? as usize;
-        let _offset_in_file = read_i64_le(uexp, mip_off + 24)?;
+        let ec = cur.read_i64::<LittleEndian>().ok()? as usize;
+        let sod = cur.read_i64::<LittleEndian>().ok()? as usize;
+        let _offset_in_file = cur.read_i64::<LittleEndian>().ok()?;
         (ec, sod, mip_off + 32)
     } else {
-        let ec = read_i32_le(uexp, mip_off + 8)? as usize;
-        let sod = read_i32_le(uexp, mip_off + 12)? as usize;
-        let _offset_in_file = read_i64_le(uexp, mip_off + 16)?;
+        let ec = cur.read_i32::<LittleEndian>().ok()? as usize;
+        let sod = cur.read_i32::<LittleEndian>().ok()? as usize;
+        let _offset_in_file = cur.read_i64::<LittleEndian>().ok()?;
         (ec, sod, mip_off + 24)
     };
 
     let is_inline = (bulk_flags & 0x01) == 0 && (bulk_flags & 0x100) == 0;
-    if is_inline && after_bulk_hdr + elem_count + 12 <= uexp.len() {
-        let sx = read_i32_le(uexp, after_bulk_hdr + elem_count)? as usize;
-        let sy = read_i32_le(uexp, after_bulk_hdr + elem_count + 4)? as usize;
-        let sz = read_i32_le(uexp, after_bulk_hdr + elem_count + 8).unwrap_or(1);
+    if is_inline
+        && let Some(dim_slice) =
+            uexp.get(after_bulk_hdr + elem_count..after_bulk_hdr + elem_count + 12)
+    {
+        let sx = LittleEndian::read_i32(&dim_slice[0..4]) as usize;
+        let sy = LittleEndian::read_i32(&dim_slice[4..8]) as usize;
+        let sz = LittleEndian::read_i32(&dim_slice[8..12]);
         if sx > 0 && sy > 0 && (1..=64).contains(&sz) && format.mip_byte_size(sx, sy) == elem_count
         {
             return Some((sx, sy, &uexp[after_bulk_hdr..after_bulk_hdr + elem_count]));
@@ -345,10 +335,10 @@ fn parse_single_mip<'a>(
 
     // External `.ubulk` payload: SizeX, SizeY, SizeZ immediately follow the BulkData header in `.uexp`
     if let Some(ubulk_bytes) = ubulk
-        && after_bulk_hdr + 12 <= uexp.len()
+        && let Some(dim_slice) = uexp.get(after_bulk_hdr..after_bulk_hdr + 12)
     {
-        let sx = read_i32_le(uexp, after_bulk_hdr)? as usize;
-        let sy = read_i32_le(uexp, after_bulk_hdr + 4)? as usize;
+        let sx = LittleEndian::read_i32(&dim_slice[0..4]) as usize;
+        let sy = LittleEndian::read_i32(&dim_slice[4..8]) as usize;
         let width = if sx > 0 { sx } else { expected_w };
         let height = if sy > 0 { sy } else { expected_h };
         let needed = format.mip_byte_size(width, height).max(size_on_disk);
@@ -367,7 +357,7 @@ fn try_scan_mip_in_uexp(
     names: &[String],
 ) -> Result<DecodedTexture, String> {
     for off in 0..uexp.len().saturating_sub(36) {
-        if read_i32_le(uexp, off) == Some(1)
+        if LittleEndian::read_i32(&uexp[off..off + 4]) == 1
             && let Some((w, h, mip_bytes)) = parse_single_mip(uexp, ubulk, off, format, 0, 0)
             && let Ok(rgba8) = decode_mip_to_rgba8(mip_bytes, w, h, format)
         {

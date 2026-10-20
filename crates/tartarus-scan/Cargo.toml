@@ -9,6 +9,8 @@ tartarus-core = { path = "../tartarus-core" }
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+glam.workspace = true
+palette.workspace = true
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]

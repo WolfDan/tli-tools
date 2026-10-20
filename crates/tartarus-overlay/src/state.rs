@@ -9,31 +9,17 @@ use crate::capture::GameWindowPlacement;
 use crate::tray::ControlHub;
 
 pub fn read_process_rss_mb() -> f64 {
-    use std::io::Read;
-    if let Ok(mut file) = std::fs::File::open("/proc/self/statm") {
-        let mut buf = [0u8; 128];
-        if let Ok(n) = file.read(&mut buf)
-            && let Ok(statm) = std::str::from_utf8(&buf[..n]) {
-                let mut parts = statm.split_whitespace();
-                let _size = parts.next();
-                if let (Some(res_str), Some(shared_str)) = (parts.next(), parts.next())
-                    && let (Ok(resident), Ok(shared)) =
-                        (res_str.parse::<u64>(), shared_str.parse::<u64>())
-                    {
-                        let private_pages = resident.saturating_sub(shared);
-                        return (private_pages as f64) * (4096.0 / (1024.0 * 1024.0));
-                    }
-            }
-    }
-    0.0
+    memory_stats::memory_stats()
+        .map(|s| (s.physical_mem as f64) / (1024.0 * 1024.0))
+        .unwrap_or(0.0)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum UiToWorker {
     CaptureNow,
     ConfirmTools,
     AckTreasureNow,
-    UpdateModelAndRecheck(BoardModel),
+    UpdateModelAndRecheck(Box<BoardModel>),
     LoadExample,
 }
 
@@ -202,7 +188,7 @@ pub fn initial_snapshot() -> OverlaySnapshot {
 
 #[derive(Clone, Debug)]
 pub enum WorkerToUi {
-    Snapshot(OverlaySnapshot),
+    Snapshot(Box<OverlaySnapshot>),
     RiotState(bool),
     GamePlacement(GameWindowPlacement),
 }

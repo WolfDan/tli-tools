@@ -14,33 +14,25 @@ fn main() -> Result<(), String> {
         .unwrap_or(&manifest_dir)
         .to_path_buf();
 
-    let mut pak_dir: Option<PathBuf> = None;
-    let mut out_dir = workspace_root.join("assets/s16");
-    let mut lang = String::from("en");
-    let mut emit_rust = workspace_root.join("crates/tartarus-scan/src/cv_data.rs");
-
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--pak-dir" if i + 1 < args.len() => {
-                pak_dir = Some(PathBuf::from(&args[i + 1]));
-                i += 2;
-            }
-            "--out-dir" if i + 1 < args.len() => {
-                out_dir = PathBuf::from(&args[i + 1]);
-                i += 2;
-            }
-            "--lang" if i + 1 < args.len() => {
-                lang = args[i + 1].clone();
-                i += 2;
-            }
-            "--emit-rust" if i + 1 < args.len() => {
-                emit_rust = PathBuf::from(&args[i + 1]);
-                i += 2;
-            }
-            other => return Err(format!("Unknown argument: {other}")),
-        }
+    let mut pargs = pico_args::Arguments::from_env();
+    let pak_dir: Option<PathBuf> = pargs
+        .opt_value_from_str("--pak-dir")
+        .map_err(|e| e.to_string())?;
+    let out_dir: PathBuf = pargs
+        .opt_value_from_str("--out-dir")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| workspace_root.join("assets/s16"));
+    let lang: String = pargs
+        .opt_value_from_str("--lang")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| String::from("en"));
+    let emit_rust: PathBuf = pargs
+        .opt_value_from_str("--emit-rust")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| workspace_root.join("crates/tartarus-scan/src/cv_data.rs"));
+    let remaining = pargs.finish();
+    if let Some(unknown) = remaining.first() {
+        return Err(format!("Unknown argument: {}", unknown.to_string_lossy()));
     }
 
     let pak_dir = pak_dir

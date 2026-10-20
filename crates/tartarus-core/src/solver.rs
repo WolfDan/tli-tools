@@ -355,78 +355,27 @@ pub fn apply_action(st: &mut SimState, action: &SimAction) -> bool {
 }
 
 /// Zero-allocation stack-resident memoization table for `feed`.
+#[derive(Default)]
 pub struct FeedMemo {
-    table: [u8; 128],
-    keys: [u128; 64],
-    vals: [f64; 64],
-    len: usize,
+    map: heapless::FnvIndexMap<u128, f64, 64>,
 }
 
 impl FeedMemo {
     #[inline]
     pub fn new() -> Self {
         Self {
-            table: [0; 128],
-            keys: [0; 64],
-            vals: [0.0; 64],
-            len: 0,
+            map: heapless::FnvIndexMap::new(),
         }
-    }
-
-    #[inline]
-    fn hash(key: u128) -> usize {
-        let lo = key as u64;
-        let hi = (key >> 64) as u64;
-        let h = (lo ^ hi.rotate_left(29)).wrapping_mul(0x9e3779b97f4a7c15);
-        (h >> 57) as usize
     }
 
     #[inline]
     pub fn get(&self, key: u128) -> Option<f64> {
-        let mut idx = Self::hash(key);
-        for _ in 0..8 {
-            let slot = self.table[idx];
-            if slot == 0 {
-                return None;
-            }
-            let e = (slot - 1) as usize;
-            if self.keys[e] == key {
-                return Some(self.vals[e]);
-            }
-            idx = (idx + 1) & 127;
-        }
-        None
+        self.map.get(&key).copied()
     }
 
     #[inline]
     pub fn insert(&mut self, key: u128, val: f64) {
-        if self.len >= 64 {
-            return;
-        }
-        let mut idx = Self::hash(key);
-        for _ in 0..8 {
-            let slot = self.table[idx];
-            if slot == 0 {
-                let e = self.len;
-                self.len += 1;
-                self.keys[e] = key;
-                self.vals[e] = val;
-                self.table[idx] = (e + 1) as u8;
-                return;
-            }
-            let e = (slot - 1) as usize;
-            if self.keys[e] == key {
-                self.vals[e] = val;
-                return;
-            }
-            idx = (idx + 1) & 127;
-        }
-    }
-}
-
-impl Default for FeedMemo {
-    fn default() -> Self {
-        Self::new()
+        let _ = self.map.insert(key, val);
     }
 }
 
@@ -635,8 +584,8 @@ impl Context {
         let double_from = if fight { 0 } else { st.params.double_eat_tier };
 
         let mut v = [0.0; 6];
-        for t in 0..6 {
-            v[t] = p.tier_base.powi(t as i32);
+        for (t, slot) in v.iter_mut().enumerate() {
+            *slot = p.tier_base.powi(t as i32);
         }
         let open_dist = normalize5(&st.params.tier_weights);
         let r_val = v[RAINBOW as usize]
@@ -694,9 +643,10 @@ impl Context {
             for c in &st.cells {
                 if !c.sealed
                     && let Some(inmate) = c.inmate
-                        && inmate.tier < RAINBOW {
-                            val_sum += v[inmate.tier as usize];
-                        }
+                    && inmate.tier < RAINBOW
+                {
+                    val_sum += v[inmate.tier as usize];
+                }
             }
             Some((2.0 * val_sum) / (board_len as f64))
         } else {
@@ -945,7 +895,7 @@ pub fn feed(ctx: &mut Context, t: u8, b: u8, comp: &mut [u8; 24], crowd: usize) 
                 continue;
             }
             comp[idx] -= 1;
-            let val = bite(ctx, t, b, comp, crowd, 0, true, mt);
+            let val = bite(ctx, (t, b), comp, crowd, 0, true, mt);
             if val > out {
                 out = val;
             }
@@ -960,11 +910,9 @@ pub fn feed(ctx: &mut Context, t: u8, b: u8, comp: &mut [u8; 24], crowd: usize) 
     out
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn bite(
     ctx: &mut Context,
-    t: u8,
-    b: u8,
+    (t, b): (u8, u8),
     comp: &mut [u8; 24],
     crowd: usize,
     extra: u8,
@@ -1011,17 +959,14 @@ pub fn bite(
     -ctx.v[meal_tier as usize] + after_collar
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn devour_delta(
     ctx: &mut Context,
-    tier: u8,
-    beast: u8,
-    meal: u8,
+    (tier, beast): (u8, u8),
+    (meal_tier, meal): (u8, u8),
     scratch: bool,
     comp: &mut [u8; 24],
     crowd: usize,
     chained: bool,
-    meal_tier: u8,
 ) -> f64 {
     let i = (meal_tier as usize) * 4 + (meal as usize);
     if !scratch {
@@ -1030,7 +975,7 @@ pub fn devour_delta(
     let c_arg = if scratch { crowd + 1 } else { crowd };
     let extra = if scratch { ctx.scratch_extra } else { 0 };
     let value =
-        bite(ctx, tier, beast, comp, c_arg, extra, chained, meal_tier) - ctx.v[tier as usize];
+        bite(ctx, (tier, beast), comp, c_arg, extra, chained, meal_tier) - ctx.v[tier as usize];
     if !scratch {
         comp[i] += 1;
     }
@@ -1055,7 +1000,7 @@ pub fn best_meal(
             if comp[idx] == 0 {
                 continue;
             }
-            let val = devour_delta(ctx, tier, beast, f, false, comp, crowd, false, mt);
+            let val = devour_delta(ctx, (tier, beast), (mt, f), false, comp, crowd, false);
             if val > best_val {
                 best_val = val;
                 best_m = f as i8;
@@ -1202,12 +1147,8 @@ pub fn stair(ctx: &Context, comp: &[u8; 24]) -> f64 {
     for t in 0..(RAINBOW as usize) {
         let mut fed = 0;
         let eats = ctx.eats_at(t as u8);
-        for b in 0..4 {
-            if eats[b]
-                .slice()
-                .iter()
-                .any(|&f| comp[t * 4 + (f as usize)] > 0)
-            {
+        for eat in eats {
+            if eat.slice().iter().any(|&f| comp[t * 4 + (f as usize)] > 0) {
                 fed += 1;
             }
         }
@@ -1340,9 +1281,11 @@ pub fn swap_value_with_comp(
     let dist = swap_dist(st, ctx, tier);
     let mut maiden_counts = ctx.maiden;
     if let Some(ref mut counts) = maiden_counts
-        && (tier as usize) < 5 && counts[tier as usize] > 0 {
-            counts[tier as usize] -= 1;
-        }
+        && (tier as usize) < 5
+        && counts[tier as usize] > 0
+    {
+        counts[tier as usize] -= 1;
+    }
 
     let beasts_slice: &[u8] = match beast {
         0 if ctx.pestle => &[0],
@@ -1361,20 +1304,21 @@ pub fn swap_value_with_comp(
         }
         let mut eff_t = t as u8;
         if let Some(ref counts) = maiden_counts
-            && t < 5 {
-                let mut above = 0u8;
-                let mut below = 0u8;
-                for (u, &n) in counts.iter().enumerate() {
-                    if u > t {
-                        above += n;
-                    } else if u < t {
-                        below += n;
-                    }
-                }
-                if above == below {
-                    eff_t = (eff_t + 3).min(RAINBOW);
+            && t < 5
+        {
+            let mut above = 0u8;
+            let mut below = 0u8;
+            for (u, &n) in counts.iter().enumerate() {
+                if u > t {
+                    above += n;
+                } else if u < t {
+                    below += n;
                 }
             }
+            if above == below {
+                eff_t = (eff_t + 3).min(RAINBOW);
+            }
+        }
 
         if eff_t >= RAINBOW {
             value += p * ctx.r_val;
@@ -1616,8 +1560,8 @@ pub fn event_worth_of(st: &SimState, ctx: &Context, comp: &[u8; 24], kind: Event
         EventKind::Trickster => trickster_value(ctx, &ctx.open_dist),
         EventKind::Appetite => {
             let mut low = u8::MAX;
-            for i in 0..20 {
-                if comp[i] > 0 {
+            for (i, &c_val) in comp.iter().enumerate().take(20) {
+                if c_val > 0 {
                     low = (i / 4) as u8;
                     break;
                 }
@@ -1716,14 +1660,12 @@ pub fn event_worth_of_cell(
                     kcomp[(m_tier as usize) * 4 + (food as usize)] += 1;
                     let dev = devour_delta(
                         ctx,
-                        tier,
-                        beast,
-                        food,
+                        (tier, beast),
+                        (m_tier, food),
                         false,
                         &mut kcomp,
                         kcrowd + 1,
                         false,
-                        m_tier,
                     );
                     return spawn_v + (ctx.p.w_now * dev).max(ctx.lift);
                 }
@@ -1738,27 +1680,29 @@ pub fn event_worth_of_cell(
             }
             _ => {}
         }
-    } else if c.sealed && c.known == 1
-        && let Some(h) = c.hidden {
-            let tier = h.tier.min(SUPREME);
-            match kind {
-                EventKind::Trickster => {
-                    return if tier >= SUPREME {
-                        0.0
-                    } else {
-                        (ctx.v[SUPREME as usize] - ctx.v[tier as usize]).max(0.0)
-                    };
-                }
-                EventKind::Transfer => {
-                    return if ctx.sealed > 1 {
-                        ctx.p.w_open * ctx.v[tier as usize] + 0.5 * ctx.lift
-                    } else {
-                        0.0
-                    };
-                }
-                _ => {}
+    } else if c.sealed
+        && c.known == 1
+        && let Some(h) = c.hidden
+    {
+        let tier = h.tier.min(SUPREME);
+        match kind {
+            EventKind::Trickster => {
+                return if tier >= SUPREME {
+                    0.0
+                } else {
+                    (ctx.v[SUPREME as usize] - ctx.v[tier as usize]).max(0.0)
+                };
             }
+            EventKind::Transfer => {
+                return if ctx.sealed > 1 {
+                    ctx.p.w_open * ctx.v[tier as usize] + 0.5 * ctx.lift
+                } else {
+                    0.0
+                };
+            }
+            _ => {}
         }
+    }
 
     event_worth_of(st, ctx, board_comp, kind)
 }
@@ -1831,16 +1775,17 @@ pub fn office_values(st: &SimState, ctx: &Context, comp: &[u8; 24]) -> OfficeVal
             continue;
         }
         if let Some(inmate) = c.inmate
-            && inmate.tier < RAINBOW {
-                let t = inmate.tier as usize;
-                let next_v = if inmate.tier + 1 >= RAINBOW {
-                    ctx.r_val
-                } else {
-                    ctx.v[t + 1]
-                };
-                bestow += next_v - ctx.v[t];
-                count += 1;
-            }
+            && inmate.tier < RAINBOW
+        {
+            let t = inmate.tier as usize;
+            let next_v = if inmate.tier + 1 >= RAINBOW {
+                ctx.r_val
+            } else {
+                ctx.v[t + 1]
+            };
+            bestow += next_v - ctx.v[t];
+            count += 1;
+        }
     }
     bestow /= (count.max(1)) as f64;
     let free = st
@@ -2113,14 +2058,17 @@ pub fn patrol_scores_fast(st: &SimState, ctx: &mut Context) -> ([PatrolCellScore
                 && st.link_of(inmate.id).is_none()
             {
                 for oc in &st.cells {
-                    if oc.n != c.n && !oc.sealed
+                    if oc.n != c.n
+                        && !oc.sealed
                         && let Some(meal) = oc.inmate
-                            && st.can_eat(inmate, meal) && st.link_of(meal.id).is_none() {
-                                let hv = hunt_pair_ev(st, ctx, inmate.tier, meal.tier);
-                                if hv > act_val {
-                                    act_val = hv;
-                                }
-                            }
+                        && st.can_eat(inmate, meal)
+                        && st.link_of(meal.id).is_none()
+                    {
+                        let hv = hunt_pair_ev(st, ctx, inmate.tier, meal.tier);
+                        if hv > act_val {
+                            act_val = hv;
+                        }
+                    }
                 }
             }
             score += p.w_walk * act_val;
@@ -2250,14 +2198,14 @@ pub fn patrol_cell_why(st: &SimState, ctx: &mut Context, n: u8) -> String {
         }
         why
     } else if let Some(inmate) = c.inmate {
-        if c.event.is_some() {
+        if let Some(ev) = c.event {
             if !c.event_known {
                 format!(
                     "a special event waits in the cell with its {}",
                     describe_inmate(inmate)
                 )
             } else {
-                event_why(c.event.unwrap()).replace("behind the door", "in the cell")
+                event_why(ev).replace("behind the door", "in the cell")
             }
         } else {
             format!("its {} can act today", describe_inmate(inmate))
@@ -2437,14 +2385,12 @@ pub fn devour_scores(st: &SimState, ctx: &mut Context) -> ([DevourScore; 16], us
         };
         let delta = devour_delta(
             ctx,
-            tier,
-            beast,
-            meal.beast.idx() as u8,
+            (tier, beast),
+            (m_tier, meal.beast.idx() as u8),
             o.scratch,
             &mut comp,
             crowd,
             chained,
-            m_tier,
         );
         out[idx] = DevourScore {
             cell: o.cell,
@@ -2489,30 +2435,30 @@ pub fn swap_gain_here(st: &SimState, ctx: &mut Context) -> f64 {
         for c in &st.cells {
             if !c.sealed
                 && let Some(i) = c.inmate
-                    && i.tier < RAINBOW {
-                        board_len += 1;
-                        let t = i.tier as usize;
-                        lift_sum += ctx.v[t + 1] - ctx.v[t];
-                    }
+                && i.tier < RAINBOW
+            {
+                board_len += 1;
+                let t = i.tier as usize;
+                lift_sum += ctx.v[t + 1] - ctx.v[t];
+            }
         }
         let lift = lift_sum / ((board_len.max(1)) as f64);
         gain += ((st.params.ivory_count as usize).min(board_len) as f64) * lift;
         return gain;
     }
-    if (inmate.tier as i8) <= ctx.swap_cap {
-        gain
-    } else if inmate.tier == 2
-        && st.can_devour_now()
-        && st.used.devour_after_swap
-        && gain > 0.08
-        && best_meal(
-            ctx,
-            inmate.tier,
-            inmate.beast.idx() as u8,
-            &mut kcomp,
-            kcrowd,
-        )
-        .0 <= 0.0
+    if (inmate.tier as i8) <= ctx.swap_cap
+        || (inmate.tier == 2
+            && st.can_devour_now()
+            && st.used.devour_after_swap
+            && gain > 0.08
+            && best_meal(
+                ctx,
+                inmate.tier,
+                inmate.beast.idx() as u8,
+                &mut kcomp,
+                kcrowd,
+            )
+            .0 <= 0.0)
     {
         gain
     } else {
@@ -2574,31 +2520,32 @@ pub fn board_value(st: &SimState, ctx: &mut Context) -> f64 {
     if ctx.ravenous && ctx.top_tier >= 2 && ctx.top_tier < RAINBOW {
         for c in &st.cells {
             if !c.sealed
-                && let Some(top) = c.inmate.filter(|i| i.tier == ctx.top_tier) {
-                    let gain = 1
-                        + u8::from(ctx.crown && top.beast == Beast::Lion)
-                        + u8::from(ctx.skewer && top.beast == Beast::Rat);
-                    let to = (top.tier + gain).min(RAINBOW);
-                    let to_v = if to >= RAINBOW {
-                        ctx.r_val
-                    } else {
-                        ctx.v[to as usize]
-                    };
-                    let mut best_adj = 0.0_f64;
-                    for adj in [((c.n + 15) & 15), ((c.n + 1) & 15)] {
-                        let ac = &st.cells[adj as usize];
-                        if !ac.sealed
-                            && let Some(victim) = ac.inmate.filter(|v| v.tier < top.tier) {
-                                let net =
-                                    (to_v - ctx.v[top.tier as usize] - ctx.v[victim.tier as usize])
-                                        .max(0.0);
-                                if net > best_adj {
-                                    best_adj = net;
-                                }
-                            }
+                && let Some(top) = c.inmate.filter(|i| i.tier == ctx.top_tier)
+            {
+                let gain = 1
+                    + u8::from(ctx.crown && top.beast == Beast::Lion)
+                    + u8::from(ctx.skewer && top.beast == Beast::Rat);
+                let to = (top.tier + gain).min(RAINBOW);
+                let to_v = if to >= RAINBOW {
+                    ctx.r_val
+                } else {
+                    ctx.v[to as usize]
+                };
+                let mut best_adj = 0.0_f64;
+                for adj in [((c.n + 15) & 15), ((c.n + 1) & 15)] {
+                    let ac = &st.cells[adj as usize];
+                    if !ac.sealed
+                        && let Some(victim) = ac.inmate.filter(|v| v.tier < top.tier)
+                    {
+                        let net = (to_v - ctx.v[top.tier as usize] - ctx.v[victim.tier as usize])
+                            .max(0.0);
+                        if net > best_adj {
+                            best_adj = net;
+                        }
                     }
-                    value += 0.45 * best_adj;
                 }
+                value += 0.45 * best_adj;
+            }
         }
     }
     for &link in &st.prey[..st.prey_len as usize] {
@@ -2762,24 +2709,27 @@ where
     let mut counts = [0u8; 24];
     let mut best: Option<(ConvoyPlan, [u8; 24])> = None;
 
-    #[allow(clippy::too_many_arguments)]
-    fn walk<F>(
-        i: usize,
-        pressure: u16,
+    struct ConvoyWalkCtx<'a, F> {
         glen: usize,
-        groups: &[CargoGroup; 24],
-        counts: &mut [u8; 24],
+        groups: &'a [CargoGroup; 24],
         cap: u16,
         bounty: i8,
         contract: Contract,
-        escorts: &[EscortKind],
-        ctx: &Context,
-        rate: &F,
+        escorts: &'a [EscortKind],
+        ctx: &'a Context,
+        rate: &'a F,
+    }
+
+    fn walk<F>(
+        w: &ConvoyWalkCtx<'_, F>,
+        i: usize,
+        pressure: u16,
+        counts: &mut [u8; 24],
         best: &mut Option<(ConvoyPlan, [u8; 24])>,
     ) where
         F: Fn(&ConvoyPlan) -> f64,
     {
-        if i == glen {
+        if i == w.glen {
             let mut size = 0u8;
             let mut mask = 0u8;
             let mut elite = 0u8;
@@ -2791,12 +2741,12 @@ where
             let mut press = 0u16;
             let mut kept = 0.0;
 
-            for idx in 0..glen {
+            for idx in 0..w.glen {
                 let k = counts[idx];
                 if k == 0 {
                     continue;
                 }
-                let g = &groups[idx];
+                let g = &w.groups[idx];
                 size += k;
                 mask |= 1 << g.beast;
                 if g.tier == 2 || g.tier == 3 {
@@ -2813,7 +2763,7 @@ where
                 } else if g.tier < 3 {
                     below[g.beast as usize] += k;
                 }
-                let bonus = if g.tier >= SUPREME && (g.beast as i8) == bounty {
+                let bonus = if g.tier >= SUPREME && (g.beast as i8) == w.bounty {
                     8u16
                 } else {
                     0u16
@@ -2821,9 +2771,9 @@ where
                 points += (k as u16) * ((1u16 << g.tier) + bonus);
                 press += (k as u16) * PRESSURE[g.tier as usize];
                 let v_t = if g.tier >= RAINBOW {
-                    ctx.r_val
+                    w.ctx.r_val
                 } else {
-                    ctx.v[g.tier as usize]
+                    w.ctx.v[g.tier as usize]
                 };
                 kept += (k as f64) * v_t;
             }
@@ -2831,7 +2781,7 @@ where
                 return;
             }
             let beasts = mask.count_ones();
-            let fits = match contract.id {
+            let fits = match w.contract.id {
                 ContractId::Mixed => size >= 3 && beasts >= 2,
                 ContractId::Cohort => size >= 4,
                 ContractId::Veteran => elite >= 1 && low >= 2,
@@ -2843,7 +2793,7 @@ where
             if !fits {
                 return;
             }
-            for &escort in escorts {
+            for &escort in w.escorts {
                 if press > escort.cap() {
                     continue;
                 }
@@ -2859,7 +2809,7 @@ where
                     vault_ids: [0; 10],
                     vault_len: 0,
                 };
-                let sc = rate(&plan);
+                let sc = (w.rate)(&plan);
                 if sc > f64::NEG_INFINITY && (best.is_none() || sc > best.as_ref().unwrap().0.score)
                 {
                     plan.score = sc;
@@ -2868,46 +2818,30 @@ where
             }
             return;
         }
-        let g = &groups[i];
+        let g = &w.groups[i];
         let p_step = PRESSURE[g.tier as usize];
         for k in 0..=g.refs_len {
             let next_p = pressure + (k as u16) * p_step;
-            if next_p > cap {
+            if next_p > w.cap {
                 break;
             }
             counts[i] = k;
-            walk(
-                i + 1,
-                next_p,
-                glen,
-                groups,
-                counts,
-                cap,
-                bounty,
-                contract,
-                escorts,
-                ctx,
-                rate,
-                best,
-            );
+            walk(w, i + 1, next_p, counts, best);
         }
         counts[i] = 0;
     }
 
-    walk(
-        0,
-        0,
+    let w_ctx = ConvoyWalkCtx {
         glen,
-        &groups,
-        &mut counts,
+        groups: &groups,
         cap,
         bounty,
         contract,
-        &escorts[..elen],
+        escorts: &escorts[..elen],
         ctx,
-        &rate,
-        &mut best,
-    );
+        rate: &rate,
+    };
+    walk(&w_ctx, 0, 0, &mut counts, &mut best);
 
     let (mut best_plan, best_counts) = best?;
     for (i, g) in groups[..glen].iter().enumerate() {
@@ -3123,15 +3057,16 @@ pub fn wants_reroll(st: &SimState, p: &SolverParams, options: &[ToolId]) -> bool
 
 pub fn pick_tool(st: &SimState, p: &SolverParams, options: &[ToolId]) -> ToolId {
     if p.tool_sets
-        && let Some(gains) = tool_gains(st, options) {
-            let mut best = options[0];
-            for &id in &options[1..] {
-                if gains[id.idx()] > gains[best.idx()] {
-                    best = id;
-                }
+        && let Some(gains) = tool_gains(st, options)
+    {
+        let mut best = options[0];
+        for &id in &options[1..] {
+            if gains[id.idx()] > gains[best.idx()] {
+                best = id;
             }
-            return best;
         }
+        return best;
+    }
     for &t in &p.tool_rank {
         if options.contains(&t) {
             return t;
@@ -3203,21 +3138,22 @@ pub fn decide(
     }
 
     if let Some(ch) = st.challenge.as_ref()
-        && ch.window_open {
-            if let Some(plan) = convoy_plan(st, &ctx) {
-                return Some(SimAction::Deliver {
-                    cell_mask: plan.cell_mask,
-                    vault_ids: plan.vault_ids,
-                    vault_len: plan.vault_len,
-                    escort: plan.escort,
-                });
-            }
-            return Some(if ch.window_early {
-                SimAction::Close
-            } else {
-                SimAction::Skip
+        && ch.window_open
+    {
+        if let Some(plan) = convoy_plan(st, &ctx) {
+            return Some(SimAction::Deliver {
+                cell_mask: plan.cell_mask,
+                vault_ids: plan.vault_ids,
+                vault_len: plan.vault_len,
+                escort: plan.escort,
             });
         }
+        return Some(if ch.window_early {
+            SimAction::Close
+        } else {
+            SimAction::Skip
+        });
+    }
 
     if st.chaining_eater.is_some() {
         let (options, olen) = devour_scores(st, &mut ctx);
@@ -3253,88 +3189,89 @@ pub fn decide(
     }
 
     if st.phase == Phase::Event
-        && let Some((kind, cell_n)) = st.active_event {
-            if kind == EventKind::Chain {
-                return Some(SimAction::Event {
-                    accept: p.accept_chain,
-                });
-            }
-            if matches!(
-                kind,
-                EventKind::Appetite
-                    | EventKind::Convict
-                    | EventKind::Crow
-                    | EventKind::Freedom
-                    | EventKind::Usurp1
-                    | EventKind::Usurp2
-                    | EventKind::Usurp3
-                    | EventKind::Usurp4
-                    | EventKind::Ratway
-                    | EventKind::Hunt
-                    | EventKind::Portion
-                    | EventKind::Fortune
-                    | EventKind::Archenemy
-                    | EventKind::Transfer
-            ) {
-                return Some(SimAction::Event { accept: true });
-            }
-            let Some(exec) = st.cells[cell_n as usize].inmate else {
-                return Some(SimAction::Event { accept: false });
-            };
-            if kind == EventKind::Trickster {
-                return Some(SimAction::Event {
-                    accept: exec.tier < SUPREME,
-                });
-            }
-            let (mut comp, crowd) = composition(st, cell_n as i16);
-            let mut ev_val = execution_value(st, &ctx, exec.tier, exec.beast.idx() as u8, &comp);
-            if ev_val != 0.0 && st.can_devour_now() && exec.tier < RAINBOW {
-                let same = st.params.execution_same_tier;
-                let prey = exec.beast.primary_prey().idx();
-                let max_t = if same {
-                    exec.tier as i16
-                } else {
-                    (exec.tier as i16) - 1
-                };
-                let mut comp_after = comp;
-                let mut count = 0u8;
-                for t in 0..=max_t {
-                    if same && t != (exec.tier as i16) {
-                        continue;
-                    }
-                    let idx = (t as usize) * 4 + prey;
-                    count += comp_after[idx];
-                    comp_after[idx] = 0;
-                }
-                if count > 0 {
-                    let (bm, _) = best_meal(
-                        &mut ctx,
-                        exec.tier,
-                        exec.beast.idx() as u8,
-                        &mut comp,
-                        crowd,
-                    );
-                    let to = (exec.tier + count).min(RAINBOW);
-                    let mut post_dev = 0.0;
-                    if to < RAINBOW {
-                        let rem_crowd = crowd.saturating_sub(count as usize);
-                        for b in 0..4u8 {
-                            let (pbm, _) = best_meal(&mut ctx, to, b, &mut comp_after, rem_crowd);
-                            if pbm > 0.0 {
-                                post_dev += 0.25 * pbm;
-                            }
-                        }
-                    }
-                    ev_val += post_dev;
-                    if bm > 0.0 && ev_val < bm {
-                        return Some(SimAction::Event { accept: false });
-                    }
-                }
-            }
+        && let Some((kind, cell_n)) = st.active_event
+    {
+        if kind == EventKind::Chain {
             return Some(SimAction::Event {
-                accept: ev_val > p.exec_margin,
+                accept: p.accept_chain,
             });
         }
+        if matches!(
+            kind,
+            EventKind::Appetite
+                | EventKind::Convict
+                | EventKind::Crow
+                | EventKind::Freedom
+                | EventKind::Usurp1
+                | EventKind::Usurp2
+                | EventKind::Usurp3
+                | EventKind::Usurp4
+                | EventKind::Ratway
+                | EventKind::Hunt
+                | EventKind::Portion
+                | EventKind::Fortune
+                | EventKind::Archenemy
+                | EventKind::Transfer
+        ) {
+            return Some(SimAction::Event { accept: true });
+        }
+        let Some(exec) = st.cells[cell_n as usize].inmate else {
+            return Some(SimAction::Event { accept: false });
+        };
+        if kind == EventKind::Trickster {
+            return Some(SimAction::Event {
+                accept: exec.tier < SUPREME,
+            });
+        }
+        let (mut comp, crowd) = composition(st, cell_n as i16);
+        let mut ev_val = execution_value(st, &ctx, exec.tier, exec.beast.idx() as u8, &comp);
+        if ev_val != 0.0 && st.can_devour_now() && exec.tier < RAINBOW {
+            let same = st.params.execution_same_tier;
+            let prey = exec.beast.primary_prey().idx();
+            let max_t = if same {
+                exec.tier as i16
+            } else {
+                (exec.tier as i16) - 1
+            };
+            let mut comp_after = comp;
+            let mut count = 0u8;
+            for t in 0..=max_t {
+                if same && t != (exec.tier as i16) {
+                    continue;
+                }
+                let idx = (t as usize) * 4 + prey;
+                count += comp_after[idx];
+                comp_after[idx] = 0;
+            }
+            if count > 0 {
+                let (bm, _) = best_meal(
+                    &mut ctx,
+                    exec.tier,
+                    exec.beast.idx() as u8,
+                    &mut comp,
+                    crowd,
+                );
+                let to = (exec.tier + count).min(RAINBOW);
+                let mut post_dev = 0.0;
+                if to < RAINBOW {
+                    let rem_crowd = crowd.saturating_sub(count as usize);
+                    for b in 0..4u8 {
+                        let (pbm, _) = best_meal(&mut ctx, to, b, &mut comp_after, rem_crowd);
+                        if pbm > 0.0 {
+                            post_dev += 0.25 * pbm;
+                        }
+                    }
+                }
+                ev_val += post_dev;
+                if bm > 0.0 && ev_val < bm {
+                    return Some(SimAction::Event { accept: false });
+                }
+            }
+        }
+        return Some(SimAction::Event {
+            accept: ev_val > p.exec_margin,
+        });
+    }
 
     if st.phase == Phase::Patrol {
         let (scores, len) = patrol_scores_fast(st, &mut ctx);
@@ -3375,9 +3312,11 @@ pub fn decide(
         }
     }
     if let Some((h_cell, h_val)) = hunt
-        && h_val > 0.0 && h_val > swap_gain {
-            return Some(SimAction::Hunt { to: h_cell });
-        }
+        && h_val > 0.0
+        && h_val > swap_gain
+    {
+        return Some(SimAction::Hunt { to: h_cell });
+    }
     if swap_gain > 0.0 {
         return Some(SimAction::Swap);
     }
@@ -3504,9 +3443,10 @@ pub fn cargo_label(
     let mut names = Vec::with_capacity((cell_mask.count_ones() as usize) + vault_len);
     for n in 0..16u8 {
         if (cell_mask & (1u16 << n)) != 0
-            && let Some(inmate) = st.cells[n as usize].inmate {
-                names.push(format!("{} {}", describe_inmate(inmate), cell_label(n)));
-            }
+            && let Some(inmate) = st.cells[n as usize].inmate
+        {
+            names.push(format!("{} {}", describe_inmate(inmate), cell_label(n)));
+        }
     }
     for _ in 0..vault_len {
         names.push("a vault Rainbow".to_string());
@@ -3629,27 +3569,28 @@ pub fn candidates(st: &SimState) -> Vec<Candidate> {
     }
 
     if let Some(ch) = st.challenge.as_ref()
-        && ch.window_open {
-            out.extend(convoy_options(st, None));
-            if ch.window_early {
-                out.push(Candidate {
-                    action: SimAction::Close,
-                    label: "Close the early window".to_string(),
-                    kind: None,
-                    points: None,
-                    extra: false,
-                });
-            } else {
-                out.push(Candidate {
-                    action: SimAction::Skip,
-                    label: "Skip this contract".to_string(),
-                    kind: None,
-                    points: None,
-                    extra: false,
-                });
-            }
-            return out;
+        && ch.window_open
+    {
+        out.extend(convoy_options(st, None));
+        if ch.window_early {
+            out.push(Candidate {
+                action: SimAction::Close,
+                label: "Close the early window".to_string(),
+                kind: None,
+                points: None,
+                extra: false,
+            });
+        } else {
+            out.push(Candidate {
+                action: SimAction::Skip,
+                label: "Skip this contract".to_string(),
+                kind: None,
+                points: None,
+                extra: false,
+            });
         }
+        return out;
+    }
 
     if st.chaining_eater.is_some() {
         let (opts, olen) = st.chain_options();
@@ -3703,39 +3644,40 @@ pub fn candidates(st: &SimState) -> Vec<Candidate> {
     }
 
     if st.phase == Phase::Event
-        && let Some((kind, _)) = st.active_event {
-            let prefix = if matches!(kind, EventKind::Chain | EventKind::Execution) {
-                "the "
-            } else {
-                ""
-            };
-            let name = format!("{prefix}{}", kind.name());
-            if kind == EventKind::Hunt {
-                out.push(Candidate {
-                    action: SimAction::Event { accept: true },
-                    label: format!("Confirm {name}"),
-                    kind: None,
-                    points: None,
-                    extra: false,
-                });
-                return out;
-            }
+        && let Some((kind, _)) = st.active_event
+    {
+        let prefix = if matches!(kind, EventKind::Chain | EventKind::Execution) {
+            "the "
+        } else {
+            ""
+        };
+        let name = format!("{prefix}{}", kind.name());
+        if kind == EventKind::Hunt {
             out.push(Candidate {
                 action: SimAction::Event { accept: true },
-                label: format!("Accept {name}"),
-                kind: None,
-                points: None,
-                extra: false,
-            });
-            out.push(Candidate {
-                action: SimAction::Event { accept: false },
-                label: format!("Skip {name}"),
+                label: format!("Confirm {name}"),
                 kind: None,
                 points: None,
                 extra: false,
             });
             return out;
         }
+        out.push(Candidate {
+            action: SimAction::Event { accept: true },
+            label: format!("Accept {name}"),
+            kind: None,
+            points: None,
+            extra: false,
+        });
+        out.push(Candidate {
+            action: SimAction::Event { accept: false },
+            label: format!("Skip {name}"),
+            kind: None,
+            points: None,
+            extra: false,
+        });
+        return out;
+    }
 
     if st.phase == Phase::Patrol {
         if st.can_open_early() {
@@ -3804,20 +3746,22 @@ pub fn candidates(st: &SimState) -> Vec<Candidate> {
             extra: false,
         });
     }
-    if st.can_swap_now() && !here.sealed
-        && let Some(inmate) = here.inmate {
-            out.push(Candidate {
-                action: SimAction::Swap,
-                label: format!(
-                    "Replace the {} in {}",
-                    describe_inmate(inmate),
-                    cell_label(here.n)
-                ),
-                kind: None,
-                points: None,
-                extra: false,
-            });
-        }
+    if st.can_swap_now()
+        && !here.sealed
+        && let Some(inmate) = here.inmate
+    {
+        out.push(Candidate {
+            action: SimAction::Swap,
+            label: format!(
+                "Replace the {} in {}",
+                describe_inmate(inmate),
+                cell_label(here.n)
+            ),
+            kind: None,
+            points: None,
+            extra: false,
+        });
+    }
     if st.can_hunt_now() {
         let (targets, tlen) = st.hunt_targets();
         for &n in &targets[..tlen] {
@@ -4193,9 +4137,10 @@ pub fn solve_parallel_with_candidates(
                         for c in &trial.cells {
                             if !c.sealed
                                 && let Some(inm) = c.inmate
-                                    && inm.tier > max_tier {
-                                        max_tier = inm.tier;
-                                    }
+                                && inm.tier > max_tier
+                            {
+                                max_tier = inm.tier;
+                            }
                         }
                         (val, 0, 0, max_tier as u64)
                     };
@@ -4281,7 +4226,7 @@ pub fn convoy_why(st: &SimState, cell_mask: u16, escort: EscortKind, p: &SolverP
             }
         })
         .collect();
-    kept_cells.sort_by(|a, b| b.1.tier.cmp(&a.1.tier));
+    kept_cells.sort_by_key(|a| std::cmp::Reverse(a.1.tier));
     let kept_names: Vec<String> = kept_cells
         .into_iter()
         .take(2)

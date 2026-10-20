@@ -433,27 +433,31 @@ pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetI
             continue;
         }
         if let Ok(tex) = vfs.decode_texture(vpath)
-            && tex.width >= 16 && tex.height >= 16 && tex.width <= 4096 && tex.height <= 4096 {
-                let short_name = Path::new(vpath)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if map.get(&short_name).is_some_and(|prev| {
-                    prev.virtual_path.contains("/NoAtlas/") && !vpath.contains("/NoAtlas/")
-                }) {
-                    continue;
-                }
-                map.insert(
-                    short_name.clone(),
-                    DecodedAssetImage {
-                        virtual_path: vpath.clone(),
-                        short_name,
-                        width: tex.width,
-                        height: tex.height,
-                        rgba8: tex.rgba8,
-                    },
-                );
+            && tex.width >= 16
+            && tex.height >= 16
+            && tex.width <= 4096
+            && tex.height <= 4096
+        {
+            let short_name = Path::new(vpath)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if map.get(&short_name).is_some_and(|prev| {
+                prev.virtual_path.contains("/NoAtlas/") && !vpath.contains("/NoAtlas/")
+            }) {
+                continue;
             }
+            map.insert(
+                short_name.clone(),
+                DecodedAssetImage {
+                    virtual_path: vpath.clone(),
+                    short_name,
+                    width: tex.width,
+                    height: tex.height,
+                    rgba8: tex.rgba8,
+                },
+            );
+        }
     }
 
     // Also load any UPaperSprite assets if not already decoded as standalone textures
@@ -521,23 +525,9 @@ pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetI
 
 #[inline]
 pub fn hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    let rf = r / 255.0;
-    let gf = g / 255.0;
-    let bf = b / 255.0;
-    let max = rf.max(gf).max(bf);
-    let min = rf.min(gf).min(bf);
-    let d = max - min;
-    let s = if max == 0.0 { 0.0 } else { d / max };
-    let h = if d == 0.0 {
-        0.0
-    } else if max == rf {
-        60.0 * (((gf - bf) / d).rem_euclid(6.0))
-    } else if max == gf {
-        60.0 * (((bf - rf) / d) + 2.0)
-    } else {
-        60.0 * (((rf - gf) / d) + 4.0)
-    };
-    (h, s, max)
+    use palette::{FromColor, Hsv, Srgb};
+    let c = Hsv::from_color(Srgb::new(r / 255.0, g / 255.0, b / 255.0));
+    (c.hue.into_positive_degrees(), c.saturation, c.value)
 }
 
 pub fn alpha_bbox_thresh(
@@ -575,12 +565,8 @@ pub fn alpha_bbox(rgba: &[u8], w: usize, h: usize) -> (usize, usize, usize, usiz
 /// on an RGBA buffer within `[x0..x1, y0..y1]`.
 pub fn pick_art_bbox_on_rgba(
     rgba: &[u8],
-    img_w: usize,
-    img_h: usize,
-    x0: usize,
-    y0: usize,
-    x1: usize,
-    y1: usize,
+    (img_w, img_h): (usize, usize),
+    (x0, y0, x1, y1): (usize, usize, usize, usize),
     mx_hi: u8,
     v_thr: f32,
 ) -> Option<(usize, usize, usize, usize)> {
@@ -594,10 +580,10 @@ pub fn pick_art_bbox_on_rgba(
     let mut x_hist = vec![0u32; w];
     let mut y_hist = vec![0u32; h];
     let mut count = 0usize;
-    for dy in 0..h {
+    for (dy, y_slot) in y_hist.iter_mut().enumerate() {
         let row_base = (y0 + dy) * img_w * 4;
         let mut row_hits = 0u32;
-        for dx in 0..w {
+        for (dx, x_slot) in x_hist.iter_mut().enumerate() {
             let o = row_base + (x0 + dx) * 4;
             let r = rgba[o];
             let g = rgba[o + 1];
@@ -617,11 +603,11 @@ pub fn pick_art_bbox_on_rgba(
                 }
             };
             if matched {
-                x_hist[dx] += 1;
+                *x_slot += 1;
                 row_hits += 1;
             }
         }
-        y_hist[dy] = row_hits;
+        *y_slot = row_hits;
         count += row_hits as usize;
     }
     if count < 64 {
@@ -653,12 +639,8 @@ pub fn pick_art_bbox_on_rgba(
 /// Computes the `4x6` RGB grid (`[f32; 72]`) and 13-bin HSV histogram (`[f32; 13]`) matching `tartarus-scan::art_feature`.
 pub fn compute_art_feature_region(
     rgba: &[u8],
-    w: usize,
-    h: usize,
-    x0: usize,
-    y0: usize,
-    x1: usize,
-    y1: usize,
+    (w, h): (usize, usize),
+    (x0, y0, x1, y1): (usize, usize, usize, usize),
     bg_rgb: (f32, f32, f32),
 ) -> ([f32; 72], [f32; 13]) {
     let gx = 4usize;
@@ -716,183 +698,17 @@ pub fn synthesize_icon_feature(
     bg_rgb: (f32, f32, f32),
 ) -> ([f32; 72], [f32; 13]) {
     let (x0, y0, x1, y1) = alpha_bbox(&img.rgba8, img.width, img.height);
-    compute_art_feature_region(&img.rgba8, img.width, img.height, x0, y0, x1, y1, bg_rgb)
+    compute_art_feature_region(
+        &img.rgba8,
+        (img.width, img.height),
+        (x0, y0, x1, y1),
+        bg_rgb,
+    )
 }
 
 // ============================================================================
-// Visual Catalog Rendering (3 clean sheets with expanded 5x7 bitmap font)
+// Visual Catalog Rendering (3 clean sheets with font8x8 bitmap font)
 // ============================================================================
-
-fn glyph_5x7(c: char) -> [u8; 7] {
-    match c.to_ascii_uppercase() {
-        'A' => [
-            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
-        ],
-        'B' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
-        ],
-        'C' => [
-            0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
-        ],
-        'D' => [
-            0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100,
-        ],
-        'E' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
-        ],
-        'F' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
-        ],
-        'G' => [
-            0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110,
-        ],
-        'H' => [
-            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
-        ],
-        'I' => [
-            0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
-        ],
-        'J' => [
-            0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100,
-        ],
-        'K' => [
-            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
-        ],
-        'L' => [
-            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
-        ],
-        'M' => [
-            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
-        ],
-        'N' => [
-            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
-        ],
-        'O' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
-        ],
-        'P' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
-        ],
-        'Q' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
-        ],
-        'R' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
-        ],
-        'S' => [
-            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
-        ],
-        'T' => [
-            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
-        ],
-        'U' => [
-            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
-        ],
-        'V' => [
-            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
-        ],
-        'W' => [
-            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001,
-        ],
-        'X' => [
-            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
-        ],
-        'Y' => [
-            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
-        ],
-        'Z' => [
-            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
-        ],
-        '0' => [
-            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
-        ],
-        '1' => [
-            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
-        ],
-        '2' => [
-            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
-        ],
-        '3' => [
-            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
-        ],
-        '4' => [
-            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
-        ],
-        '5' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110,
-        ],
-        '6' => [
-            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
-        ],
-        '7' => [
-            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
-        ],
-        '8' => [
-            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
-        ],
-        '9' => [
-            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
-        ],
-        '.' => [
-            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100,
-        ],
-        ',' => [
-            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b01000,
-        ],
-        ':' => [
-            0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000,
-        ],
-        ';' => [
-            0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b01000,
-        ],
-        '-' => [
-            0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000,
-        ],
-        '_' => [
-            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111,
-        ],
-        '(' => [
-            0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010,
-        ],
-        ')' => [
-            0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000,
-        ],
-        '[' => [
-            0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110,
-        ],
-        ']' => [
-            0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110,
-        ],
-        '/' => [
-            0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000,
-        ],
-        '#' => [
-            0b01010, 0b11111, 0b01010, 0b01010, 0b11111, 0b01010, 0b00000,
-        ],
-        '\'' => [
-            0b00100, 0b00100, 0b01000, 0b00000, 0b00000, 0b00000, 0b00000,
-        ],
-        '"' => [
-            0b01010, 0b01010, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000,
-        ],
-        '+' => [
-            0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000,
-        ],
-        '%' => [
-            0b11001, 0b11010, 0b00010, 0b00100, 0b01000, 0b01011, 0b10011,
-        ],
-        '&' => [
-            0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101,
-        ],
-        '!' => [
-            0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100,
-        ],
-        '?' => [
-            0b01110, 0b10001, 0b00010, 0b00100, 0b00100, 0b00000, 0b00100,
-        ],
-        _ => [0; 7],
-    }
-}
 
 fn draw_bitmap_label(
     buf: &mut [u8],
@@ -903,23 +719,25 @@ fn draw_bitmap_label(
     text: &str,
     color: [u8; 4],
 ) {
+    use font8x8::UnicodeFonts;
     let mut cx = x;
     for ch in text.chars() {
         let ch_ascii = match ch {
             '\u{2018}' | '\u{2019}' => '\'',
             '\u{201c}' | '\u{201d}' => '"',
             '\u{2013}' | '\u{2014}' => '-',
-            other => other,
+            other => other.to_ascii_uppercase(),
         };
-        let rows = glyph_5x7(ch_ascii);
-        for (gy, row_bits) in rows.iter().enumerate() {
-            for gx in 0..5 {
-                if (row_bits >> (4 - gx)) & 1 != 0 {
-                    let px = cx + gx;
-                    let py = y + gy;
-                    if px < w && py < h {
-                        let idx = (py * w + px) * 4;
-                        buf[idx..idx + 4].copy_from_slice(&color);
+        if let Some(rows) = font8x8::BASIC_FONTS.get(ch_ascii) {
+            for (gy, &row_bits) in rows.iter().enumerate() {
+                for gx in 0..8 {
+                    if (row_bits >> gx) & 1 != 0 {
+                        let px = cx + gx;
+                        let py = y + gy;
+                        if px < w && py < h {
+                            let idx = (py * w + px) * 4;
+                            buf[idx..idx + 4].copy_from_slice(&color);
+                        }
                     }
                 }
             }
@@ -929,36 +747,17 @@ fn draw_bitmap_label(
 }
 
 fn wrap_text_lines(text: &str, max_chars: usize, max_lines: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        if current.is_empty() {
-            current.push_str(word);
-        } else if current.chars().count() + 1 + word.chars().count() <= max_chars {
-            current.push(' ');
-            current.push_str(word);
-        } else {
-            lines.push(current);
-            current = word.to_string();
-            if lines.len() >= max_lines {
-                break;
-            }
-        }
-    }
-    if !current.is_empty() && lines.len() < max_lines {
-        lines.push(current);
-    }
-    lines
+    textwrap::wrap(text, max_chars)
+        .into_iter()
+        .take(max_lines)
+        .map(|line| line.into_owned())
+        .collect()
 }
 
 fn fill_rect(
     buf: &mut [u8],
-    w: usize,
-    h: usize,
-    x0: usize,
-    y0: usize,
-    rw: usize,
-    rh: usize,
+    (w, h): (usize, usize),
+    (x0, y0, rw, rh): (usize, usize, usize, usize),
     color: [u8; 4],
 ) {
     for y in y0..(y0 + rh).min(h) {
@@ -971,34 +770,36 @@ fn fill_rect(
 
 fn blit_scaled(
     dst: &mut [u8],
-    dw: usize,
-    dh: usize,
-    dx0: usize,
-    dy0: usize,
-    tw: usize,
-    th: usize,
-    src: &[u8],
-    sw: usize,
-    sh: usize,
+    (dw, dh): (usize, usize),
+    (dx0, dy0, tw, th): (usize, usize, usize, usize),
+    src_img: &DecodedAssetImage,
 ) {
-    if sw == 0 || sh == 0 {
+    if src_img.width == 0 || src_img.height == 0 || tw == 0 || th == 0 {
         return;
     }
-    for y in 0..th {
-        let sy = (y * sh) / th;
-        for x in 0..tw {
-            let sx = (x * sw) / tw;
-            let s_idx = (sy * sw + sx) * 4;
-            let a = (src[s_idx + 3] as u32) as f32 / 255.0;
-            let r = (src[s_idx] as f32 * a + 32.0 * (1.0 - a)) as u8;
-            let g = (src[s_idx + 1] as f32 * a + 28.0 * (1.0 - a)) as u8;
-            let b = (src[s_idx + 2] as f32 * a + 36.0 * (1.0 - a)) as u8;
-            let px = dx0 + x;
-            let py = dy0 + y;
-            if px < dw && py < dh {
-                let d_idx = (py * dw + px) * 4;
-                dst[d_idx..d_idx + 4].copy_from_slice(&[r, g, b, 255]);
-            }
+    let Some(src) = image::RgbaImage::from_raw(
+        src_img.width as u32,
+        src_img.height as u32,
+        src_img.rgba8.clone(),
+    ) else {
+        return;
+    };
+    let resized = image::imageops::resize(
+        &src,
+        tw as u32,
+        th as u32,
+        image::imageops::FilterType::Nearest,
+    );
+    for (x, y, px) in resized.enumerate_pixels() {
+        let tx = dx0 + x as usize;
+        let ty = dy0 + y as usize;
+        if tx < dw && ty < dh {
+            let a = (px[3] as u32) as f32 / 255.0;
+            let r = (px[0] as f32 * a + 32.0 * (1.0 - a)) as u8;
+            let g = (px[1] as f32 * a + 28.0 * (1.0 - a)) as u8;
+            let b = (px[2] as f32 * a + 36.0 * (1.0 - a)) as u8;
+            let d_idx = (ty * dw + tx) * 4;
+            dst[d_idx..d_idx + 4].copy_from_slice(&[r, g, b, 255]);
         }
     }
 }
@@ -1039,28 +840,13 @@ pub fn render_catalog_relics_png(
 
         fill_rect(
             &mut buf,
-            width,
-            height,
-            x0,
-            y0,
-            cell_w - 12,
-            cell_h - 8,
+            (width, height),
+            (x0, y0, cell_w - 12, cell_h - 8),
             [28, 25, 34, 255],
         );
 
         if let Some(img) = textures.get(&relic.icon_asset) {
-            blit_scaled(
-                &mut buf,
-                width,
-                height,
-                x0 + 8,
-                y0 + 10,
-                76,
-                76,
-                &img.rgba8,
-                img.width,
-                img.height,
-            );
+            blit_scaled(&mut buf, (width, height), (x0 + 8, y0 + 10, 76, 76), img);
         }
 
         let compact_asset = relic.icon_asset.trim_start_matches("UI_S16Gameplay_");
@@ -1145,12 +931,8 @@ pub fn render_catalog_beasts_and_cells_png(
         let y0 = 46 + idx * row_h;
         fill_rect(
             &mut buf,
-            width,
-            height,
-            16,
-            y0,
-            width - 32,
-            row_h - 10,
+            (width, height),
+            (16, y0, width - 32, row_h - 10),
             [28, 25, 34, 255],
         );
 
@@ -1170,18 +952,7 @@ pub fn render_catalog_beasts_and_cells_png(
         );
 
         if let Some(norm) = textures.get(&b.normal_portrait_asset) {
-            blit_scaled(
-                &mut buf,
-                width,
-                height,
-                260,
-                y0 + 10,
-                84,
-                84,
-                &norm.rgba8,
-                norm.width,
-                norm.height,
-            );
+            blit_scaled(&mut buf, (width, height), (260, y0 + 10, 84, 84), norm);
             draw_bitmap_label(
                 &mut buf,
                 width,
@@ -1197,18 +968,7 @@ pub fn render_catalog_beasts_and_cells_png(
         }
 
         if let Some(jailed) = textures.get(&b.jailed_portrait_asset) {
-            blit_scaled(
-                &mut buf,
-                width,
-                height,
-                470,
-                y0 + 10,
-                84,
-                84,
-                &jailed.rgba8,
-                jailed.width,
-                jailed.height,
-            );
+            blit_scaled(&mut buf, (width, height), (470, y0 + 10, 84, 84), jailed);
             draw_bitmap_label(
                 &mut buf,
                 width,
@@ -1225,18 +985,7 @@ pub fn render_catalog_beasts_and_cells_png(
 
         if let Some(sp_name) = &b.special_mark_asset {
             if let Some(sp_img) = textures.get(sp_name) {
-                blit_scaled(
-                    &mut buf,
-                    width,
-                    height,
-                    690,
-                    y0 + 18,
-                    64,
-                    64,
-                    &sp_img.rgba8,
-                    sp_img.width,
-                    sp_img.height,
-                );
+                blit_scaled(&mut buf, (width, height), (690, y0 + 18, 64, 64), sp_img);
             }
             draw_bitmap_label(
                 &mut buf,
@@ -1297,20 +1046,14 @@ pub fn render_catalog_gifts_themes_events_png(
     for (idx, gift) in db.colored_rewards.iter().enumerate() {
         let x0 = 16 + idx * 312;
         let y0 = 34;
-        fill_rect(&mut buf, width, height, x0, y0, 300, 100, [28, 25, 34, 255]);
+        fill_rect(
+            &mut buf,
+            (width, height),
+            (x0, y0, 300, 100),
+            [28, 25, 34, 255],
+        );
         if let Some(img) = textures.get(&gift.icon_asset) {
-            blit_scaled(
-                &mut buf,
-                width,
-                height,
-                x0 + 8,
-                y0 + 12,
-                68,
-                68,
-                &img.rgba8,
-                img.width,
-                img.height,
-            );
+            blit_scaled(&mut buf, (width, height), (x0 + 8, y0 + 12, 68, 68), img);
         }
         let hdr = format!(
             "GIFT #{} [{}] {}",
@@ -1353,20 +1096,14 @@ pub fn render_catalog_gifts_themes_events_png(
     for (idx, theme) in db.start_themes.iter().enumerate() {
         let x0 = 16 + idx * 312;
         let y0 = 144;
-        fill_rect(&mut buf, width, height, x0, y0, 300, 108, [28, 25, 34, 255]);
+        fill_rect(
+            &mut buf,
+            (width, height),
+            (x0, y0, 300, 108),
+            [28, 25, 34, 255],
+        );
         if let Some(img) = textures.get(&theme.icon_asset) {
-            blit_scaled(
-                &mut buf,
-                width,
-                height,
-                x0 + 8,
-                y0 + 14,
-                68,
-                68,
-                &img.rgba8,
-                img.width,
-                img.height,
-            );
+            blit_scaled(&mut buf, (width, height), (x0 + 8, y0 + 14, 68, 68), img);
         }
         let hdr = format!(
             "THEME #{} [{}] {}",
@@ -1422,7 +1159,12 @@ pub fn render_catalog_gifts_themes_events_png(
     for (idx, task) in db.tasks.iter().enumerate() {
         let x0 = 16 + idx * 250;
         let y0 = 284;
-        fill_rect(&mut buf, width, height, x0, y0, 240, 74, [28, 25, 34, 255]);
+        fill_rect(
+            &mut buf,
+            (width, height),
+            (x0, y0, 240, 74),
+            [28, 25, 34, 255],
+        );
         let hdr = format!(
             "TASK #{} [{}] {}",
             task.id,
@@ -1473,12 +1215,8 @@ pub fn render_catalog_gifts_themes_events_png(
         let y0 = 394 + row * ev_h;
         fill_rect(
             &mut buf,
-            width,
-            height,
-            x0,
-            y0,
-            ev_w - 10,
-            ev_h - 8,
+            (width, height),
+            (x0, y0, ev_w - 10, ev_h - 8),
             [28, 25, 34, 255],
         );
         let hdr = format!(
@@ -1516,500 +1254,152 @@ pub fn render_catalog_gifts_themes_events_png(
 }
 
 // ============================================================================
-// Pure-Rust TrueType (.ufont) Parser & Contour Rasterizer
+// TrueType (.ufont) Parser & Rasterizer via `ab_glyph`
 // ============================================================================
 
-#[inline]
-fn read_u16_be(b: &[u8], o: usize) -> u16 {
-    u16::from_be_bytes([b[o], b[o + 1]])
-}
-
-#[inline]
-fn read_i16_be(b: &[u8], o: usize) -> i16 {
-    i16::from_be_bytes([b[o], b[o + 1]])
-}
-
-#[inline]
-fn read_u32_be(b: &[u8], o: usize) -> u32 {
-    u32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
-
 pub struct TtfFont {
-    pub data: Vec<u8>,
+    pub font: ab_glyph::FontVec,
     pub units_per_em: u16,
-    pub index_to_loc_format: i16,
-    pub num_h_metrics: u16,
-    pub cmap_offset: usize,
-    pub hmtx_offset: usize,
-    pub loca_offset: usize,
-    pub glyf_offset: usize,
+}
+
+pub struct RasterizedGlyph {
+    pub cw: usize,
+    pub ch_px: usize,
+    pub blur: Vec<f32>,
+    pub bx0: f64,
+    pub by0: f64,
+    pub bw: f64,
+    pub bh: f64,
+}
+
+pub type BoardPoint = (i32, i32, f32);
+pub type RoomBox = (u16, u16, u16, u16);
+pub type DigitTemplates = [Vec<[f32; 140]>; 10];
+pub type PrefixTemplates = Vec<[f32; 400]>;
+
+fn box_blur_3x3(raw: &[f32], cw: usize, ch_px: usize) -> Vec<f32> {
+    let mut blur = vec![30.0f32; cw * ch_px];
+    for y in 0..ch_px {
+        for x in 0..cw {
+            let mut s = 0.0f32;
+            for dy in -1isize..=1 {
+                for dx in -1isize..=1 {
+                    let yy = (y as isize + dy).clamp(0, ch_px as isize - 1) as usize;
+                    let xx = (x as isize + dx).clamp(0, cw as isize - 1) as usize;
+                    s += raw[yy * cw + xx];
+                }
+            }
+            blur[y * cw + x] = s / 9.0;
+        }
+    }
+    blur
 }
 
 impl TtfFont {
     pub fn parse(data: Vec<u8>) -> Result<Self, String> {
-        if data.len() < 12 {
-            return Err("Font file too short".to_string());
-        }
-        let num_tables = read_u16_be(&data, 4) as usize;
-        let mut head_offset = 0usize;
-        let mut hhea_offset = 0usize;
-        let mut hmtx_offset = 0usize;
-        let mut cmap_offset = 0usize;
-        let mut loca_offset = 0usize;
-        let mut glyf_offset = 0usize;
-
-        for i in 0..num_tables {
-            let rec = 12 + i * 16;
-            if rec + 16 > data.len() {
-                break;
-            }
-            let tag = &data[rec..rec + 4];
-            let off = read_u32_be(&data, rec + 8) as usize;
-            match tag {
-                b"head" => head_offset = off,
-                b"hhea" => hhea_offset = off,
-                b"hmtx" => hmtx_offset = off,
-                b"cmap" => cmap_offset = off,
-                b"loca" => loca_offset = off,
-                b"glyf" => glyf_offset = off,
-                _ => {}
-            }
-        }
-        if head_offset == 0 || cmap_offset == 0 || loca_offset == 0 || glyf_offset == 0 {
-            return Err("Missing required TrueType tables".to_string());
-        }
-        let units_per_em = read_u16_be(&data, head_offset + 18);
-        let index_to_loc_format = read_i16_be(&data, head_offset + 50);
-        let num_h_metrics = if hhea_offset != 0 {
-            read_u16_be(&data, hhea_offset + 34)
-        } else {
-            1
-        };
-        Ok(Self {
-            data,
-            units_per_em,
-            index_to_loc_format,
-            num_h_metrics,
-            cmap_offset,
-            hmtx_offset,
-            loca_offset,
-            glyf_offset,
-        })
+        use ab_glyph::Font;
+        let font = ab_glyph::FontVec::try_from_vec(data)
+            .map_err(|e| format!("Invalid TrueType font: {e}"))?;
+        let units_per_em = font.units_per_em().unwrap_or(1000.0).round() as u16;
+        Ok(Self { font, units_per_em })
     }
 
-    pub fn glyph_index(&self, codepoint: u32) -> u16 {
-        let b = &self.data;
-        let num_sub = read_u16_be(b, self.cmap_offset + 2) as usize;
-        let mut sub_f4 = 0usize;
-        let mut sub_f12 = 0usize;
-        for i in 0..num_sub {
-            let rec = self.cmap_offset + 4 + i * 8;
-            let off = self.cmap_offset + (read_u32_be(b, rec + 4) as usize);
-            if off + 4 > b.len() {
-                continue;
-            }
-            let fmt = read_u16_be(b, off);
-            if fmt == 12 {
-                sub_f12 = off;
-            } else if fmt == 4 && sub_f4 == 0 {
-                sub_f4 = off;
-            }
-        }
-        if sub_f12 != 0 {
-            let n_groups = read_u32_be(b, sub_f12 + 12) as usize;
-            for i in 0..n_groups {
-                let g = sub_f12 + 16 + i * 12;
-                let start = read_u32_be(b, g);
-                let end = read_u32_be(b, g + 4);
-                let gid0 = read_u32_be(b, g + 8);
-                if codepoint >= start && codepoint <= end {
-                    return (gid0 + (codepoint - start)) as u16;
-                }
-            }
-        }
-        if sub_f4 != 0 && codepoint <= 0xFFFF {
-            let cp = codepoint as u16;
-            let seg_count_x2 = read_u16_be(b, sub_f4 + 6) as usize;
-            let seg_count = seg_count_x2 / 2;
-            let end_codes = sub_f4 + 14;
-            let start_codes = end_codes + seg_count_x2 + 2;
-            let id_deltas = start_codes + seg_count_x2;
-            let id_range_offsets = id_deltas + seg_count_x2;
-            for i in 0..seg_count {
-                let end_c = read_u16_be(b, end_codes + i * 2);
-                if cp <= end_c {
-                    let start_c = read_u16_be(b, start_codes + i * 2);
-                    if cp < start_c {
-                        return 0;
-                    }
-                    let delta = read_i16_be(b, id_deltas + i * 2) as i32;
-                    let ro_pos = id_range_offsets + i * 2;
-                    let ro = read_u16_be(b, ro_pos) as usize;
-                    if ro == 0 {
-                        return ((cp as i32 + delta) & 0xFFFF) as u16;
-                    }
-                    let glyph_addr = ro_pos + ro + ((cp - start_c) as usize) * 2;
-                    let gid = read_u16_be(b, glyph_addr);
-                    if gid == 0 {
-                        return 0;
-                    }
-                    return ((gid as i32 + delta) & 0xFFFF) as u16;
-                }
-            }
-        }
-        0
-    }
-
-    pub fn advance_width(&self, gid: u16) -> u16 {
-        if self.hmtx_offset == 0 {
-            return self.units_per_em / 2;
-        }
-        let idx = (gid.min(self.num_h_metrics.saturating_sub(1)) as usize) * 4;
-        read_u16_be(&self.data, self.hmtx_offset + idx)
-    }
-
-    pub fn glyph_offset_range(&self, gid: u16) -> Option<(usize, usize)> {
-        let b = &self.data;
-        let idx = gid as usize;
-        let (o0, o1) = if self.index_to_loc_format == 0 {
-            let p = self.loca_offset + idx * 2;
-            if p + 4 > b.len() {
-                return None;
-            }
-            (
-                (read_u16_be(b, p) as usize) * 2,
-                (read_u16_be(b, p + 2) as usize) * 2,
-            )
-        } else {
-            let p = self.loca_offset + idx * 4;
-            if p + 8 > b.len() {
-                return None;
-            }
-            (read_u32_be(b, p) as usize, read_u32_be(b, p + 4) as usize)
-        };
-        if o0 >= o1 {
-            None
-        } else {
-            Some((self.glyf_offset + o0, self.glyf_offset + o1))
-        }
-    }
-
-    pub fn glyph_segments(
-        &self,
-        gid: u16,
-    ) -> Option<(i16, i16, i16, i16, Vec<(f32, f32, f32, f32)>)> {
-        let (g0, _g1) = self.glyph_offset_range(gid)?;
-        let b = &self.data;
-        let num_contours = read_i16_be(b, g0);
-        if num_contours <= 0 {
+    /// Rasterizes a single glyph into a padded anti-aliased + `3x3`-box-blurred grayscale buffer,
+    /// returning `RasterizedGlyph`.
+    pub fn rasterize_char(&self, ch: char, target_h: usize, pad: usize) -> Option<RasterizedGlyph> {
+        use ab_glyph::Font;
+        let gid = self.font.glyph_id(ch);
+        if gid.0 == 0 {
             return None;
         }
-        let n_cont = num_contours as usize;
-        let x_min = read_i16_be(b, g0 + 2);
-        let y_min = read_i16_be(b, g0 + 4);
-        let x_max = read_i16_be(b, g0 + 6);
-        let y_max = read_i16_be(b, g0 + 8);
-
-        let mut end_pts = Vec::with_capacity(n_cont);
-        for i in 0..n_cont {
-            end_pts.push(read_u16_be(b, g0 + 10 + i * 2) as usize);
-        }
-        let n_pts = (*end_pts.last()?) + 1;
-        let ins_len = read_u16_be(b, g0 + 10 + n_cont * 2) as usize;
-        let mut p = g0 + 12 + n_cont * 2 + ins_len;
-
-        let mut flags = Vec::with_capacity(n_pts);
-        while flags.len() < n_pts {
-            let f = b[p];
-            p += 1;
-            flags.push(f);
-            if (f & 8) != 0 {
-                let rep = b[p] as usize;
-                p += 1;
-                for _ in 0..rep {
-                    if flags.len() < n_pts {
-                        flags.push(f);
-                    }
-                }
-            }
-        }
-
-        let mut xs = Vec::with_capacity(n_pts);
-        let mut cur_x = 0i32;
-        for &f in &flags {
-            if (f & 2) != 0 {
-                let dx = b[p] as i32;
-                p += 1;
-                cur_x += if (f & 16) != 0 { dx } else { -dx };
-            } else if (f & 16) == 0 {
-                let dx = read_i16_be(b, p) as i32;
-                p += 2;
-                cur_x += dx;
-            }
-            xs.push(cur_x as f32);
-        }
-
-        let mut ys = Vec::with_capacity(n_pts);
-        let mut cur_y = 0i32;
-        for &f in &flags {
-            if (f & 4) != 0 {
-                let dy = b[p] as i32;
-                p += 1;
-                cur_y += if (f & 32) != 0 { dy } else { -dy };
-            } else if (f & 32) == 0 {
-                let dy = read_i16_be(b, p) as i32;
-                p += 2;
-                cur_y += dy;
-            }
-            ys.push(cur_y as f32);
-        }
-
-        let mut segs = Vec::new();
-        let mut start = 0usize;
-        for &end in &end_pts {
-            let len = end - start + 1;
-            if len >= 2 {
-                let mut poly: Vec<(f32, f32)> = Vec::new();
-                let mut i = 0usize;
-                while i < len {
-                    let idx0 = start + i;
-                    let idx1 = start + (i + 1) % len;
-                    let on0 = (flags[idx0] & 1) != 0;
-                    let on1 = (flags[idx1] & 1) != 0;
-                    let p0 = if on0 {
-                        (xs[idx0], ys[idx0])
-                    } else {
-                        let prev = start + (i + len - 1) % len;
-                        if (flags[prev] & 1) != 0 {
-                            (xs[prev], ys[prev])
-                        } else {
-                            (0.5 * (xs[prev] + xs[idx0]), 0.5 * (ys[prev] + ys[idx0]))
-                        }
-                    };
-                    if on0 && on1 {
-                        poly.push(p0);
-                        i += 1;
-                    } else if on0 && !on1 {
-                        let ctrl = (xs[idx1], ys[idx1]);
-                        let idx2 = start + (i + 2) % len;
-                        let on2 = (flags[idx2] & 1) != 0;
-                        let p2 = if on2 {
-                            (xs[idx2], ys[idx2])
-                        } else {
-                            (0.5 * (ctrl.0 + xs[idx2]), 0.5 * (ctrl.1 + ys[idx2]))
-                        };
-                        for step in 0..8 {
-                            let t = (step as f32) / 8.0;
-                            let mt = 1.0 - t;
-                            let x = mt * mt * p0.0 + 2.0 * mt * t * ctrl.0 + t * t * p2.0;
-                            let y = mt * mt * p0.1 + 2.0 * mt * t * ctrl.1 + t * t * p2.1;
-                            poly.push((x, y));
-                        }
-                        if on2 {
-                            i += 2;
-                        } else {
-                            i += 1;
-                        }
-                    } else {
-                        let ctrl = (xs[idx0], ys[idx0]);
-                        let p2 = if on1 {
-                            (xs[idx1], ys[idx1])
-                        } else {
-                            (0.5 * (ctrl.0 + xs[idx1]), 0.5 * (ctrl.1 + ys[idx1]))
-                        };
-                        for step in 0..8 {
-                            let t = (step as f32) / 8.0;
-                            let mt = 1.0 - t;
-                            let x = mt * mt * p0.0 + 2.0 * mt * t * ctrl.0 + t * t * p2.0;
-                            let y = mt * mt * p0.1 + 2.0 * mt * t * ctrl.1 + t * t * p2.1;
-                            poly.push((x, y));
-                        }
-                        i += 1;
-                    }
-                }
-                for k in 0..poly.len() {
-                    let a = poly[k];
-                    let b_pt = poly[(k + 1) % poly.len()];
-                    segs.push((a.0, a.1, b_pt.0, b_pt.1));
-                }
-            }
-            start = end + 1;
-        }
-        Some((x_min, y_min, x_max, y_max, segs))
-    }
-
-    /// Rasterizes a single glyph into a padded `4x4`-supersampled + `3x3`-box-blurred grayscale buffer,
-    /// returning `(canvas_w, canvas_h, blur_buf, bbox_x0, bbox_y0, bbox_w, bbox_h)`.
-    pub fn rasterize_char(
-        &self,
-        ch: char,
-        target_h: usize,
-        pad: usize,
-    ) -> Option<(usize, usize, Vec<f32>, f64, f64, f64, f64)> {
-        let gid = self.glyph_index(ch as u32);
-        let (x_min, y_min, x_max, y_max, segs) = self.glyph_segments(gid)?;
-        let fw = (x_max - x_min).max(1) as f32;
-        let fh = (y_max - y_min).max(1) as f32;
-        let scale = (target_h as f32) / fh;
-        let gw = ((fw * scale).ceil() as usize).max(1);
+        let ref_outlined = self.font.outline_glyph(gid.with_scale(100.0))?;
+        let ref_bounds = ref_outlined.px_bounds();
+        let ref_h = ref_bounds.height().max(1.0);
+        let px_scale = 100.0 * (target_h as f32) / ref_h;
+        let outlined = self.font.outline_glyph(gid.with_scale(px_scale))?;
+        let bounds = outlined.px_bounds();
+        let gw = (bounds.width().ceil() as usize).max(1);
         let gh = target_h;
         let cw = gw + 2 * pad;
         let ch_px = gh + 2 * pad;
-        let mut raw = vec![0.0f32; cw * ch_px];
+        let mut raw = vec![30.0f32; cw * ch_px];
 
-        for py in 0..gh {
-            for px in 0..gw {
-                let mut cov = 0.0f32;
-                for sy in 0..4 {
-                    let fy = (y_max as f32) - (((py as f32) + ((sy as f32) + 0.5) * 0.25) / scale);
-                    let mut xs_hit = Vec::new();
-                    for &(x0, y0, x1, y1) in &segs {
-                        if (y0 <= fy && y1 > fy) || (y1 <= fy && y0 > fy) {
-                            let t = (fy - y0) / (y1 - y0);
-                            xs_hit.push(x0 + t * (x1 - x0));
-                        }
-                    }
-                    xs_hit.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                    for sx in 0..4 {
-                        let fx =
-                            (x_min as f32) + (((px as f32) + ((sx as f32) + 0.5) * 0.25) / scale);
-                        let mut inside = false;
-                        for &xh in &xs_hit {
-                            if fx >= xh {
-                                inside = !inside;
-                            } else {
-                                break;
-                            }
-                        }
-                        if inside {
-                            cov += 1.0 / 16.0;
-                        }
-                    }
-                }
-                raw[(py + pad) * cw + (px + pad)] = 30.0 + 215.0 * cov;
+        outlined.draw(|px, py, cov| {
+            let x = px as usize + pad;
+            let y = py as usize + pad;
+            if x < cw && y < ch_px {
+                raw[y * cw + x] = 30.0 + 215.0 * cov;
             }
-        }
-        for v in &mut raw {
-            if *v == 0.0 {
-                *v = 30.0;
-            }
-        }
-        let mut blur = vec![30.0f32; cw * ch_px];
-        for y in 0..ch_px {
-            for x in 0..cw {
-                let mut s = 0.0f32;
-                for dy in -1isize..=1 {
-                    for dx in -1isize..=1 {
-                        let yy = (y as isize + dy).clamp(0, ch_px as isize - 1) as usize;
-                        let xx = (x as isize + dx).clamp(0, cw as isize - 1) as usize;
-                        s += raw[yy * cw + xx];
-                    }
-                }
-                blur[y * cw + x] = s / 9.0;
-            }
-        }
-        Some((
+        });
+        let blur = box_blur_3x3(&raw, cw, ch_px);
+        Some(RasterizedGlyph {
             cw,
             ch_px,
             blur,
-            pad as f64,
-            pad as f64,
-            (fw * scale) as f64,
-            gh as f64,
-        ))
+            bx0: pad as f64,
+            by0: pad as f64,
+            bw: bounds.width() as f64,
+            bh: gh as f64,
+        })
     }
 
     /// Rasterizes a multi-character text string (such as `"Go to Cell"`) into a padded blurred canvas.
-    pub fn rasterize_text(
-        &self,
-        text: &str,
-        scale: f32,
-        pad: usize,
-    ) -> Option<(usize, usize, Vec<f32>, f64, f64, f64, f64)> {
+    pub fn rasterize_text(&self, text: &str, scale: f32, pad: usize) -> Option<RasterizedGlyph> {
+        use ab_glyph::{Font, ScaleFont, point};
+        let px_scale = scale * self.font.height_unscaled();
+        let scaled = self.font.as_scaled(px_scale);
         let mut pen_x = 0.0f32;
-        let mut all_segs: Vec<(f32, f32, f32, f32)> = Vec::new();
+        let mut outlined_glyphs = Vec::new();
         let mut min_x = f32::INFINITY;
         let mut max_x = f32::NEG_INFINITY;
         let mut min_y = f32::INFINITY;
         let mut max_y = f32::NEG_INFINITY;
 
         for ch in text.chars() {
-            let gid = self.glyph_index(ch as u32);
-            let adv = self.advance_width(gid) as f32;
-            if let Some((gx0, gy0, gx1, gy1, segs)) = self.glyph_segments(gid) {
-                min_x = min_x.min(pen_x + gx0 as f32);
-                max_x = max_x.max(pen_x + gx1 as f32);
-                min_y = min_y.min(gy0 as f32);
-                max_y = max_y.max(gy1 as f32);
-                for (x0, y0, x1, y1) in segs {
-                    all_segs.push((pen_x + x0, y0, pen_x + x1, y1));
-                }
+            let gid = scaled.glyph_id(ch);
+            let glyph = gid.with_scale_and_position(px_scale, point(pen_x, 0.0));
+            if let Some(outlined) = self.font.outline_glyph(glyph) {
+                let b = outlined.px_bounds();
+                min_x = min_x.min(b.min.x);
+                max_x = max_x.max(b.max.x);
+                min_y = min_y.min(b.min.y);
+                max_y = max_y.max(b.max.y);
+                outlined_glyphs.push(outlined);
             }
-            pen_x += adv;
+            pen_x += scaled.h_advance(gid);
         }
-        if all_segs.is_empty() {
+        if outlined_glyphs.is_empty() {
             return None;
         }
-        let pw = ((max_x - min_x) * scale).ceil() as usize;
-        let ph = ((max_y - min_y) * scale).ceil() as usize;
+        let pw = (max_x - min_x).ceil().max(1.0) as usize;
+        let ph = (max_y - min_y).ceil().max(1.0) as usize;
         let cw = pw + 2 * pad;
         let ch_px = ph + 2 * pad;
         let mut raw = vec![30.0f32; cw * ch_px];
 
-        for py in 0..ph {
-            for px in 0..pw {
-                let mut cov = 0.0f32;
-                for sy in 0..4 {
-                    let fy = max_y - (((py as f32) + ((sy as f32) + 0.5) * 0.25) / scale);
-                    let mut xs_hit = Vec::new();
-                    for &(x0, y0, x1, y1) in &all_segs {
-                        if (y0 <= fy && y1 > fy) || (y1 <= fy && y0 > fy) {
-                            let t = (fy - y0) / (y1 - y0);
-                            xs_hit.push(x0 + t * (x1 - x0));
-                        }
-                    }
-                    xs_hit.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                    for sx in 0..4 {
-                        let fx = min_x + (((px as f32) + ((sx as f32) + 0.5) * 0.25) / scale);
-                        let mut inside = false;
-                        for &xh in &xs_hit {
-                            if fx >= xh {
-                                inside = !inside;
-                            } else {
-                                break;
-                            }
-                        }
-                        if inside {
-                            cov += 1.0 / 16.0;
-                        }
-                    }
+        for outlined in &outlined_glyphs {
+            let b = outlined.px_bounds();
+            let ox = (b.min.x - min_x).round() as isize + pad as isize;
+            let oy = (b.min.y - min_y).round() as isize + pad as isize;
+            outlined.draw(|px, py, cov| {
+                let x = ox + px as isize;
+                let y = oy + py as isize;
+                if x >= 0 && (x as usize) < cw && y >= 0 && (y as usize) < ch_px {
+                    let idx = (y as usize) * cw + (x as usize);
+                    raw[idx] = raw[idx].max(30.0 + 215.0 * cov);
                 }
-                raw[(py + pad) * cw + (px + pad)] = 30.0 + 215.0 * cov;
-            }
+            });
         }
-        let mut blur = vec![30.0f32; cw * ch_px];
-        for y in 0..ch_px {
-            for x in 0..cw {
-                let mut s = 0.0f32;
-                for dy in -1isize..=1 {
-                    for dx in -1isize..=1 {
-                        let yy = (y as isize + dy).clamp(0, ch_px as isize - 1) as usize;
-                        let xx = (x as isize + dx).clamp(0, cw as isize - 1) as usize;
-                        s += raw[yy * cw + xx];
-                    }
-                }
-                blur[y * cw + x] = s / 9.0;
-            }
-        }
-        Some((
+        let blur = box_blur_3x3(&raw, cw, ch_px);
+        Some(RasterizedGlyph {
             cw,
             ch_px,
             blur,
-            pad as f64,
-            pad as f64,
-            ((max_x - min_x) * scale) as f64,
-            ((max_y - min_y) * scale) as f64,
-        ))
+            bx0: pad as f64,
+            by0: pad as f64,
+            bw: (max_x - min_x) as f64,
+            bh: (max_y - min_y) as f64,
+        })
     }
 }
 
@@ -2180,14 +1570,14 @@ fn composite_portrait_on_shield(
 /// `UI_Img_S16Gameplay_Jail_Bg_Normal` space directly from `.pak` textures.
 pub fn synthesize_board_points_and_rooms(
     textures: &BTreeMap<String, DecodedAssetImage>,
-) -> Result<(Vec<(i32, i32, f32)>, [(u16, u16, u16, u16); 16]), String> {
+) -> Result<(Vec<BoardPoint>, [RoomBox; 16]), String> {
     let bg = textures
         .get("UI_Img_S16Gameplay_Jail_Bg_Normal")
         .ok_or_else(|| "Missing UI_Img_S16Gameplay_Jail_Bg_Normal".to_string())?;
     let mut bg_gray = vec![0.0f32; bg.width * bg.height];
-    for i in 0..(bg.width * bg.height) {
+    for (i, g) in bg_gray.iter_mut().enumerate() {
         let o = i * 4;
-        bg_gray[i] = 0.299 * (bg.rgba8[o] as f32)
+        *g = 0.299 * (bg.rgba8[o] as f32)
             + 0.587 * (bg.rgba8[o + 1] as f32)
             + 0.114 * (bg.rgba8[o + 2] as f32);
     }
@@ -2299,16 +1689,25 @@ pub fn synthesize_beast_face_templates(
 /// directly from `UI_Font_Light_EN_AZ.ufont` and `tl_main.ufont` in the `.pak` archives.
 pub fn synthesize_digits_and_prefix(
     vfs: &PakVfs,
-) -> Result<([Vec<[f32; 140]>; 10], Vec<[f32; 400]>), String> {
+) -> Result<(DigitTemplates, PrefixTemplates), String> {
     let f1_bytes = vfs.read_path("UE_game/Content/Art/UI/Fonts/UI_Font_Light_EN_AZ.ufont")?;
     let f2_bytes = vfs.read_path("UE_game/Content/HotUpdate/Fonts/tl_main.ufont")?;
     let fonts = [TtfFont::parse(f1_bytes)?, TtfFont::parse(f2_bytes)?];
 
-    let mut digits: [Vec<[f32; 140]>; 10] = Default::default();
-    for d in 0..=9 {
+    let mut digits: DigitTemplates = Default::default();
+    for (d, digit_vecs) in digits.iter_mut().enumerate() {
         let ch = char::from_digit(d as u32, 10).unwrap();
         for font in &fonts {
-            let Some((cw, ch_px, blur, bx0, by0, gw, gh)) = font.rasterize_char(ch, 24, 16) else {
+            let Some(RasterizedGlyph {
+                cw,
+                ch_px,
+                blur,
+                bx0,
+                by0,
+                bw: gw,
+                bh: gh,
+            }) = font.rasterize_char(ch, 24, 16)
+            else {
                 continue;
             };
             let gcx = bx0 + gw * 0.5;
@@ -2329,7 +1728,7 @@ pub fn synthesize_digits_and_prefix(
                             }
                         }
                         normalize_zero_mean(&mut tv);
-                        digits[d].push(tv);
+                        digit_vecs.push(tv);
                     }
                 }
             }
@@ -2339,8 +1738,15 @@ pub fn synthesize_digits_and_prefix(
     let mut prefixes = Vec::new();
     for font in &fonts {
         let scale = 22.0 / (font.units_per_em as f32);
-        let Some((cw, ch_px, blur, bx0, by0, pw, ph)) =
-            font.rasterize_text("Go to Cell", scale, 16)
+        let Some(RasterizedGlyph {
+            cw,
+            ch_px,
+            blur,
+            bx0,
+            by0,
+            bw: pw,
+            bh: ph,
+        }) = font.rasterize_text("Go to Cell", scale, 16)
         else {
             continue;
         };
@@ -2390,13 +1796,13 @@ pub fn synthesize_card_medallions(
         let mut grid = [0.0f32; 576];
         if let Some(tex) = textures.get(asset) {
             let mut gray = vec![0.0f32; tex.width * tex.height];
-            for i in 0..(tex.width * tex.height) {
+            for (i, g_val) in gray.iter_mut().enumerate() {
                 let o = i * 4;
                 let a = (tex.rgba8[o + 3] as f32) / 255.0;
                 let r = (tex.rgba8[o] as f32) * a + 28.0 * (1.0 - a);
                 let g = (tex.rgba8[o + 1] as f32) * a + 26.0 * (1.0 - a);
                 let b = (tex.rgba8[o + 2] as f32) * a + 30.0 * (1.0 - a);
-                gray[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+                *g_val = 0.299 * r + 0.587 * g + 0.114 * b;
             }
             let (x0, y0, x1, y1) = alpha_bbox(&tex.rgba8, tex.width, tex.height);
             let bw = (x1 - x0).max(1) as f64;
@@ -2440,9 +1846,7 @@ pub fn render_catalog_board_layout_png(
     );
 
     if let Some(bg) = textures.get("UI_Img_S16Gameplay_Jail_Bg_Normal") {
-        blit_scaled(
-            &mut buf, width, height, 16, 36, 1280, 768, &bg.rgba8, bg.width, bg.height,
-        );
+        blit_scaled(&mut buf, (width, height), (16, 36, 1280, 768), bg);
     }
 
     let (pts, room_boxes) = synthesize_board_points_and_rooms(textures)?;
@@ -2452,26 +1856,28 @@ pub fn render_catalog_board_layout_png(
         let y0 = 36 + (ry as usize * 768) / 1920;
         let w = (rw as usize * 1280) / 3200;
         let h = (rh as usize * 768) / 1920;
-        fill_rect(&mut buf, width, height, x0, y0, w, 2, [80, 220, 255, 255]);
         fill_rect(
             &mut buf,
-            width,
-            height,
-            x0,
-            y0 + h,
-            w,
-            2,
+            (width, height),
+            (x0, y0, w, 2),
             [80, 220, 255, 255],
         );
-        fill_rect(&mut buf, width, height, x0, y0, 2, h, [80, 220, 255, 255]);
         fill_rect(
             &mut buf,
-            width,
-            height,
-            x0 + w,
-            y0,
-            2,
-            h,
+            (width, height),
+            (x0, y0 + h, w, 2),
+            [80, 220, 255, 255],
+        );
+        fill_rect(
+            &mut buf,
+            (width, height),
+            (x0, y0, 2, h),
+            [80, 220, 255, 255],
+        );
+        fill_rect(
+            &mut buf,
+            (width, height),
+            (x0 + w, y0, 2, h),
             [80, 220, 255, 255],
         );
         draw_bitmap_label(
@@ -2493,12 +1899,8 @@ pub fn render_catalog_board_layout_png(
         let py = 36 + ((by * 768.0 / 1920.0).round() as usize);
         fill_rect(
             &mut buf,
-            width,
-            height,
-            px.saturating_sub(1),
-            py.saturating_sub(1),
-            3,
-            3,
+            (width, height),
+            (px.saturating_sub(1), py.saturating_sub(1), 3, 3),
             [90, 255, 130, 255],
         );
     }
@@ -2527,27 +1929,12 @@ pub fn render_catalog_board_layout_png(
         let y0 = 64 + i * 92;
         fill_rect(
             &mut buf,
-            width,
-            height,
-            1316,
-            y0,
-            268,
-            84,
+            (width, height),
+            (1316, y0, 268, 84),
             [28, 25, 34, 255],
         );
         if let Some(tex) = textures.get(*asset) {
-            blit_scaled(
-                &mut buf,
-                width,
-                height,
-                1324,
-                y0 + 10,
-                64,
-                64,
-                &tex.rgba8,
-                tex.width,
-                tex.height,
-            );
+            blit_scaled(&mut buf, (width, height), (1324, y0 + 10, 64, 64), tex);
         }
         draw_bitmap_label(
             &mut buf,
@@ -2580,56 +1967,71 @@ pub fn render_catalog_board_layout_png(
         [250, 210, 120, 255],
     );
     if let Ok(f1_bytes) = vfs.read_path("UE_game/Content/Art/UI/Fonts/UI_Font_Light_EN_AZ.ufont")
-        && let Ok(font) = TtfFont::parse(f1_bytes) {
-            for d in 0..=9 {
-                let ch = char::from_digit(d as u32, 10).unwrap();
-                let x0 = 16 + d * 96;
-                let y0 = 848;
-                fill_rect(&mut buf, width, height, x0, y0, 86, 120, [28, 25, 34, 255]);
-                draw_bitmap_label(
-                    &mut buf,
-                    width,
-                    height,
-                    x0 + 10,
-                    y0 + 8,
-                    &format!("DIGIT {d}"),
-                    [255, 220, 130, 255],
-                );
-                if let Some((cw, ch_px, blur, _, _, _, _)) = font.rasterize_char(ch, 48, 8) {
-                    for py in 0..ch_px.min(84) {
-                        for px in 0..cw.min(72) {
-                            let v = blur[py * cw + px].clamp(0.0, 255.0) as u8;
-                            let idx = ((y0 + 26 + py) * width + (x0 + 12 + px)) * 4;
-                            buf[idx..idx + 4].copy_from_slice(&[v, v, v, 255]);
-                        }
-                    }
-                }
-            }
-            let x0 = 990;
+        && let Ok(font) = TtfFont::parse(f1_bytes)
+    {
+        for d in 0..=9 {
+            let ch = char::from_digit(d as u32, 10).unwrap();
+            let x0 = 16 + d * 96;
             let y0 = 848;
-            fill_rect(&mut buf, width, height, x0, y0, 594, 120, [28, 25, 34, 255]);
+            fill_rect(
+                &mut buf,
+                (width, height),
+                (x0, y0, 86, 120),
+                [28, 25, 34, 255],
+            );
             draw_bitmap_label(
                 &mut buf,
                 width,
                 height,
-                x0 + 12,
+                x0 + 10,
                 y0 + 8,
-                "PREFIX: 'GO TO CELL'",
+                &format!("DIGIT {d}"),
                 [255, 220, 130, 255],
             );
-            let scale = 42.0 / (font.units_per_em as f32);
-            if let Some((cw, ch_px, blur, _, _, _, _)) =
-                font.rasterize_text("Go to Cell", scale, 10)
+            if let Some(RasterizedGlyph {
+                cw, ch_px, blur, ..
+            }) = font.rasterize_char(ch, 48, 8)
             {
                 for py in 0..ch_px.min(84) {
-                    for px in 0..cw.min(560) {
+                    for px in 0..cw.min(72) {
                         let v = blur[py * cw + px].clamp(0.0, 255.0) as u8;
-                        let idx = ((y0 + 26 + py) * width + (x0 + 16 + px)) * 4;
+                        let idx = ((y0 + 26 + py) * width + (x0 + 12 + px)) * 4;
                         buf[idx..idx + 4].copy_from_slice(&[v, v, v, 255]);
                     }
                 }
             }
         }
+        let x0 = 990;
+        let y0 = 848;
+        fill_rect(
+            &mut buf,
+            (width, height),
+            (x0, y0, 594, 120),
+            [28, 25, 34, 255],
+        );
+        draw_bitmap_label(
+            &mut buf,
+            width,
+            height,
+            x0 + 12,
+            y0 + 8,
+            "PREFIX: 'GO TO CELL'",
+            [255, 220, 130, 255],
+        );
+        let scale = 42.0 / (font.units_per_em as f32);
+        if let Some(RasterizedGlyph {
+            cw, ch_px, blur, ..
+        }) = font.rasterize_text("Go to Cell", scale, 10)
+        {
+            for py in 0..ch_px.min(84) {
+                for px in 0..cw.min(560) {
+                    let v = blur[py * cw + px].clamp(0.0, 255.0) as u8;
+                    let idx = ((y0 + 26 + py) * width + (x0 + 16 + px)) * 4;
+                    buf[idx..idx + 4].copy_from_slice(&[v, v, v, 255]);
+                }
+            }
+        }
+    }
 
     let png = encode_png_rgba8(width as u32, height as u32, &buf)?;
     fs::write(out_path, png).map_err(|e| e.to_string())
@@ -2794,8 +2196,7 @@ pub fn generate_cv_data_rs(
     }
 
     // 4. Digits 0..9 (10x14 = 140) from UI_Font_Light_EN_AZ.ufont & tl_main.ufont
-    for d in 0..=9 {
-        let vecs = &digits[d];
+    for (d, vecs) in digits.iter().enumerate() {
         out.push_str(&format!(
             "pub static DIGIT_{}: [[f32; 140]; {}] = [\n",
             d,
@@ -2852,7 +2253,16 @@ pub fn generate_cv_data_rs(
     let item_bg = textures.get("UI_Img_S16Gameplay_Jail_Item_Bg");
     let big_pics = textures.get("UI_Btn_S16Gameplay_Jail_Device_Big_Pics");
 
-    let mut ref_tools_rows: Vec<(String, String, String, bool, [f32; 72], [f32; 13])> = Vec::new();
+    struct ToolFeatureRow {
+        id: String,
+        sim: String,
+        name: String,
+        is_panel: bool,
+        grid: [f32; 72],
+        hist: [f32; 13],
+    }
+
+    let mut ref_tools_rows: Vec<ToolFeatureRow> = Vec::new();
     let mut ref_pick_rows: Vec<(String, [f32; 72], [f32; 13])> = Vec::new();
 
     for r in &db.relics {
@@ -2873,68 +2283,56 @@ pub fn generate_cv_data_rs(
             let cy1 = (y1 as isize + py).clamp((cy0 + 1) as isize, icon.height as isize) as usize;
             let (grid, hist) = compute_art_feature_region(
                 &icon.rgba8,
-                icon.width,
-                icon.height,
-                cx0,
-                cy0,
-                cx1,
-                cy1,
+                (icon.width, icon.height),
+                (cx0, cy0, cx1, cy1),
                 (18.0, 16.0, 20.0),
             );
-            ref_tools_rows.push((
-                r.js_sim.clone(),
-                r.js_sim.clone(),
-                r.name.clone(),
-                true,
+            ref_tools_rows.push(ToolFeatureRow {
+                id: r.js_sim.clone(),
+                sim: r.js_sim.clone(),
+                name: r.name.clone(),
+                is_panel: true,
                 grid,
                 hist,
-            ));
+            });
         }
         if let Some(bg) = item_bg {
             for &s in &[82usize, 92, 100] {
                 let comp = composite_rgba_scaled(bg, icon, 52, 86, s, s, (16.0, 14.0, 18.0));
                 let (grid, hist) = compute_art_feature_region(
                     &comp,
-                    bg.width,
-                    bg.height,
-                    8,
-                    36,
-                    bg.width - 8,
-                    bg.height - 36,
+                    (bg.width, bg.height),
+                    (8, 36, bg.width - 8, bg.height - 36),
                     (16.0, 14.0, 18.0),
                 );
-                ref_tools_rows.push((
-                    r.js_sim.clone(),
-                    r.js_sim.clone(),
-                    r.name.clone(),
-                    true,
+                ref_tools_rows.push(ToolFeatureRow {
+                    id: r.js_sim.clone(),
+                    sim: r.js_sim.clone(),
+                    name: r.name.clone(),
+                    is_panel: true,
                     grid,
                     hist,
-                ));
+                });
             }
         }
 
         // Non-panel entry in REF_TOOLS + entries in REF_PICK_TOOLS using exact pick_art_box 1%-99% percentile crop
         let (p_grid, p_hist) = synthesize_icon_feature(icon, (28.0, 22.0, 20.0));
-        ref_tools_rows.push((
-            r.js_sim.clone(),
-            r.js_sim.clone(),
-            r.name.clone(),
-            false,
-            p_grid,
-            p_hist,
-        ));
+        ref_tools_rows.push(ToolFeatureRow {
+            id: r.js_sim.clone(),
+            sim: r.js_sim.clone(),
+            name: r.name.clone(),
+            is_panel: false,
+            grid: p_grid,
+            hist: p_hist,
+        });
         for &alpha_thr in &[16u8, 48, 84] {
             let (ax0, ay0, ax1, ay1) =
                 alpha_bbox_thresh(&icon.rgba8, icon.width, icon.height, alpha_thr);
             let (grid, hist) = compute_art_feature_region(
                 &icon.rgba8,
-                icon.width,
-                icon.height,
-                ax0,
-                ay0,
-                ax1,
-                ay1,
+                (icon.width, icon.height),
+                (ax0, ay0, ax1, ay1),
                 (26.0, 21.0, 19.0),
             );
             ref_pick_rows.push((r.js_sim.clone(), grid, hist));
@@ -2946,23 +2344,15 @@ pub fn generate_cv_data_rs(
                 for &(mx_hi, v_thr) in &[(72u8, 0.28f32), (82, 0.32), (94, 0.36)] {
                     if let Some((bx0, by0, bx1, by1)) = pick_art_bbox_on_rgba(
                         &comp,
-                        bg.width,
-                        bg.height,
-                        250 - 110,
-                        130,
-                        250 + 110,
-                        395,
+                        (bg.width, bg.height),
+                        (250 - 110, 130, 250 + 110, 395),
                         mx_hi,
                         v_thr,
                     ) {
                         let (grid, hist) = compute_art_feature_region(
                             &comp,
-                            bg.width,
-                            bg.height,
-                            bx0,
-                            by0,
-                            bx1,
-                            by1,
+                            (bg.width, bg.height),
+                            (bx0, by0, bx1, by1),
                             (22.0, 20.0, 24.0),
                         );
                         ref_pick_rows.push((r.js_sim.clone(), grid, hist));
@@ -2986,15 +2376,15 @@ pub fn generate_cv_data_rs(
         "pub static REF_TOOLS: [RefToolEntry; {}] = [\n",
         ref_tools_rows.len()
     ));
-    for (id, sim, name, is_panel, grid, hist) in &ref_tools_rows {
+    for row in &ref_tools_rows {
         out.push_str(&format!(
             "    RefToolEntry {{ id: {:?}, sim: {}, name: {:?}, is_panel: {}, grid: {}, hist: {} }},\n",
-            id,
-            sim_str_to_tool_id_expr(sim),
-            name,
-            is_panel,
-            format_f32_slice(grid),
-            format_f32_slice(hist)
+            row.id,
+            sim_str_to_tool_id_expr(&row.sim),
+            row.name,
+            row.is_panel,
+            format_f32_slice(&row.grid),
+            format_f32_slice(&row.hist)
         ));
     }
     out.push_str("];\n\n");
@@ -3037,9 +2427,10 @@ mod tests {
             "Requires 1 fewer beast; grants +50% 'Rainbow' [145]!"
         );
         for ch in ['#', '\'', '+', '%', ';', '!', '?', '"', '[', ']'] {
-            let g = glyph_5x7(ch);
+            let mut buf = [0u8; 8 * 8 * 4];
+            draw_bitmap_label(&mut buf, 8, 8, 0, 0, &ch.to_string(), [255, 255, 255, 255]);
             assert!(
-                g.iter().any(|&row| row != 0),
+                buf.iter().any(|&b| b != 0),
                 "Glyph for {ch:?} should not be blank"
             );
         }
@@ -3095,29 +2486,7 @@ mod tests {
         let cv_data_path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../tartarus-scan/src/cv_data.rs");
         let content = fs::read_to_string(&cv_data_path).expect("read cv_data.rs");
-        let mut updated = content.clone();
-        if !updated.contains("use tartarus_core::ToolId;") {
-            updated = updated.replacen(
-                "#![allow(clippy::excessive_precision, clippy::large_const_arrays)]\n",
-                "#![allow(clippy::excessive_precision, clippy::large_const_arrays)]\n\nuse tartarus_core::ToolId;\n",
-                1,
-            );
-        }
-        updated = updated.replace("pub sim: &'static str,", "pub sim: ToolId,");
-        for id in [
-            101, 102, 103, 104, 105, 106, 107, 111, 112, 113, 114, 115, 116, 117, 121, 122, 123,
-            124, 125, 126, 127, 131, 132, 141, 142, 143, 144, 145, 146, 147, 148,
-        ] {
-            let sim = map_relic_id_to_sim(id);
-            let expr = sim_str_to_tool_id_expr(sim);
-            let from = format!("sim: {:?}", sim);
-            let to = format!("sim: {}", expr);
-            updated = updated.replace(&from, &to);
-        }
-        if updated != content {
-            fs::write(&cv_data_path, &updated).expect("write updated cv_data.rs");
-        }
-        assert!(!updated.contains("pub sim: &'static str,"));
-        assert!(updated.contains("pub sim: ToolId,"));
+        assert!(!content.contains("pub sim: &'static str,"));
+        assert!(content.contains("pub sim: ToolId,"));
     }
 }

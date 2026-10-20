@@ -1,8 +1,6 @@
 use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
-#[cfg(target_os = "windows")]
-use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 use tartarus_core::TreasureOrigin;
@@ -26,11 +24,10 @@ pub enum LogEvent {
 }
 
 fn fnv1a_64(s: &str) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.as_bytes() {
-        hash ^= *b as u64;
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
+    use std::hash::Hasher;
+    let mut hasher = fnv::FnvHasher::default();
+    hasher.write(s.as_bytes());
+    let hash = hasher.finish();
     if hash == 0 { 1 } else { hash }
 }
 
@@ -104,6 +101,8 @@ impl LogWatcher {
     }
 
     pub fn discover_log_path() -> Option<PathBuf> {
+        const TLI_STEAM_APP_ID: u32 = 1_974_050;
+
         if let Ok(custom) = env::var("TAC_OVERLAY_LOG") {
             let p = PathBuf::from(custom);
             if p.exists() {
@@ -111,102 +110,43 @@ impl LogWatcher {
             }
         }
 
-        let mut roots: Vec<PathBuf> = Vec::new();
-        if let Ok(steam_dir) = env::var("STEAM_DIR") {
-            roots.push(PathBuf::from(steam_dir));
-        }
-        if let Ok(home) = env::var("HOME") {
-            let h = PathBuf::from(&home);
-            roots.push(h.join(".local/share/Steam"));
-            roots.push(h.join(".steam/steam"));
-            roots.push(h.join(".steam/root"));
-            roots.push(h.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"));
-        }
-        if let Ok(pf86) = env::var("ProgramFiles(x86)") {
-            roots.push(PathBuf::from(pf86).join("Steam"));
-        }
-        if let Ok(pf) = env::var("ProgramFiles") {
-            roots.push(PathBuf::from(pf).join("Steam"));
-        }
-        for drive in ['C', 'D', 'E', 'F', 'G'] {
-            roots.push(PathBuf::from(format!("{drive}:\\SteamLibrary")));
-            roots.push(PathBuf::from(format!("{drive}:\\Steam")));
-        }
-
-        let mut library_dirs = roots.clone();
-        for r in &roots {
-            let vdf = r.join("steamapps").join("libraryfolders.vdf");
-            if let Ok(content) = fs::read_to_string(&vdf) {
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if let Some(rest) = trimmed.strip_prefix("\"path\"") {
-                        let val = rest.trim().trim_matches('"').replace("\\\\", "\\");
-                        if !val.is_empty() {
-                            library_dirs.push(PathBuf::from(val));
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        for lib in &library_dirs {
-            let mut install_dirs = vec!["Torchlight Infinite".to_string()];
-            let acf = lib.join("steamapps").join("appmanifest_1974050.acf");
-            if let Ok(text) = fs::read_to_string(&acf) {
-                for line in text.lines() {
-                    let trimmed = line.trim();
-                    if let Some(rest) = trimmed.strip_prefix("\"installdir\"") {
-                        let dir_name = rest.trim().trim_matches('"');
-                        if !dir_name.is_empty() && !install_dirs.iter().any(|d| d == dir_name) {
-                            install_dirs.push(dir_name.to_string());
-                        }
-                    }
-                }
-            }
-            for inst in install_dirs {
-                for tl_dir in ["TorchLight", "Torchlight"] {
-                    candidates.push(
-                        lib.join("steamapps")
-                            .join("common")
-                            .join(&inst)
-                            .join("UE_game")
-                            .join(tl_dir)
-                            .join("Saved")
-                            .join("Logs")
-                            .join("UE_game.log"),
-                    );
-                }
-            }
+        let mut base_dirs: Vec<PathBuf> = Vec::new();
+        let steam_dir = env::var("STEAM_DIR")
+            .ok()
+            .and_then(|d| steamlocate::SteamDir::from_dir(&PathBuf::from(d)).ok())
+            .or_else(|| steamlocate::SteamDir::locate().ok());
+        if let Some(steam) = steam_dir
+            && let Ok(Some((app, lib))) = steam.find_app(TLI_STEAM_APP_ID)
+        {
+            base_dirs.push(lib.resolve_app_dir(&app));
         }
 
         #[cfg(target_os = "windows")]
         for base in [
-            "C:\\Program Files (x86)\\Torchlight Infinite",
-            "C:\\Program Files\\Torchlight Infinite",
+            "C:\\Program Files (x86)\\Torchlight Infinite\\Game",
+            "C:\\Program Files\\Torchlight Infinite\\Game",
         ] {
-            for tl_dir in ["TorchLight", "Torchlight"] {
-                candidates.push(
-                    Path::new(base)
-                        .join("Game")
-                        .join("UE_game")
-                        .join(tl_dir)
-                        .join("Saved")
-                        .join("Logs")
-                        .join("UE_game.log"),
-                );
-            }
+            base_dirs.push(PathBuf::from(base));
         }
 
         let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
-        for candidate in candidates {
-            if let Ok(meta) = fs::metadata(&candidate)
-                && meta.is_file() {
+        for base in base_dirs {
+            for tl_dir in ["TorchLight", "Torchlight"] {
+                let candidate = base
+                    .join("UE_game")
+                    .join(tl_dir)
+                    .join("Saved")
+                    .join("Logs")
+                    .join("UE_game.log");
+                if let Ok(meta) = fs::metadata(&candidate)
+                    && meta.is_file()
+                {
                     let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                     if best.as_ref().is_none_or(|(_, bt)| mtime > *bt) {
                         best = Some((candidate, mtime));
                     }
                 }
+            }
         }
         best.map(|(p, _)| p)
     }
@@ -419,9 +359,9 @@ impl LogWatcher {
         } else if line.contains("S16BoardColoredPop Run") {
             let after = self.last_action_at.and_then(|act| {
                 if now.duration_since(act).as_millis() <= 6000 {
-                    let is_consume = self.last_eat_at.is_some_and(|eat| {
-                        eat + std::time::Duration::from_millis(500) >= act
-                    });
+                    let is_consume = self
+                        .last_eat_at
+                        .is_some_and(|eat| eat + std::time::Duration::from_millis(500) >= act);
                     Some(if is_consume {
                         TreasureOrigin::Consume
                     } else {

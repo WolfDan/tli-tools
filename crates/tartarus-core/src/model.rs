@@ -160,171 +160,7 @@ impl CellModel {
     }
 }
 
-#[derive(Copy, Clone)]
-pub struct FixedVec<T: Copy, const N: usize> {
-    items: [T; N],
-    len: u8,
-}
-
-impl<T: Copy + Default, const N: usize> Default for FixedVec<T, N> {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Copy + Default, const N: usize> FixedVec<T, N> {
-    #[inline]
-    pub fn new() -> Self {
-        Self {
-            items: [T::default(); N],
-            len: 0,
-        }
-    }
-
-    #[inline]
-    pub fn from_slice(slice: &[T]) -> Self {
-        let mut out = Self::new();
-        out.extend_from_slice(slice);
-        out
-    }
-
-    #[inline]
-    pub fn from_elem(elem: T, count: usize) -> Self {
-        let n = count.min(N);
-        Self {
-            items: [elem; N],
-            len: n as u8,
-        }
-    }
-}
-
-impl<T: Copy, const N: usize> FixedVec<T, N> {
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.len as usize
-    }
-
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    #[inline]
-    pub fn as_slice(&self) -> &[T] {
-        let n = (self.len as usize).min(N);
-        &self.items[..n]
-    }
-
-    #[inline]
-    pub fn as_mut_slice(&mut self) -> &mut [T] {
-        let n = (self.len as usize).min(N);
-        &mut self.items[..n]
-    }
-
-    #[inline]
-    pub fn clear(&mut self) {
-        self.len = 0;
-    }
-
-    #[inline]
-    pub fn push(&mut self, item: T) {
-        let idx = self.len as usize;
-        if idx < N {
-            self.items[idx] = item;
-            self.len += 1;
-        }
-    }
-
-    #[inline]
-    pub fn remove(&mut self, index: usize) -> T {
-        let len = (self.len as usize).min(N);
-        assert!(index < len, "FixedVec::remove index out of bounds");
-        let removed = self.items[index];
-        for i in index..(len - 1) {
-            self.items[i] = self.items[i + 1];
-        }
-        self.len -= 1;
-        removed
-    }
-
-    #[inline]
-    pub fn extend_from_slice(&mut self, slice: &[T]) {
-        for &item in slice {
-            if (self.len as usize) >= N {
-                break;
-            }
-            self.push(item);
-        }
-    }
-}
-
-impl<T: Copy, const N: usize> std::ops::Deref for FixedVec<T, N> {
-    type Target = [T];
-    #[inline]
-    fn deref(&self) -> &[T] {
-        self.as_slice()
-    }
-}
-
-impl<T: Copy, const N: usize> std::ops::DerefMut for FixedVec<T, N> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut [T] {
-        self.as_mut_slice()
-    }
-}
-
-impl<T: Copy + PartialEq, const N: usize> PartialEq for FixedVec<T, N> {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.as_slice() == other.as_slice()
-    }
-}
-
-impl<T: Copy + Eq, const N: usize> Eq for FixedVec<T, N> {}
-
-impl<T: Copy + std::fmt::Debug, const N: usize> std::fmt::Debug for FixedVec<T, N> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.as_slice().fmt(f)
-    }
-}
-
-impl<'a, T: Copy, const N: usize> IntoIterator for &'a FixedVec<T, N> {
-    type Item = &'a T;
-    type IntoIter = std::slice::Iter<'a, T>;
-    #[inline]
-    fn into_iter(self) -> Self::IntoIter {
-        self.as_slice().iter()
-    }
-}
-
-impl<T: Copy + Default, const N: usize> FromIterator<T> for FixedVec<T, N> {
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        let mut out = Self::new();
-        for item in iter {
-            if (out.len as usize) >= N {
-                break;
-            }
-            out.push(item);
-        }
-        out
-    }
-}
-
-impl<T: Copy + Serialize, const N: usize> Serialize for FixedVec<T, N> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.as_slice().serialize(serializer)
-    }
-}
-
-impl<'de, T: Copy + Default + Deserialize<'de>, const N: usize> Deserialize<'de>
-    for FixedVec<T, N>
-{
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let vec = Vec::<T>::deserialize(deserializer)?;
-        Ok(Self::from_slice(&vec))
-    }
-}
+pub type FixedVec<T, const N: usize> = tinyvec::ArrayVec<[T; N]>;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum ToolsPrompt {
@@ -635,7 +471,7 @@ impl BoardModel {
             event: CellEvent::Unknown,
             ..CellModel::sealed()
         };
-        m.tools = FixedVec::from_slice(&[ToolId::Rope]);
+        m.tools = FixedVec::from_iter([ToolId::Rope]);
         m
     }
 
@@ -891,9 +727,10 @@ impl BoardModel {
         let mut max_tier = if st.vault_len > 0 { RAINBOW } else { 0 };
         for c in &st.cells {
             if let Some(inm) = c.inmate
-                && inm.tier > max_tier {
-                    max_tier = inm.tier;
-                }
+                && inm.tier > max_tier
+            {
+                max_tier = inm.tier;
+            }
         }
         st.stats.best = max_tier;
         st.used = UsedToday::default();
@@ -902,72 +739,71 @@ impl BoardModel {
         st.pending_len = 0;
         st.phase = Phase::Manage;
 
-        if challenge
-            && let Some(ch) = st.challenge.as_mut() {
-                ch.vouchers = self.ch.vouchers.min(START_VOUCHERS);
-                let deadlines = [4u8, 8u8, 12u8];
-                for slot in 0..3 {
-                    let cid = self.ch.contracts[slot];
-                    ch.contracts[slot] = Contract {
-                        slot: slot as u8,
-                        id: cid,
-                        deadline: deadlines[slot],
-                        heavy: slot == 2,
-                        bounty: if cid == ContractId::Bounty {
-                            Some(self.ch.bounty)
-                        } else {
-                            None
-                        },
-                    };
-                }
-                ch.deliveries_len = 0;
-                ch.score = 0;
-                for slot in 0..2 {
-                    let st_s = self.ch.status[slot];
-                    if st_s == ContractStatus::Pending {
-                        break;
-                    }
-                    let success = st_s == ContractStatus::Delivered;
-                    let pts = if success {
-                        self.ch.points[slot].min(999)
+        if challenge && let Some(ch) = st.challenge.as_mut() {
+            ch.vouchers = self.ch.vouchers.min(START_VOUCHERS);
+            let deadlines = [4u8, 8u8, 12u8];
+            for slot in 0..3 {
+                let cid = self.ch.contracts[slot];
+                ch.contracts[slot] = Contract {
+                    slot: slot as u8,
+                    id: cid,
+                    deadline: deadlines[slot],
+                    heavy: slot == 2,
+                    bounty: if cid == ContractId::Bounty {
+                        Some(self.ch.bounty)
                     } else {
-                        0
-                    };
-                    ch.deliveries[ch.deliveries_len as usize] = DeliveryRecord {
-                        slot: slot as u8,
-                        day: deadlines[slot],
-                        success,
-                        points: pts,
-                        cost: 0,
-                        pressure: 0,
-                        escort: if success {
-                            Some(EscortKind::Light)
-                        } else {
-                            None
-                        },
-                        early: false,
-                    };
-                    ch.deliveries_len += 1;
-                    ch.score += pts;
-                }
-                if self.ch.status[0] == ContractStatus::Pending
-                    && self.ch.status[1] != ContractStatus::Pending
-                {
-                    problems.push("Contract 2 can only be settled after contract 1.".to_string());
-                }
-                if (ch.deliveries_len as usize) < 2 {
-                    let next = ch.contracts[ch.deliveries_len as usize];
-                    if st.day > next.deadline {
-                        problems.push(format!(
-                            "\"{}\" was due at the end of day {}. Mark it delivered or skipped.",
-                            next.id.name(),
-                            next.deadline
-                        ));
-                    }
-                }
-                ch.window_open = false;
-                ch.window_early = false;
+                        None
+                    },
+                };
             }
+            ch.deliveries_len = 0;
+            ch.score = 0;
+            for slot in 0..2 {
+                let st_s = self.ch.status[slot];
+                if st_s == ContractStatus::Pending {
+                    break;
+                }
+                let success = st_s == ContractStatus::Delivered;
+                let pts = if success {
+                    self.ch.points[slot].min(999)
+                } else {
+                    0
+                };
+                ch.deliveries[ch.deliveries_len as usize] = DeliveryRecord {
+                    slot: slot as u8,
+                    day: deadlines[slot],
+                    success,
+                    points: pts,
+                    cost: 0,
+                    pressure: 0,
+                    escort: if success {
+                        Some(EscortKind::Light)
+                    } else {
+                        None
+                    },
+                    early: false,
+                };
+                ch.deliveries_len += 1;
+                ch.score += pts;
+            }
+            if self.ch.status[0] == ContractStatus::Pending
+                && self.ch.status[1] != ContractStatus::Pending
+            {
+                problems.push("Contract 2 can only be settled after contract 1.".to_string());
+            }
+            if (ch.deliveries_len as usize) < 2 {
+                let next = ch.contracts[ch.deliveries_len as usize];
+                if st.day > next.deadline {
+                    problems.push(format!(
+                        "\"{}\" was due at the end of day {}. Mark it delivered or skipped.",
+                        next.id.name(),
+                        next.deadline
+                    ));
+                }
+            }
+            ch.window_open = false;
+            ch.window_early = false;
+        }
 
         let set_used = |st: &mut SimState| {
             st.used = UsedToday {
@@ -1136,14 +972,14 @@ impl BoardModel {
                 set_used(&mut st);
                 st.used.devour = 1;
                 let here = &st.cells[st.position as usize];
-                if here.sealed || here.inmate.is_none() {
-                    problems.push("A chain needs its eater in the warden's cell: put the warden there and set the inmate as it is now.".to_string());
-                } else {
-                    st.chaining_eater = Some(here.inmate.unwrap().id);
+                if let Some(inmate) = here.inmate.filter(|_| !here.sealed) {
+                    st.chaining_eater = Some(inmate.id);
                     let (_, clen) = st.chain_options();
                     if clen == 0 {
                         problems.push("Your game asks for a meal only when the chaining inmate has one to eat. Check the board: it can't find a meal for it.".to_string());
                     }
+                } else {
+                    problems.push("A chain needs its eater in the warden's cell: put the warden there and set the inmate as it is now.".to_string());
                 }
             }
             BoardStep::Office => {
@@ -1177,8 +1013,8 @@ impl BoardModel {
         m.start_event = st.start_event;
         m.walk_tiles = st.objective_progress;
         m.milestone = st.milestone;
-        m.tools = FixedVec::from_slice(st.tools_slice());
-        m.vault = st.vault_slice().iter().map(|v| v.beast).collect();
+        m.tools = st.tools_slice().iter().copied().take(32).collect();
+        m.vault = st.vault_slice().iter().map(|v| v.beast).take(16).collect();
 
         for n in 0..CELL_COUNT {
             if n == (OFFICE as usize) {
@@ -1210,22 +1046,28 @@ impl BoardModel {
                         due,
                         ..CellModel::sealed()
                     };
-                } else if c.scratch && c.hidden.is_some() && c.known > 0 {
+                } else if let Some(h) = c.hidden
+                    && c.scratch
+                    && c.known > 0
+                {
                     m.cells[n] = CellModel {
                         kind: CellKind::Scratch,
-                        tier: c.hidden.unwrap().tier.min(SUPREME),
+                        tier: h.tier.min(SUPREME),
                         event,
                         ..CellModel::sealed()
                     };
-                } else if c.hidden.is_some() && c.known == 1 {
+                } else if let Some(h) = c.hidden
+                    && c.known == 1
+                {
                     m.cells[n] = CellModel {
                         kind: CellKind::Revealed,
-                        tier: c.hidden.unwrap().tier.min(SUPREME),
+                        tier: h.tier.min(SUPREME),
                         event,
                         ..CellModel::sealed()
                     };
-                } else if c.hidden.is_some() && c.known >= 2 {
-                    let h = c.hidden.unwrap();
+                } else if let Some(h) = c.hidden
+                    && c.known >= 2
+                {
                     m.cells[n] = CellModel {
                         kind: CellKind::Scouted,
                         beast: h.beast,
@@ -1278,18 +1120,19 @@ impl BoardModel {
             let mut olen = 0usize;
             for &c in p0.slice() {
                 if let ChoiceId::Tool(t) = c
-                    && olen < 4 {
-                        opts[olen] = t;
-                        olen += 1;
-                    }
+                    && olen < 4
+                {
+                    opts[olen] = t;
+                    olen += 1;
+                }
             }
             m.choice = ChoiceModel::from_tools(p0.kind, &opts[..olen], p0.rerolls);
         } else if let Some(ch) = st.challenge.as_ref().filter(|c| c.window_open) {
             m.step = BoardStep::Window;
             m.window_early = ch.window_early;
-        } else if st.phase == Phase::Event && st.active_event.is_some() {
+        } else if let (Phase::Event, Some((kind, _))) = (st.phase, st.active_event) {
             m.step = BoardStep::Event;
-            m.event_kind = st.active_event.unwrap().0;
+            m.event_kind = kind;
         } else if st.chaining_eater.is_some() {
             m.step = BoardStep::Chain;
         } else if st.phase == Phase::Patrol {

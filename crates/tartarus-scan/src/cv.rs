@@ -181,30 +181,18 @@ fn cosine_simd_impl(a: &[f32], b: &[f32]) -> f32 {
 
 #[inline]
 pub fn project(h: &[f64; 9], u: f64, v: f64) -> (f64, f64) {
-    let w = h[6] * u + h[7] * v + h[8];
-    (
-        (h[0] * u + h[1] * v + h[2]) / w,
-        (h[3] * u + h[4] * v + h[5]) / w,
-    )
+    let p = glam::DMat3::from_cols_array(h)
+        .transpose()
+        .mul_vec3(glam::DVec3::new(u, v, 1.0));
+    (p.x / p.z, p.y / p.z)
 }
 
 pub fn invert(m: &[f64; 9]) -> [f64; 9] {
-    let [a, b, c, d, e, f, g, h, i] = *m;
-    let a_co = e * i - f * h;
-    let b_co = -(d * i - f * g);
-    let c_co = d * h - e * g;
-    let det = a * a_co + b * b_co + c * c_co;
-    [
-        a_co / det,
-        -(b * i - c * h) / det,
-        (b * f - c * e) / det,
-        b_co / det,
-        (a * i - c * g) / det,
-        -(a * f - c * d) / det,
-        c_co / det,
-        -(a * h - b * g) / det,
-        (a * e - b * d) / det,
-    ]
+    glam::DMat3::from_cols_array(m)
+        .transpose()
+        .inverse()
+        .transpose()
+        .to_cols_array()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -357,20 +345,9 @@ impl<'a> ImageView<'a> {
 
 #[inline]
 pub fn hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    let mx = r.max(g).max(b);
-    let mn = r.min(g).min(b);
-    let d = mx - mn;
-    let mut h = 0.0_f32;
-    if d > 0.0 {
-        if (mx - r).abs() < 1e-5 {
-            h = (((g - b) / d) % 6.0 + 6.0) % 6.0;
-        } else if (mx - g).abs() < 1e-5 {
-            h = (b - r) / d + 2.0;
-        } else {
-            h = (r - g) / d + 4.0;
-        }
-    }
-    (h * 60.0, if mx > 0.0 { d / mx } else { 0.0 }, mx / 255.0)
+    use palette::{FromColor, Hsv, Srgb};
+    let c = Hsv::from_color(Srgb::new(r / 255.0, g / 255.0, b / 255.0));
+    (c.hue.into_positive_degrees(), c.saturation, c.value)
 }
 
 pub fn half_gray_of(img: &ImageView<'_>) -> (Vec<f32>, usize, usize) {
@@ -385,7 +362,7 @@ pub fn half_gray_of(img: &ImageView<'_>) -> (Vec<f32>, usize, usize) {
             .for_each(|(y2, row_out)| {
                 let r0 = (2 * y2) * w * 4;
                 let r1 = (2 * y2 + 1) * w * 4;
-                for x2 in 0..w2 {
+                for (x2, out_px) in row_out.iter_mut().enumerate() {
                     let c0 = r0 + (2 * x2) * 4;
                     let c1 = c0 + 4;
                     let c2 = r1 + (2 * x2) * 4;
@@ -402,7 +379,7 @@ pub fn half_gray_of(img: &ImageView<'_>) -> (Vec<f32>, usize, usize) {
                         + img.data[c1 + 2] as u32
                         + img.data[c2 + 2] as u32
                         + img.data[c3 + 2] as u32) as f32;
-                    row_out[x2] = 0.25 * (0.299 * r + 0.587 * g + 0.114 * b);
+                    *out_px = 0.25 * (0.299 * r + 0.587 * g + 0.114 * b);
                 }
             });
     } else {
@@ -410,7 +387,7 @@ pub fn half_gray_of(img: &ImageView<'_>) -> (Vec<f32>, usize, usize) {
             let r0 = (2 * y2) * w * 4;
             let r1 = (2 * y2 + 1) * w * 4;
             let row_out = &mut out[y2 * w2..(y2 + 1) * w2];
-            for x2 in 0..w2 {
+            for (x2, out_px) in row_out.iter_mut().enumerate() {
                 let c0 = r0 + (2 * x2) * 4;
                 let c1 = c0 + 4;
                 let c2 = r1 + (2 * x2) * 4;
@@ -427,7 +404,7 @@ pub fn half_gray_of(img: &ImageView<'_>) -> (Vec<f32>, usize, usize) {
                     + img.data[c1 + 2] as u32
                     + img.data[c2 + 2] as u32
                     + img.data[c3 + 2] as u32) as f32;
-                row_out[x2] = 0.25 * (0.299 * r + 0.587 * g + 0.114 * b);
+                *out_px = 0.25 * (0.299 * r + 0.587 * g + 0.114 * b);
             }
         }
     }
@@ -728,10 +705,7 @@ where
 #[inline]
 fn blobs_rgb_strided_with_slot<F>(
     img: &ImageView<'_>,
-    x0: f64,
-    y0: f64,
-    x1: f64,
-    y1: f64,
+    [x0, y0, x1, y1]: [f64; 4],
     skip_rect: Option<[usize; 4]>,
     step_y: usize,
     slot: &mut ScanScratchSlot,
@@ -1183,12 +1157,13 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
         };
 
     if let Some(hloc) = hint
-        && hloc.w == w && hloc.h == h
-            && let Some(near) =
-                refine_near_direct(hloc.s, hloc.tx, hloc.ty, 0.65_f64.max(hloc.score - 0.08))
-            {
-                return Some(near);
-            }
+        && hloc.w == w
+        && hloc.h == h
+        && let Some(near) =
+            refine_near_direct(hloc.s, hloc.tx, hloc.ty, 0.65_f64.max(hloc.score - 0.08))
+    {
+        return Some(near);
+    }
 
     // Standard 16:9 game window board position (reference frame is 1344x756)
     let s_win = ((w as f64) / 1344.0).min((h as f64) / 756.0);
@@ -1312,9 +1287,10 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
                 })
                 .reduce_with(|a, b| if b.3 > a.3 { b } else { a })
                 && msc >= 0.52
-                    && let Some(near) = refine_near_direct(ms, mtx, mty, 0.65) {
-                        return Some(near);
-                    }
+                && let Some(near) = refine_near_direct(ms, mtx, mty, 0.65)
+            {
+                return Some(near);
+            }
         }
 
         let aspect = (w as f64) / (h as f64);
@@ -2126,13 +2102,13 @@ pub fn read_cell_with_slot(
         let mut l1 = 0.299 * (img.data[o_0] as f32)
             + 0.587 * (img.data[o_0 + 1] as f32)
             + 0.114 * (img.data[o_0 + 2] as f32);
-        for px in 0..pw {
+        for (px, dst_slot) in dst.iter_mut().enumerate() {
             let cx2 = (bx0 + px + 1).min(w - 1);
             let o2 = row_base + cx2 * 4;
             let l2 = 0.299 * (img.data[o2] as f32)
                 + 0.587 * (img.data[o2 + 1] as f32)
                 + 0.114 * (img.data[o2 + 2] as f32);
-            dst[px] = l0 + l1 + l2;
+            *dst_slot = l0 + l1 + l2;
             l0 = l1;
             l1 = l2;
         }
@@ -2293,10 +2269,7 @@ pub fn find_warden_with_slot(
     let step_y = ((3.0 * k) as usize).clamp(1, 4);
     let found = blobs_rgb_strided_with_slot(
         img,
-        min_x,
-        min_y,
-        max_x,
-        max_y,
+        [min_x, min_y, max_x, max_y],
         skip_rect,
         step_y,
         slot,
@@ -2448,13 +2421,10 @@ fn find_event_blobs_with_slot(
     let bands = event_band_rects(loc);
     let step_y = ((6.0 * loc.s) as usize).clamp(1, 8);
     let mut out = Vec::with_capacity(32);
-    for [x0, y0, x1, y1] in bands {
+    for rect in bands {
         out.extend(blobs_rgb_strided_with_slot(
             img,
-            x0,
-            y0,
-            x1,
-            y1,
+            rect,
             None,
             step_y,
             slot,
@@ -2658,12 +2628,8 @@ fn group_blobs_into_lines(mut found: Vec<Blob>, min_h: f64, max_h: f64) -> Vec<L
 
 pub fn text_lines_radii_with_slot(
     img: &ImageView<'_>,
-    x0: f64,
-    y0: f64,
-    x1: f64,
-    y1: f64,
-    min_h: f64,
-    max_h: f64,
+    [x0, y0, x1, y1]: [f64; 4],
+    (min_h, max_h): (f64, f64),
     radii: &[usize],
     sat_limit: f32,
     slot: &mut ScanScratchSlot,
@@ -2955,12 +2921,8 @@ pub fn locate_by_labels_with_slot(
 
     for line in text_lines_radii_with_slot(
         img,
-        0.0,
-        0.0,
-        (img.width - 1) as f64,
-        (img.height - 1) as f64,
-        6.0,
-        40.0,
+        [0.0, 0.0, (img.width - 1) as f64, (img.height - 1) as f64],
+        (6.0, 40.0),
         &[rad],
         0.34,
         slot,
@@ -2975,17 +2937,24 @@ pub fn locate_by_labels_with_slot(
             }
             let r = read_number(img, &p.words[0].glyphs, line.h, &ALLOWED_CELLS);
             if let Some(&(val, score)) = r.first()
-                && score > 0.70 {
-                    seen.push((
-                        (val - 1) as usize,
-                        (p.x0 + p.x1) as f64 * 0.5,
-                        (p.y0 + p.y1) as f64 * 0.5,
-                    ));
-                }
+                && score > 0.70
+            {
+                seen.push((
+                    (val - 1) as usize,
+                    (p.x0 + p.x1) as f64 * 0.5,
+                    (p.y0 + p.y1) as f64 * 0.5,
+                ));
+            }
         }
     }
 
-    let mut best: Option<(f64, usize, Vec<(usize, f64, f64)>)> = None;
+    struct LabelRansacBest {
+        s: f64,
+        cells: usize,
+        inl: Vec<(usize, f64, f64)>,
+    }
+
+    let mut best: Option<LabelRansacBest> = None;
     for i in 0..seen.len() {
         for j in (i + 1)..seen.len() {
             let a = seen[i];
@@ -3016,13 +2985,17 @@ pub fn locate_by_labels_with_slot(
                 uniq |= 1u16 << c.0;
             }
             let cells = uniq.count_ones() as usize;
-            if best.as_ref().is_none_or(|b| cells > b.1) {
-                best = Some((s, cells, inl));
+            if best.as_ref().is_none_or(|b| cells > b.cells) {
+                best = Some(LabelRansacBest { s, cells, inl });
             }
         }
     }
 
-    let (best_s, cells_matched, inl) = best?;
+    let LabelRansacBest {
+        s: best_s,
+        cells: cells_matched,
+        inl,
+    } = best?;
     if cells_matched < 5 {
         return None;
     }
@@ -3260,75 +3233,60 @@ fn solve_door_assignment(
         return None;
     }
 
-    let mut best_cells: FixedVec<u8, 4> = FixedVec::new();
-    let mut best_adj_score = f32::NEG_INFINITY;
-    let mut best_raw_score = 0.0_f32;
-    let mut cur = [0u8; 3];
-
-    fn search(
-        idx: usize,
+    struct DoorSearch<'a> {
         k: usize,
-        candidates: &[Vec<(u8, f32)>],
+        candidates: &'a [Vec<(u8, f32)>],
         warden_cell: Option<u8>,
-        cur: &mut [u8; 3],
-        adj_sum: f32,
-        raw_sum: f32,
-        best_adj: &mut f32,
-        best_raw: &mut f32,
-        best_cells: &mut FixedVec<u8, 4>,
-    ) {
-        if idx == k {
-            if adj_sum > *best_adj {
-                *best_adj = adj_sum;
-                *best_raw = raw_sum;
-                best_cells.clear();
-                best_cells.extend_from_slice(&cur[..k]);
+        cur: [u8; 3],
+        best_adj: f32,
+        best_raw: f32,
+        best_cells: FixedVec<u8, 4>,
+    }
+
+    impl DoorSearch<'_> {
+        fn step(&mut self, idx: usize, adj_sum: f32, raw_sum: f32) {
+            if idx == self.k {
+                if adj_sum > self.best_adj {
+                    self.best_adj = adj_sum;
+                    self.best_raw = raw_sum;
+                    self.best_cells.clear();
+                    self.best_cells.extend_from_slice(&self.cur[..self.k]);
+                }
+                return;
             }
-            return;
-        }
-        for &(cell_idx, sc) in candidates[idx].iter().take(4) {
-            if cur[..idx].contains(&cell_idx) {
-                continue;
+            for &(cell_idx, sc) in self.candidates[idx].iter().take(4) {
+                if self.cur[..idx].contains(&cell_idx) {
+                    continue;
+                }
+                let penalty = if self.warden_cell == Some(cell_idx) {
+                    0.16
+                } else {
+                    0.0
+                };
+                self.cur[idx] = cell_idx;
+                self.step(idx + 1, adj_sum + sc - penalty, raw_sum + sc);
             }
-            let penalty = if warden_cell == Some(cell_idx) {
-                0.16
-            } else {
-                0.0
-            };
-            cur[idx] = cell_idx;
-            search(
-                idx + 1,
-                k,
-                candidates,
-                warden_cell,
-                cur,
-                adj_sum + sc - penalty,
-                raw_sum + sc,
-                best_adj,
-                best_raw,
-                best_cells,
-            );
         }
     }
 
-    search(
-        0,
-        k.min(3),
+    let mut searcher = DoorSearch {
+        k: k.min(3),
         candidates,
         warden_cell,
-        &mut cur,
-        0.0,
-        0.0,
-        &mut best_adj_score,
-        &mut best_raw_score,
-        &mut best_cells,
-    );
+        cur: [0u8; 3],
+        best_adj: f32::NEG_INFINITY,
+        best_raw: 0.0,
+        best_cells: FixedVec::new(),
+    };
+    searcher.step(0, 0.0, 0.0);
+    let mut best_cells = searcher.best_cells;
+    let mut best_raw_score = searcher.best_raw;
 
     if best_cells.is_empty() {
         for list in candidates {
             if let Some(&(c, sc)) = list.first() {
                 if !best_cells.contains(&c) {
-                    best_cells.push(c);
+                    let _ = best_cells.try_push(c);
                 }
                 best_raw_score += sc;
             }
@@ -3336,7 +3294,7 @@ fn solve_door_assignment(
     }
 
     if office_card && !best_cells.contains(&0) {
-        best_cells.push(0);
+        let _ = best_cells.try_push(0);
     }
     let avg_score = best_raw_score / (k.max(1) as f32);
     let conf = ((avg_score - 0.30) * 1.6).clamp(0.1, 1.0);
@@ -3450,11 +3408,13 @@ fn read_doors_from_lines(img: &ImageView<'_>, lines_by_r: &[Vec<Line>]) -> Optio
     let mut candidates: Vec<Vec<(u8, f32)>> = Vec::with_capacity(best_group.len());
     for c in &best_group {
         let mut whole = read_number(img, &c.3, c.1, &ALLOWED_CELLS);
-        if c.3.len() == 1 && (c.3[0].w as f64) > 0.72 * (c.1 as f64)
-            && let Some(parts) = split_glyph(img, &c.3[0]) {
-                whole.extend(read_number(img, &parts, c.1, &ALLOWED_CELLS));
-                whole.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-            }
+        if c.3.len() == 1
+            && (c.3[0].w as f64) > 0.72 * (c.1 as f64)
+            && let Some(parts) = split_glyph(img, &c.3[0])
+        {
+            whole.extend(read_number(img, &parts, c.1, &ALLOWED_CELLS));
+            whole.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        }
         if whole.is_empty() {
             return None;
         }
@@ -3566,12 +3526,13 @@ pub fn read_days_with_slot(
     let y1 = top.min(115.0 * loc.s);
     let fast_lines: Vec<Line> = text_lines_radii_with_slot(
         img,
-        (img.width as f64) * 0.35,
-        0.0,
-        (img.width as f64) * 0.65,
-        y1,
-        8.0,
-        max_h,
+        [
+            (img.width as f64) * 0.35,
+            0.0,
+            (img.width as f64) * 0.65,
+            y1,
+        ],
+        (8.0, max_h),
         &radii[1..4],
         1.01,
         slot,
@@ -3581,9 +3542,10 @@ pub fn read_days_with_slot(
     .collect();
     let fast_res = extract_days_from_lines(img, &fast_lines);
     if let Some((days, conf)) = fast_res
-        && conf >= 0.45 {
-            return Some((days, conf));
-        }
+        && conf >= 0.45
+    {
+        return Some((days, conf));
+    }
     if fast_lines.is_empty() {
         return None;
     }
@@ -3591,12 +3553,13 @@ pub fn read_days_with_slot(
     let rem_radii = [radii[0]];
     let lines: Vec<Line> = text_lines_radii_with_slot(
         img,
-        (img.width as f64) * 0.32,
-        0.0,
-        (img.width as f64) * 0.68,
-        top,
-        8.0,
-        max_h,
+        [
+            (img.width as f64) * 0.32,
+            0.0,
+            (img.width as f64) * 0.68,
+            top,
+        ],
+        (8.0, max_h),
         &rem_radii,
         1.01,
         slot,
@@ -3631,18 +3594,7 @@ pub fn find_label_with_slot(
     let radii = text_radii(img);
     let max_h = 40.0_f64.max((img.height as f64) * 0.06);
     let ordered_radii = [radii[1], radii[2], radii[0]];
-    for lines in text_lines_radii_with_slot(
-        img,
-        bx[0],
-        bx[1],
-        bx[2],
-        bx[3],
-        6.0,
-        max_h,
-        &ordered_radii,
-        0.50,
-        slot,
-    ) {
+    for lines in text_lines_radii_with_slot(img, bx, (6.0, max_h), &ordered_radii, 0.50, slot) {
         for line in lines {
             for p in &line.pieces {
                 let n: isize = p.words.iter().map(|w| w.glyphs.len() as isize).sum();
@@ -4240,10 +4192,10 @@ pub fn pick_art_box(img: &ImageView<'_>, k: i32) -> Option<[i32; 4]> {
     let mut count = 0usize;
     let ux0 = x0 as usize;
     let uy0 = y0 as usize;
-    for dy in 0..h {
+    for (dy, y_slot) in y_hist[..h].iter_mut().enumerate() {
         let row_base = (uy0 + dy) * img.width * 4;
         let mut row_hits = 0u32;
-        for dx in 0..w {
+        for (dx, x_slot) in x_hist[..w].iter_mut().enumerate() {
             let o = row_base + (ux0 + dx) * 4;
             let r = img.data[o];
             let g = img.data[o + 1];
@@ -4263,11 +4215,11 @@ pub fn pick_art_box(img: &ImageView<'_>, k: i32) -> Option<[i32; 4]> {
                 }
             };
             if matched {
-                x_hist[dx] += 1;
+                *x_slot += 1;
                 row_hits += 1;
             }
         }
-        y_hist[dy] = row_hits;
+        *y_slot = row_hits;
         count += row_hits as usize;
     }
     let total_area = w * h;
@@ -4398,12 +4350,8 @@ pub fn scan_pick_with_slot(
         let c = (img.width as f64) * 0.5 + (k as f64) * 480.0 * s;
         let title_lines = text_lines_radii_with_slot(
             img,
-            c - 185.0 * s,
-            420.0 * s,
-            c + 185.0 * s,
-            550.0 * s,
-            (8.0 * s).max(5.0),
-            (45.0 * s).max(16.0),
+            [c - 185.0 * s, 420.0 * s, c + 185.0 * s, 550.0 * s],
+            ((8.0 * s).max(5.0), (45.0 * s).max(16.0)),
             &title_radius,
             0.35,
             slot,
@@ -4612,12 +4560,13 @@ pub fn read_objective_title_with_slot(
     let radii = text_radii(img);
     for lines in text_lines_radii_with_slot(
         img,
-        (img.width as f64) * 0.25,
-        (img.height as f64) * 0.12,
-        (img.width as f64) * 0.75,
-        (img.height as f64) * 0.40,
-        6.0,
-        48.0_f64.max((img.height as f64) * 0.07),
+        [
+            (img.width as f64) * 0.25,
+            (img.height as f64) * 0.12,
+            (img.width as f64) * 0.75,
+            (img.height as f64) * 0.40,
+        ],
+        (6.0, 48.0_f64.max((img.height as f64) * 0.07)),
         &radii,
         0.34,
         slot,
@@ -4720,12 +4669,8 @@ pub fn read_hud_objective_with_slot(
     let mut best_match: Option<(ObjectiveId, isize)> = None;
     for lines in text_lines_radii_with_slot(
         img,
-        0.0,
-        y0,
-        x1,
-        y1,
-        5.0,
-        36.0_f64.max((img.height as f64) * 0.05),
+        [0.0, y0, x1, y1],
+        (5.0, 36.0_f64.max((img.height as f64) * 0.05)),
         &radii[..3],
         0.32,
         slot,
@@ -4774,16 +4719,17 @@ pub fn read_hud_objective_with_slot(
                     {
                         let nums = read_number(img, &p.words[1].glyphs, line.h, &[10, 18]);
                         if let Some(&(n, score)) = nums.first()
-                            && score >= 0.30 {
-                                let id = if n == 18 {
-                                    ObjectiveId::Walk
-                                } else {
-                                    ObjectiveId::Doors
-                                };
-                                if best_match.is_none_or(|(_, boff)| boff > 0) {
-                                    best_match = Some((id, 0));
-                                }
+                            && score >= 0.30
+                        {
+                            let id = if n == 18 {
+                                ObjectiveId::Walk
+                            } else {
+                                ObjectiveId::Doors
+                            };
+                            if best_match.is_none_or(|(_, boff)| boff > 0) {
+                                best_match = Some((id, 0));
                             }
+                        }
                     } else if (6..=8).contains(&words[0])
                         && (1..=2).contains(&words[1])
                         && (4..=6).contains(&words[2])
@@ -4794,9 +4740,10 @@ pub fn read_hud_objective_with_slot(
                     } else if (6..=8).contains(&words[0])
                         && (5..=7).contains(&words[1])
                         && (7..=9).contains(&words[2])
-                        && best_match.is_none() {
-                            best_match = Some((ObjectiveId::Incident, 1));
-                        }
+                        && best_match.is_none()
+                    {
+                        best_match = Some((ObjectiveId::Incident, 1));
+                    }
                 }
             }
         }
@@ -5088,11 +5035,13 @@ pub fn scan_image_with_options_and_arena(
     let t_total = std::time::Instant::now();
     let t_loc = std::time::Instant::now();
     let mut loc = locate_board(img, hint);
-    if loc.is_some_and(|l| l.score >= 0.25 && l.score < 0.65) && has_devour_banner(img)
+    if loc.is_some_and(|l| l.score >= 0.25 && l.score < 0.65)
+        && has_devour_banner(img)
         && let Some(by_labels) = locate_by_labels_with_slot(img, &mut arena.slots[0])
-            && by_labels.cells_matched >= 8 {
-                loc = Some(by_labels);
-            }
+        && by_labels.cells_matched >= 8
+    {
+        loc = Some(by_labels);
+    }
     let loc_ms = t_loc.elapsed().as_secs_f64() * 1000.0;
 
     let valid_board = loc.is_some_and(|l| l.by_labels || l.score >= 0.65);
@@ -5180,12 +5129,8 @@ pub fn scan_image_with_options_and_arena(
                                 .min((img.height - 1) as f64);
                             let mut lines_by_r = text_lines_radii_with_slot(
                                 img,
-                                bx0,
-                                bottom,
-                                bx1,
-                                by1,
-                                6.0,
-                                max_h,
+                                [bx0, bottom, bx1, by1],
+                                (6.0, max_h),
                                 &radii[1..3],
                                 0.34,
                                 slot1,
@@ -5207,7 +5152,12 @@ pub fn scan_image_with_options_and_arena(
                             } else {
                                 let rem = [radii[0], radii[3]];
                                 let extra = text_lines_radii_with_slot(
-                                    img, bx0, bottom, bx1, by1, 6.0, max_h, &rem, 0.34, slot1,
+                                    img,
+                                    [bx0, bottom, bx1, by1],
+                                    (6.0, max_h),
+                                    &rem,
+                                    0.34,
+                                    slot1,
                                 );
                                 lines_by_r.extend(extra);
                                 let doors = read_doors_from_lines(img, &lines_by_r);

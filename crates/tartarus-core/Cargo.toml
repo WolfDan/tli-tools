@@ -8,5 +8,8 @@ rust-version.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+heapless.workspace = true
+rand.workspace = true
+tinyvec = { version = "1.13.3", features = ["serde"] }
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 

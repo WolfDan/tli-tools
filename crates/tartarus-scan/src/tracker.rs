@@ -339,7 +339,7 @@ impl RunTracker {
                 e.kind = CellKind::Empty;
                 e
             };
-            self.model.vault.push(beast);
+            self.model.vault.try_push(beast);
             self.model.swap_used = true;
             self.model.consume_offered = true;
             how = format!(
@@ -389,9 +389,10 @@ impl RunTracker {
 
     pub fn ingest(&mut self, scan: &ScanResult) -> bool {
         if let Some(loc) = scan.loc
-            && scan.ok {
-                self.hint = Some(loc);
-            }
+            && scan.ok
+        {
+            self.hint = Some(loc);
+        }
 
         if let Some(title) = scan.title {
             self.use_title(title);
@@ -399,12 +400,13 @@ impl RunTracker {
 
         if !scan.ok {
             if let Some(ref pick) = scan.pick
-                && pick_is_confident(pick) {
-                    let fresh = self.model.day >= self.model.max_days
-                        || (self.model.tools.is_empty() && self.model.day <= 1);
-                    self.use_pick(pick, fresh);
-                    return true;
-                }
+                && pick_is_confident(pick)
+            {
+                let fresh = self.model.day >= self.model.max_days
+                    || (self.model.tools.is_empty() && self.model.day <= 1);
+                self.use_pick(pick, fresh);
+                return true;
+            }
             return false;
         }
 
@@ -472,25 +474,26 @@ impl RunTracker {
             let pick_opt = scan_pick_with_slot(view, &mut arena.slots[0]);
             let pick_ms = t_pick.elapsed().as_secs_f64() * 1000.0;
             if let Some(pick) = pick_opt
-                && pick_is_confident(&pick) {
-                    let is_fresh = fresh_hint
-                        || !self.phase.is_active()
-                        || self
-                            .last_board_at
-                            .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
-                    custom_status = Some(self.use_pick(&pick, is_fresh));
-                    return (
-                        true,
-                        custom_status,
-                        ScanProfile {
-                            loc_ms: 0.0,
-                            cells_ms: 0.0,
-                            ocr_ms: 0.0,
-                            pick_ms,
-                            total_ms: t_total.elapsed().as_secs_f64() * 1000.0,
-                        },
-                    );
-                }
+                && pick_is_confident(&pick)
+            {
+                let is_fresh = fresh_hint
+                    || !self.phase.is_active()
+                    || self
+                        .last_board_at
+                        .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
+                custom_status = Some(self.use_pick(&pick, is_fresh));
+                return (
+                    true,
+                    custom_status,
+                    ScanProfile {
+                        loc_ms: 0.0,
+                        cells_ms: 0.0,
+                        ocr_ms: 0.0,
+                        pick_ms,
+                        total_ms: t_total.elapsed().as_secs_f64() * 1000.0,
+                    },
+                );
+            }
             pre_pick_ms += pick_ms;
         }
 
@@ -502,12 +505,14 @@ impl RunTracker {
         scan_res.profile.pick_ms += pre_pick_ms;
         if scan_res.ok {
             let recognized = self.ingest(&scan_res);
-            if recognized && self.model.objective == ObjectiveId::Other && !self.model.milestone
+            if recognized
+                && self.model.objective == ObjectiveId::Other
+                && !self.model.milestone
                 && let Some(loc) = scan_res.loc.as_ref()
-                    && let Some(obj) = read_hud_objective_with_slot(view, loc, &mut arena.slots[0])
-                    {
-                        self.model.objective = obj;
-                    }
+                && let Some(obj) = read_hud_objective_with_slot(view, loc, &mut arena.slots[0])
+            {
+                self.model.objective = obj;
+            }
             let treasure_view = matches!(
                 trigger,
                 CaptureTrigger::Board {
@@ -528,17 +533,18 @@ impl RunTracker {
             let pick_opt = scan_pick_with_slot(view, &mut arena.slots[0]);
             scan_res.profile.pick_ms += t_pick.elapsed().as_secs_f64() * 1000.0;
             if let Some(pick) = pick_opt
-                && pick_is_confident(&pick) {
-                    let fresh_hint = matches!(trigger, CaptureTrigger::Instruments { fresh: true });
-                    let is_fresh = fresh_hint
-                        || !self.phase.is_active()
-                        || self
-                            .last_board_at
-                            .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
-                    custom_status = Some(self.use_pick(&pick, is_fresh));
-                    scan_res.profile.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
-                    return (true, custom_status, scan_res.profile);
-                }
+                && pick_is_confident(&pick)
+            {
+                let fresh_hint = matches!(trigger, CaptureTrigger::Instruments { fresh: true });
+                let is_fresh = fresh_hint
+                    || !self.phase.is_active()
+                    || self
+                        .last_board_at
+                        .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
+                custom_status = Some(self.use_pick(&pick, is_fresh));
+                scan_res.profile.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+                return (true, custom_status, scan_res.profile);
+            }
         }
 
         // 5. Try scanning an Objective / Start-Event scroll popup (e.g. Manual picture or fallback)
@@ -603,6 +609,7 @@ impl RunTracker {
 
         let mut out: FixedVec<ScannedTool, 6> = known
             .iter()
+            .take(6)
             .map(|&sim| ScannedTool {
                 id: sim.as_str(),
                 sim,
@@ -645,13 +652,14 @@ impl RunTracker {
                     .iter()
                     .copied()
                     .filter(|t| offer.contains(&t.sim))
+                    .take(6)
                     .collect();
                 seen.as_mut_slice()
                     .sort_by(|a, b| b.conf.partial_cmp(&a.conf).unwrap());
                 let advised = self.last_advised_tool.filter(|id| offer.contains(id));
                 let take = seen.first().map(|t| t.sim).or(advised);
                 if let Some(t_id) = take {
-                    out.push(ScannedTool {
+                    let _ = out.try_push(ScannedTool {
                         id: t_id.as_str(),
                         sim: t_id,
                         name: t_id.name(),
@@ -676,7 +684,7 @@ impl RunTracker {
                 // accept any newly scanned high-confidence tool slots directly.
                 for t in &read[out.len()..] {
                     if !has(&out, t.sim) && (t.conf as f64) >= TOOL_SURE && t.score >= 0.88 {
-                        out.push(*t);
+                        let _ = out.try_push(*t);
                     }
                 }
             }
@@ -685,6 +693,7 @@ impl RunTracker {
                 .iter()
                 .filter(|t| (t.conf as f64) >= TOOL_SURE && !has(&out, t.sim))
                 .map(|t| t.sim)
+                .take(8)
                 .collect();
             if slots > out.len() + extra {
                 m.tools_slots = slots;
@@ -699,7 +708,7 @@ impl RunTracker {
 
         for t in read {
             if !has(&out, t.sim) && (t.conf as f64) >= TOOL_SURE {
-                out.push(*t);
+                let _ = out.try_push(*t);
             }
         }
         if !read.is_empty() {
@@ -829,6 +838,7 @@ impl RunTracker {
         let tools: FixedVec<ScannedTool, 6> = m
             .tools
             .iter()
+            .take(6)
             .map(|&id| ScannedTool {
                 id: id.as_str(),
                 sim: id,
@@ -1085,7 +1095,7 @@ impl RunTracker {
                 conf: 1.0,
             });
         }
-        m.tools = tools.iter().map(|t| t.sim).collect();
+        m.tools = tools.iter().map(|t| t.sim).take(32).collect();
         if tools.iter().any(|t| (t.conf as f64) < TOOL_SURE) {
             notes.push(
                 "Some instruments were hard to tell apart: check them under Torture Instrument."
@@ -1097,7 +1107,7 @@ impl RunTracker {
         let chromatic = r
             .chromatic
             .unwrap_or_else(|| if same_run { base.vault.len() } else { 0 });
-        m.vault = FixedVec::from_elem(Beast::Wolf, chromatic);
+        m.vault = std::iter::repeat_n(Beast::Wolf, chromatic.min(16)).collect();
         let highest = m
             .cells
             .iter()

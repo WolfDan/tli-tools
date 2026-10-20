@@ -2,6 +2,8 @@
 //! `UTexture2D` (`PF_BC7` / `PF_DXT5` / `PF_B8G8R8A8`), UnLua `\x01XDI` bytecode, and
 //! localization binary extractor for *Torchlight: Infinite*.
 
+#![forbid(unsafe_code)]
+
 pub mod aes;
 pub mod bc;
 pub mod luac;

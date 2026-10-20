@@ -133,23 +133,24 @@ fn run_linux_x11_hotkeys(tx: Sender<ControlCommand>, worker_tx: Sender<UiToWorke
     let max_kc = setup.max_keycode;
     if max_kc >= min_kc
         && let Ok(cookie) = conn.get_keyboard_mapping(min_kc, max_kc - min_kc + 1)
-            && let Ok(reply) = cookie.reply() {
-                let per = reply.keysyms_per_keycode as usize;
-                if per > 0 {
-                    for kc in min_kc..=max_kc {
-                        let start = (kc - min_kc) as usize * per;
-                        let end = (start + per).min(reply.keysyms.len());
-                        for &sym in &reply.keysyms[start..end] {
-                            match sym {
-                                0x006f | 0x004f => code_o = kc,
-                                0x0061 | 0x0041 => code_a = kc,
-                                0x0070 | 0x0050 => code_p = kc,
-                                _ => {}
-                            }
-                        }
+        && let Ok(reply) = cookie.reply()
+    {
+        let per = reply.keysyms_per_keycode as usize;
+        if per > 0 {
+            for kc in min_kc..=max_kc {
+                let start = (kc - min_kc) as usize * per;
+                let end = (start + per).min(reply.keysyms.len());
+                for &sym in &reply.keysyms[start..end] {
+                    match sym {
+                        0x006f | 0x004f => code_o = kc,
+                        0x0061 | 0x0041 => code_a = kc,
+                        0x0070 | 0x0050 => code_p = kc,
+                        _ => {}
                     }
                 }
             }
+        }
+    }
 
     let base_mods = u16::from(ModMask::CONTROL | ModMask::M1);
     let mod_variants = [
@@ -169,10 +170,10 @@ fn run_linux_x11_hotkeys(tx: Sender<ControlCommand>, worker_tx: Sender<UiToWorke
                 kc,
                 GrabMode::ASYNC,
                 GrabMode::ASYNC,
-            )
-                && cookie.check().is_ok() {
-                    any_grabbed = true;
-                }
+            ) && cookie.check().is_ok()
+            {
+                any_grabbed = true;
+            }
         }
     }
 

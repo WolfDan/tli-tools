@@ -107,7 +107,7 @@ impl OverlayView {
                                 } else if s.model.warden < 16 {
                                     view.selected_cell = s.model.warden;
                                 }
-                                view.snap = s;
+                                view.snap = *s;
                                 changed = true;
                             }
                             WorkerToUi::RiotState(on) => {
@@ -119,12 +119,12 @@ impl OverlayView {
                                 if let DisplayTarget::Auto(cur_id) = view.display_target
                                     && let Some(target_id) =
                                         crate::resolve_game_display_id(cx, Some(&placement))
-                                        && cur_id != Some(target_id) {
-                                            view.display_target =
-                                                DisplayTarget::Auto(Some(target_id));
-                                            view.pending_reopen = true;
-                                            changed = true;
-                                        }
+                                    && cur_id != Some(target_id)
+                                {
+                                    view.display_target = DisplayTarget::Auto(Some(target_id));
+                                    view.pending_reopen = true;
+                                    changed = true;
+                                }
                             }
                         }
                     }
@@ -654,9 +654,9 @@ impl OverlayView {
                                         cx.listener(|this, _ev, _win, _cx| {
                                             this.snap.model.checks = 0;
                                             let _ = this.worker_tx.send(
-                                                UiToWorker::UpdateModelAndRecheck(
+                                                UiToWorker::UpdateModelAndRecheck(Box::new(
                                                     this.snap.model,
-                                                ),
+                                                )),
                                             );
                                         }),
                                     )
@@ -1402,9 +1402,9 @@ impl OverlayView {
                                         cx.listener(|this, _ev, _win, _cx| {
                                             this.snap.model.checks = 0;
                                             let _ = this.worker_tx.send(
-                                                UiToWorker::UpdateModelAndRecheck(
+                                                UiToWorker::UpdateModelAndRecheck(Box::new(
                                                     this.snap.model,
-                                                ),
+                                                )),
                                             );
                                         }),
                                     )

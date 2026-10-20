@@ -30,6 +30,13 @@ serde_json = "1.0"
 regex = "1.11"
 oozextract = "0.5.5"
 flate2 = "1.0"
+heapless = "0.8"
+fnv = "1.0"
+rand = { version = "0.8", features = ["small_rng"] }
+memchr = "2.7"
+glam = "0.29"
+palette = { version = "0.7", default-features = false, features = ["std", "approx"] }
+memory-stats = "1.2"
 
 [profile.release]
 opt-level = 2
