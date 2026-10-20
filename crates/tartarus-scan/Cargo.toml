@@ -1,0 +1,11 @@
+[package]
+name = "tartarus-scan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tartarus-core = { path = "../tartarus-core" }
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true

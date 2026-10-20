@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tartarus-core",
+    "crates/tartarus-scan",
+    "crates/tartarus-overlay",
+    "crates/tartarus-extract",
+    "crates/tartarus-data",
+]
+default-members = [
+    "crates/tartarus-core",
+    "crates/tartarus-scan",
+    "crates/tartarus-overlay",
+]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+
+[workspace.dependencies]
+rayon = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+regex = "1.11"
+oozextract = "0.5.5"
+flate2 = "1.0"
+
+[profile.release]
+opt-level = 2
+
+[profile.release.package.tartarus-core]
+opt-level = 3
+
+[profile.release.package.tartarus-scan]
+opt-level = 3
+

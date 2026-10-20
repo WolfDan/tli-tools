@@ -1,0 +1,6 @@
+# Rust & Nix build outputs
+/target/
+/result
+/result-*
+/extracted_assets/
+/.direnv/

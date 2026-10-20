@@ -1,0 +1,14 @@
+[package]
+name = "tartarus-extract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Programmatic UE 4.27 Pak v12 & Oodle asset/texture extractor for Torchlight: Infinite"
+
+[dependencies]
+oozextract.workspace = true
+flate2.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
