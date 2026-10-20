@@ -6,6 +6,7 @@ members = [
     "crates/tartarus-overlay",
     "crates/tartarus-extract",
     "crates/tartarus-data",
+    "crates/workspace-hack",
 ]
 default-members = [
     "crates/tartarus-core",
@@ -18,6 +19,9 @@ version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
+
+[workspace.metadata.crane]
+name = "tartarus-workspace"
 
 [workspace.dependencies]
 rayon = "1.10"

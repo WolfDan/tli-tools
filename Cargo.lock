@@ -5533,6 +5533,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -5543,6 +5544,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tartarus-extract",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -5554,6 +5556,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -5572,6 +5575,7 @@ dependencies = [
  "tartarus-core",
  "tartarus-scan",
  "windows-sys 0.59.0",
+ "workspace-hack",
  "x11rb",
 ]
 
@@ -5583,6 +5587,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tartarus-core",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7096,6 +7101,39 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "workspace-hack"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "crc32fast",
+ "either",
+ "fastrand",
+ "futures-channel",
+ "futures-core",
+ "futures-io",
+ "futures-sink",
+ "futures-util",
+ "getrandom 0.2.17",
+ "indexmap",
+ "libc",
+ "log",
+ "memchr",
+ "once_cell",
+ "phf_shared",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_core",
+ "serde_json",
+ "simd-adler32",
+ "slab",
+ "syn 2.0.119",
+ "syn 3.0.9",
+ "toml_datetime 1.1.2+spec-1.1.0",
+ "zvariant",
+]
 
 [[package]]
 name = "writeable"

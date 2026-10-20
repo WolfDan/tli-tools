@@ -1,0 +1,16 @@
+# Configuration for cargo-hakari (workspace-hack crate generator)
+# Run `cargo hakari generate && cargo hakari manage-deps` (or `nix run .#hakari`)
+# after modifying workspace dependencies.
+
+hakari-package = "workspace-hack"
+resolver = "2"
+dep-format-version = "4"
+
+platforms = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+
+[traversal-excludes]
+
+[final-excludes]
