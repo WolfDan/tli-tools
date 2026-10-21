@@ -26,16 +26,21 @@ pub enum CaptureTrigger {
 impl CaptureTrigger {
     #[inline]
     pub const fn rank(self) -> u8 {
-        match self {
+        let r = match self {
             Self::Board { .. } => 1,
             Self::Instruments { .. } => 2,
             Self::Objective => 3,
             Self::Manual => 7,
-        }
+        };
+        assert!(r >= 1);
+        assert!(r <= 7);
+        r
     }
 }
 
 pub(crate) fn pick_is_confident(pick: &PickScreenRead) -> bool {
+    assert_eq!(pick.cards.len(), 3);
+    assert!(pick.cards[0].score.is_finite());
     if pick.cards.iter().any(|c| c.score < 0.80) {
         return false;
     }
@@ -76,23 +81,26 @@ pub struct RunTracker {
     pub last_notes: Vec<String>,
     /// Ground-truth active `runId` from `[S16BGM] board Begin runId=<u64> IsSettled=<bool>`
     pub log_run_id: Option<u64>,
-    /// Ground-truth `(cur_day, max_days)` from `[S16LastDay] check cur=<u8> max=<u8>`
+    /// Ground-truth `(cur_day, days_max)` from `[S16LastDay] check cur=<u8> max=<u8>`
     pub log_days: Option<(u8, u8)>,
     /// Ground-truth whether `S16BoardRelicPop` (3-card Instrument Pick modal) is currently open
     pub log_relic_pop_open: Option<bool>,
-    /// Whether the last ingested board frame had visible bottom action cards (`doors`, `decision`, or `chain`)
+    /// Whether the last ingested board frame had visible bottom action cards
     pub last_board_had_cards: bool,
 }
 
 impl Default for RunTracker {
     fn default() -> Self {
-        Self::new()
+        let tracker = Self::new();
+        assert_eq!(tracker.phase, RunPhase::WaitingForRun);
+        assert!(tracker.last_board_at.is_none());
+        tracker
     }
 }
 
 impl RunTracker {
     pub fn new() -> Self {
-        Self {
+        let tracker = Self {
             model: BoardModel::blank(),
             phase: RunPhase::WaitingForRun,
             last_board_at: None,
@@ -106,7 +114,10 @@ impl RunTracker {
             log_days: None,
             log_relic_pop_open: None,
             last_board_had_cards: false,
-        }
+        };
+        assert_eq!(tracker.phase, RunPhase::WaitingForRun);
+        assert!(!tracker.last_board_had_cards);
+        tracker
     }
 
     pub fn clear_run(&mut self) {
@@ -117,40 +128,53 @@ impl RunTracker {
         self.log_days = None;
         self.last_board_had_cards = false;
         self.last_notes.clear();
+        assert!(self.run_objective.is_none());
+        assert!(self.last_notes.is_empty());
     }
 
     pub fn on_run_over(&mut self) -> bool {
         self.log_days = None;
         self.log_relic_pop_open = Some(false);
-        if self.phase != RunPhase::RunOver {
+        let transitioned = if self.phase != RunPhase::RunOver {
             self.phase = RunPhase::RunOver;
             self.last_board_at = None;
             self.clear_run();
             true
         } else {
             false
-        }
+        };
+        assert_eq!(self.phase, RunPhase::RunOver);
+        assert!(self.log_days.is_none());
+        transitioned
     }
 
     pub fn on_run_new(&mut self) -> bool {
-        if self.phase.is_run_over() {
+        let transitioned = if self.phase.is_run_over() {
             self.phase = RunPhase::WaitingForRun;
             true
         } else {
             false
-        }
+        };
+        assert!(!self.phase.is_run_over());
+        assert!(transitioned || self.phase != RunPhase::RunOver);
+        transitioned
     }
 
     pub fn on_log_run_begin(&mut self, run_id: u64, is_settled: bool) -> bool {
         if is_settled {
-            return self.on_run_over();
+            let res = self.on_run_over();
+            assert_eq!(self.phase, RunPhase::RunOver);
+            assert!(self.log_days.is_none());
+            return res;
         }
         let changed = self.log_run_id.is_some_and(|prev| prev != run_id);
         self.log_run_id = Some(run_id);
+        assert_eq!(self.log_run_id, Some(run_id));
         if changed {
             self.last_board_at = None;
             self.clear_run();
             self.phase = RunPhase::WaitingForRun;
+            assert_eq!(self.phase, RunPhase::WaitingForRun);
             true
         } else {
             self.on_run_new()
@@ -160,21 +184,24 @@ impl RunTracker {
     pub fn on_log_day_check(&mut self, cur: u8, max: u8) -> bool {
         if max == 0 {
             self.log_days = None;
+            assert!(self.log_days.is_none());
             return false;
         }
         self.log_days = Some((cur, max));
         let gt_left = max.saturating_sub(cur.max(1));
         let prev_day = self.model.day;
-        let prev_max = self.model.max_days;
+        let prev_max = self.model.days_max;
         if self.model.mode == GameMode::Challenge {
             self.model.day = CHALLENGE_DAYS
                 .saturating_sub(gt_left)
                 .clamp(1, CHALLENGE_DAYS);
         } else {
-            self.model.max_days = max.clamp(1, 60);
-            self.model.day = self.model.max_days.saturating_sub(gt_left).max(1);
+            self.model.days_max = max.clamp(1, 60);
+            self.model.day = self.model.days_max.saturating_sub(gt_left).max(1);
         }
-        self.phase.is_active() && (self.model.day != prev_day || self.model.max_days != prev_max)
+        assert!(self.model.day >= 1);
+        assert!(self.model.days_max >= 1);
+        self.phase.is_active() && (self.model.day != prev_day || self.model.days_max != prev_max)
     }
 
     pub fn set_model(&mut self, new_model: BoardModel) {
@@ -183,6 +210,8 @@ impl RunTracker {
         self.phase = RunPhase::Active {
             last_capture_matched: true,
         };
+        assert!(self.phase.is_active());
+        assert!(self.model.cells.len() == 16);
     }
 
     pub fn load_example(&mut self) {
@@ -190,23 +219,27 @@ impl RunTracker {
         self.phase = RunPhase::Active {
             last_capture_matched: true,
         };
+        assert!(self.phase.is_active());
+        assert!(self.model.days_max >= 1);
     }
 
     pub fn set_start_event(&mut self, id: StartEventId) {
         self.model.start_event = id;
         if self.model.mode != GameMode::Challenge {
-            let left = self.model.max_days.saturating_sub(self.model.day);
+            let left = self.model.days_max.saturating_sub(self.model.day);
             let days = if id == StartEventId::IronLaw {
                 30
-            } else if self.model.max_days == 30 && id == StartEventId::None {
+            } else if self.model.days_max == 30 && id == StartEventId::None {
                 GameParams::default().drill_days
             } else {
-                self.model.max_days
+                self.model.days_max
             };
-            self.model.max_days = days;
+            self.model.days_max = days;
             self.model.day = days.saturating_sub(left).clamp(1, days);
         }
         self.model.clean_prey();
+        assert_eq!(self.model.start_event, id);
+        assert!(self.model.days_max >= 1);
     }
 
     pub fn use_title(&mut self, title: TitleRead) -> String {
@@ -216,7 +249,7 @@ impl RunTracker {
         {
             *last_capture_matched = true;
         }
-        match title {
+        let msg = match title {
             TitleRead::StartEvent(ev) => {
                 self.run_start_event = Some(ev);
                 self.set_start_event(ev);
@@ -236,43 +269,53 @@ impl RunTracker {
                     obj.name()
                 )
             }
+        };
+        assert!(!msg.is_empty());
+        assert!(self.run_start_event.is_some() || self.run_objective.is_some());
+        msg
+    }
+
+    fn reset_fresh_pick_model(&mut self) {
+        let again =
+            self.model.stage == BoardRunStage::Opening && self.model.step == BoardStep::Choice;
+        let mode = self.model.mode;
+        let rewards = self.model.rewards;
+        let days_max = self.model.days_max;
+        let objective = self.run_objective.unwrap_or(if again {
+            self.model.objective
+        } else {
+            ObjectiveId::Other
+        });
+        let walk_tiles = if again { self.model.walk_tiles } else { 0 };
+        let start_event = self.run_start_event.unwrap_or(if again {
+            self.model.start_event
+        } else {
+            StartEventId::None
+        });
+        self.run_objective = None;
+        self.run_start_event = None;
+
+        let mut m = BoardModel::blank();
+        m.mode = mode;
+        m.rewards = rewards;
+        m.days_max = days_max;
+        m.stage = BoardRunStage::Opening;
+        m.objective = objective;
+        m.walk_tiles = walk_tiles;
+        m.start_event = start_event;
+        if start_event == StartEventId::IronLaw && m.mode != GameMode::Challenge {
+            m.days_max = 30;
         }
+        m.clean_prey();
+        self.model = m;
+        assert_eq!(self.model.stage, BoardRunStage::Opening);
+        assert!(self.run_objective.is_none());
     }
 
     pub fn use_pick(&mut self, read: &PickScreenRead, fresh: bool) -> String {
+        assert_eq!(read.cards.len(), 3);
         if fresh {
-            let again =
-                self.model.stage == BoardRunStage::Opening && self.model.step == BoardStep::Choice;
-            let mode = self.model.mode;
-            let rewards = self.model.rewards;
-            let max_days = self.model.max_days;
-            let objective = self.run_objective.unwrap_or(if again {
-                self.model.objective
-            } else {
-                ObjectiveId::Other
-            });
-            let walk_tiles = if again { self.model.walk_tiles } else { 0 };
-            let start_event = self.run_start_event.unwrap_or(if again {
-                self.model.start_event
-            } else {
-                StartEventId::None
-            });
-            self.run_objective = None;
-            self.run_start_event = None;
-
-            let mut m = BoardModel::blank();
-            m.mode = mode;
-            m.rewards = rewards;
-            m.max_days = max_days;
-            m.stage = BoardRunStage::Opening;
-            m.objective = objective;
-            m.walk_tiles = walk_tiles;
-            m.start_event = start_event;
-            if start_event == StartEventId::IronLaw && m.mode != GameMode::Challenge {
-                m.max_days = 30;
-            }
-            m.clean_prey();
-            self.model = m;
+            self.reset_fresh_pick_model();
         }
 
         let card_tools = [read.cards[0].sim, read.cards[1].sim, read.cards[2].sim];
@@ -284,6 +327,7 @@ impl RunTracker {
         self.phase = RunPhase::Active {
             last_capture_matched: true,
         };
+        assert!(self.phase.is_active());
 
         let names: [&str; 3] = [
             read.cards[0].sim.name(),
@@ -315,11 +359,13 @@ impl RunTracker {
         self.phase = RunPhase::Active {
             last_capture_matched: true,
         };
+        assert!(self.phase.is_active());
 
         if after == Some(TreasureOrigin::View) {
             set_gift(&mut self.model);
             self.model.treasure = TreasurePhase::ReadyToChoose;
             self.model.clean_prey();
+            assert_eq!(self.model.treasure, TreasurePhase::ReadyToChoose);
             return "Board seen behind the Warden's Treasure. Which gift to take is below."
                 .to_string();
         }
@@ -333,6 +379,7 @@ impl RunTracker {
 
         let mut how = String::new();
         let w = self.model.warden as usize;
+        assert!(w < 16);
         if after == Some(TreasureOrigin::Swap) && self.model.cells[w].kind == CellKind::Inmate {
             let beast = self.model.cells[w].beast;
             self.model.cells[w] = if GameParams::default().reusable_cells {
@@ -346,7 +393,8 @@ impl RunTracker {
             self.model.swap_used = true;
             self.model.consume_offered = true;
             how = format!(
-                " It came from your Replace in cell {:02}: the newcomer was a Rainbow, now in the vault, and the cell locked again.",
+                " It came from your Replace in cell {:02}: the newcomer was a Rainbow, \
+                 now in the vault, and the cell locked again.",
                 w + 1
             );
         } else if after == Some(TreasureOrigin::Consume) {
@@ -359,7 +407,9 @@ impl RunTracker {
         self.model.treasure = TreasurePhase::WaitingForBoardView;
         self.model.clean_prey();
         format!(
-            "The Warden's Treasure is open.{how} To advise a gift on the board as it is now, press View Prison Status in the game, wait a second on the board, then return to the Treasure."
+            "The Warden's Treasure is open.{how} To advise a gift on the board as it is now, \
+             press View Prison Status in the game, wait a second on the board, then return to \
+             the Treasure."
         )
     }
 
@@ -369,6 +419,8 @@ impl RunTracker {
         self.phase = RunPhase::Active {
             last_capture_matched: true,
         };
+        assert_eq!(self.model.treasure, TreasurePhase::ReadyToChoose);
+        assert!(self.phase.is_active());
     }
 
     pub fn confirm_tools(&mut self) {
@@ -388,9 +440,12 @@ impl RunTracker {
         self.model.tools_slots = 0;
         self.model.tools_prompt = ToolsPrompt::None;
         self.model.clean_prey();
+        assert_eq!(self.model.tools_slots, 0);
+        assert_eq!(self.model.tools_prompt, ToolsPrompt::None);
     }
 
     pub fn ingest(&mut self, scan: &ScanResult) -> bool {
+        assert!(!scan.ok || scan.cells.is_some());
         if let Some(loc) = scan.loc
             && scan.ok
         {
@@ -405,7 +460,7 @@ impl RunTracker {
             if let Some(ref pick) = scan.pick
                 && pick_is_confident(pick)
             {
-                let fresh = self.model.day >= self.model.max_days
+                let fresh = self.model.day >= self.model.days_max
                     || (self.model.tools.is_empty() && self.model.day <= 1);
                 self.use_pick(pick, fresh);
                 return true;
@@ -427,6 +482,7 @@ impl RunTracker {
         self.phase = RunPhase::Active {
             last_capture_matched: true,
         };
+        assert!(self.phase.is_active());
 
         if behind_treasure {
             self.use_treasure(Some(TreasureOrigin::View));
@@ -435,42 +491,39 @@ impl RunTracker {
         true
     }
 
-    /// Unified frame-processing pipeline used by BOTH automatic log-triggered captures
-    /// and manual `"Picture"` / hotkey captures so state transitions are 100% identical.
-    pub fn process_frame(
+    fn try_pre_modal_scan(
         &mut self,
         view: &ImageView<'_>,
         trigger: CaptureTrigger,
         arena: &mut ScanArena,
-    ) -> (bool, Option<String>, ScanProfile) {
-        let t_total = Instant::now();
-        let mut custom_status: Option<String> = None;
+        t_start: Instant,
+    ) -> Result<(bool, Option<String>, ScanProfile), (bool, f64)> {
+        assert!(view.width > 0 && view.height > 0);
+        assert!(!arena.slots.is_empty());
         let mut pick_already_checked = false;
         let mut pre_pick_ms = 0.0;
 
-        // 1. If triggered by an Objective/Start-Event popup log, check objective title first
         if trigger == CaptureTrigger::Objective {
             let t_pick = Instant::now();
             let title_opt = read_objective_title_with_slot(view, &mut arena.slots[0]);
             let pick_ms = t_pick.elapsed().as_secs_f64() * 1000.0;
             if let Some(title) = title_opt {
-                custom_status = Some(self.use_title(title));
-                return (
+                let status = Some(self.use_title(title));
+                return Ok((
                     true,
-                    custom_status,
+                    status,
                     ScanProfile {
                         loc_ms: 0.0,
                         cells_ms: 0.0,
                         ocr_ms: 0.0,
                         pick_ms,
-                        total_ms: t_total.elapsed().as_secs_f64() * 1000.0,
+                        ms_total: t_start.elapsed().as_secs_f64() * 1000.0,
                     },
-                );
+                ));
             }
             pre_pick_ms += pick_ms;
         }
 
-        // 2. If triggered by an Instruments popup log, check the 3-card Pick screen first
         if let CaptureTrigger::Instruments { fresh: fresh_hint } = trigger {
             pick_already_checked = true;
             let t_pick = Instant::now();
@@ -484,23 +537,81 @@ impl RunTracker {
                     || self
                         .last_board_at
                         .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
-                custom_status = Some(self.use_pick(&pick, is_fresh));
-                return (
+                let status = Some(self.use_pick(&pick, is_fresh));
+                return Ok((
                     true,
-                    custom_status,
+                    status,
                     ScanProfile {
                         loc_ms: 0.0,
                         cells_ms: 0.0,
                         ocr_ms: 0.0,
                         pick_ms,
-                        total_ms: t_total.elapsed().as_secs_f64() * 1000.0,
+                        ms_total: t_start.elapsed().as_secs_f64() * 1000.0,
                     },
-                );
+                ));
             }
             pre_pick_ms += pick_ms;
         }
 
-        // 3. Try scanning the 4x4 prison board
+        Err((pick_already_checked, pre_pick_ms))
+    }
+
+    fn try_fallback_modal_scan(
+        &mut self,
+        view: &ImageView<'_>,
+        trigger: CaptureTrigger,
+        arena: &mut ScanArena,
+        pick_already_checked: bool,
+        profile: &mut ScanProfile,
+    ) -> Option<String> {
+        assert!(view.width > 0 && view.height > 0);
+        assert!(!arena.slots.is_empty());
+        let skip_pick = self.log_relic_pop_open == Some(false) && trigger != CaptureTrigger::Manual;
+        if !pick_already_checked && !skip_pick {
+            let t_pick = Instant::now();
+            let pick_opt = scan_pick_with_slot(view, &mut arena.slots[0]);
+            profile.pick_ms += t_pick.elapsed().as_secs_f64() * 1000.0;
+            if let Some(pick) = pick_opt
+                && pick_is_confident(&pick)
+            {
+                let fresh_hint = matches!(trigger, CaptureTrigger::Instruments { fresh: true });
+                let is_fresh = fresh_hint
+                    || !self.phase.is_active()
+                    || self
+                        .last_board_at
+                        .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
+                return Some(self.use_pick(&pick, is_fresh));
+            }
+        }
+
+        if trigger != CaptureTrigger::Objective {
+            let t_pick = Instant::now();
+            let title_opt = read_objective_title_with_slot(view, &mut arena.slots[0]);
+            profile.pick_ms += t_pick.elapsed().as_secs_f64() * 1000.0;
+            if let Some(title) = title_opt {
+                return Some(self.use_title(title));
+            }
+        }
+        None
+    }
+
+    /// Unified frame-processing pipeline used by BOTH automatic log-triggered captures
+    /// and manual `"Picture"` / hotkey captures so state transitions are 100% identical.
+    pub fn process_frame(
+        &mut self,
+        view: &ImageView<'_>,
+        trigger: CaptureTrigger,
+        arena: &mut ScanArena,
+    ) -> (bool, Option<String>, ScanProfile) {
+        assert!(view.width > 0 && view.height > 0);
+        assert!(!arena.slots.is_empty());
+        let t_start = Instant::now();
+        let (pick_already_checked, pre_pick_ms) =
+            match self.try_pre_modal_scan(view, trigger, arena, t_start) {
+                Ok(res) => return res,
+                Err(pair) => pair,
+            };
+
         let opts = ScanOptions {
             skip_days: self.log_days.is_some_and(|(_, max)| max > 0),
         };
@@ -522,44 +633,21 @@ impl RunTracker {
                     treasure_view: true
                 }
             );
-            if recognized && treasure_view {
-                custom_status = Some(self.use_treasure(Some(TreasureOrigin::View)));
-            }
-            scan_res.profile.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+            let custom_status = (recognized && treasure_view)
+                .then(|| self.use_treasure(Some(TreasureOrigin::View)));
+            scan_res.profile.ms_total = t_start.elapsed().as_secs_f64() * 1000.0;
             return (recognized, custom_status, scan_res.profile);
         }
 
-        // 4. Try scanning the 3-card Instrument Pick screen
-        let skip_pick = self.log_relic_pop_open == Some(false) && trigger != CaptureTrigger::Manual;
-        if !pick_already_checked && !skip_pick {
-            let t_pick = Instant::now();
-            let pick_opt = scan_pick_with_slot(view, &mut arena.slots[0]);
-            scan_res.profile.pick_ms += t_pick.elapsed().as_secs_f64() * 1000.0;
-            if let Some(pick) = pick_opt
-                && pick_is_confident(&pick)
-            {
-                let fresh_hint = matches!(trigger, CaptureTrigger::Instruments { fresh: true });
-                let is_fresh = fresh_hint
-                    || !self.phase.is_active()
-                    || self
-                        .last_board_at
-                        .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
-                custom_status = Some(self.use_pick(&pick, is_fresh));
-                scan_res.profile.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
-                return (true, custom_status, scan_res.profile);
-            }
-        }
-
-        // 5. Try scanning an Objective / Start-Event scroll popup (e.g. Manual picture or fallback)
-        if trigger != CaptureTrigger::Objective {
-            let t_pick = Instant::now();
-            let title_opt = read_objective_title_with_slot(view, &mut arena.slots[0]);
-            scan_res.profile.pick_ms += t_pick.elapsed().as_secs_f64() * 1000.0;
-            if let Some(title) = title_opt {
-                custom_status = Some(self.use_title(title));
-                scan_res.profile.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
-                return (true, custom_status, scan_res.profile);
-            }
+        if let Some(status) = self.try_fallback_modal_scan(
+            view,
+            trigger,
+            arena,
+            pick_already_checked,
+            &mut scan_res.profile,
+        ) {
+            scan_res.profile.ms_total = t_start.elapsed().as_secs_f64() * 1000.0;
+            return (true, Some(status), scan_res.profile);
         }
 
         if let RunPhase::Active {
@@ -569,13 +657,15 @@ impl RunTracker {
             *last_capture_matched = false;
         }
 
-        scan_res.profile.total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
-        (false, custom_status, scan_res.profile)
+        scan_res.profile.ms_total = t_start.elapsed().as_secs_f64() * 1000.0;
+        (false, None, scan_res.profile)
     }
 
     pub fn record_advice(&mut self, best_action: Option<SimAction>) {
         if let Some(SimAction::Choose(ChoiceId::Tool(t))) = best_action {
             self.last_advised_tool = Some(t);
+            assert_eq!(self.last_advised_tool, Some(t));
         }
+        assert!(self.model.cells.len() == 16);
     }
 }

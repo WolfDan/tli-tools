@@ -33,11 +33,13 @@ impl PakVfs {
     /// Reads `.uasset`, `.uexp`, and optional `.ubulk` for a virtual asset path
     /// (with or without extension) and decodes the cooked `UTexture2D` to RGBA8.
     pub fn decode_texture(&self, asset_path: &str) -> Result<DecodedTexture, ExtractError> {
+        assert!(!asset_path.is_empty());
         let base = asset_path
             .trim_start_matches('/')
             .trim_end_matches(".uasset")
             .trim_end_matches(".uexp")
             .trim_end_matches(".ubulk");
+        assert!(!base.is_empty());
 
         let uasset_path = format!("{base}.uasset");
         let uexp_path = format!("{base}.uexp");
@@ -53,10 +55,12 @@ impl PakVfs {
     /// Reads `.uasset` and `.uexp` for a Paper2D `UPaperSprite` asset and returns its
     /// parent atlas virtual path and crop rectangle (`BakedSourceUV`, `BakedSourceDimension`).
     pub fn read_paper_sprite(&self, asset_path: &str) -> Result<PaperSpriteInfo, ExtractError> {
+        assert!(!asset_path.is_empty());
         let base = asset_path
             .trim_start_matches('/')
             .trim_end_matches(".uasset")
             .trim_end_matches(".uexp");
+        assert!(!base.is_empty());
 
         let uasset = self.read_path(&format!("{base}.uasset"))?;
         let uexp = self.read_path(&format!("{base}.uexp"))?;
@@ -65,10 +69,14 @@ impl PakVfs {
         })
     }
 
-    /// Reads and decrypts a `.out` UnLua bytecode file (`0x20210507` stream cipher -> `\x01XDI` Lua 5.3 bytecode).
+    /// Reads and decrypts a `.out` UnLua bytecode file (`0x20210507` stream cipher
+    /// -> `\x01XDI` Lua 5.3 bytecode).
     pub fn read_luac_decrypted(&self, virtual_path: &str) -> Result<Vec<u8>, ExtractError> {
+        assert!(!virtual_path.is_empty());
         let raw = self.read_path(virtual_path)?;
-        Ok(decrypt_luac_bytes(&raw))
+        let dec = decrypt_luac_bytes(&raw);
+        assert_eq!(dec.len(), raw.len());
+        Ok(dec)
     }
 
     /// Reads, decrypts, and evaluates a `DataCfg/config_*.out` Lua table file into structured rows.
@@ -76,7 +84,9 @@ impl PakVfs {
         &self,
         virtual_path: &str,
     ) -> Result<LuaConfigTable, ExtractError> {
+        assert!(!virtual_path.is_empty());
         let raw = self.read_path(virtual_path)?;
+        assert!(!raw.is_empty());
         parse_xdi_config_table(&raw)
     }
 
@@ -86,8 +96,10 @@ impl PakVfs {
         lang_code: &str,
         prefix_filter: Option<&str>,
     ) -> Result<BTreeMap<String, String>, ExtractError> {
+        assert!(!lang_code.is_empty());
         let vpath =
             format!("UE_game/Content/Script/Data/language/config_multi_language_{lang_code}.bin");
+        assert!(vpath.ends_with(".bin"));
         let raw = self.read_path(&vpath)?;
         Ok(parse_multi_language_bin(&raw, prefix_filter))
     }

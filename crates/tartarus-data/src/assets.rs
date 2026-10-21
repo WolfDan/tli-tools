@@ -15,17 +15,16 @@ pub struct DecodedAssetImage {
     pub rgba8: Vec<u8>,
 }
 
-/// Decodes all S16 textures and PaperSprites needed for the catalog and CV feature synthesis,
-/// keyed by short asset name (e.g. `"UI_S16Gameplay_RelicIcon_01"`, `"UI_Img_S16Gameplay_Jail_Bg_Normal"`).
-pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetImage> {
-    let mut map: BTreeMap<String, DecodedAssetImage> = BTreeMap::new();
-    let filters = [
-        "s16gameplay",
-        "mercenary_style",
-        "s16mercenary",
-        "s16boardcell",
-    ];
+const _: () = {
+    assert!(std::mem::size_of::<DecodedAssetImage>() >= 32);
+};
 
+fn load_standalone_s16_textures(
+    vfs: &PakVfs,
+    filters: &[&str],
+    map: &mut BTreeMap<String, DecodedAssetImage>,
+) {
+    assert!(!filters.is_empty());
     for meta in vfs.entries.values() {
         let vpath = &meta.virtual_path;
         if !vpath.ends_with(".uasset")
@@ -39,10 +38,8 @@ pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetI
             continue;
         }
         if let Ok(tex) = vfs.decode_texture(vpath)
-            && tex.width >= 16
-            && tex.height >= 16
-            && tex.width <= 4096
-            && tex.height <= 4096
+            && (16..=4096).contains(&tex.width)
+            && (16..=4096).contains(&tex.height)
         {
             let short_name = Path::new(vpath)
                 .file_stem()
@@ -65,8 +62,15 @@ pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetI
             );
         }
     }
+    assert!(map.len() <= vfs.entries.len());
+}
 
-    // Also load any UPaperSprite assets if not already decoded as standalone textures
+fn load_s16_paper_sprites(
+    vfs: &PakVfs,
+    filters: &[&str],
+    map: &mut BTreeMap<String, DecodedAssetImage>,
+) {
+    assert!(!filters.is_empty());
     let mut by_atlas: BTreeMap<String, Vec<(&str, tartarus_extract::PaperSpriteInfo)>> =
         BTreeMap::new();
     for meta in vfs.entries.values() {
@@ -125,15 +129,34 @@ pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetI
             }
         }
     }
+    assert!(map.len() <= vfs.entries.len());
+}
 
+/// Decodes all S16 textures and PaperSprites needed for the catalog and CV feature synthesis,
+/// keyed by short asset name (e.g. `"UI_S16Gameplay_RelicIcon_01"`).
+pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetImage> {
+    let mut map: BTreeMap<String, DecodedAssetImage> = BTreeMap::new();
+    let filters = [
+        "s16gameplay",
+        "mercenary_style",
+        "s16mercenary",
+        "s16boardcell",
+    ];
+    assert_eq!(filters.len(), 4);
+    load_standalone_s16_textures(vfs, &filters, &mut map);
+    load_s16_paper_sprites(vfs, &filters, &mut map);
+    assert!(map.len() <= vfs.entries.len());
     map
 }
 
 #[inline]
 pub fn hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     use palette::{FromColor, Hsv, Srgb};
+    debug_assert!(r.is_finite() && g.is_finite() && b.is_finite());
     let c = Hsv::from_color(Srgb::new(r / 255.0, g / 255.0, b / 255.0));
-    (c.hue.into_positive_degrees(), c.saturation, c.value)
+    let out = (c.hue.into_positive_degrees(), c.saturation, c.value);
+    debug_assert!(out.0 >= 0.0 && out.1 >= 0.0 && out.2 >= 0.0);
+    out
 }
 
 pub fn alpha_bbox_thresh(
@@ -142,6 +165,8 @@ pub fn alpha_bbox_thresh(
     h: usize,
     thresh: u8,
 ) -> (usize, usize, usize, usize) {
+    assert!(w > 0 && h > 0);
+    assert!(rgba.len() >= w * h * 4);
     let mut x0 = w;
     let mut y0 = h;
     let mut x1 = 0usize;
@@ -164,7 +189,22 @@ pub fn alpha_bbox_thresh(
 }
 
 pub fn alpha_bbox(rgba: &[u8], w: usize, h: usize) -> (usize, usize, usize, usize) {
+    assert!(w > 0 && h > 0);
+    assert!(rgba.len() >= w * h * 4);
     alpha_bbox_thresh(rgba, w, h, 16)
+}
+
+fn percentile_from_hist(hist: &[u32], base: usize, rank: u32) -> usize {
+    assert!(!hist.is_empty());
+    let mut acc = 0u32;
+    for (idx, &c) in hist.iter().enumerate() {
+        acc += c;
+        if acc > rank {
+            assert!(idx < hist.len());
+            return base + idx;
+        }
+    }
+    base + hist.len().saturating_sub(1)
 }
 
 /// Computes the exact 1%–99% percentile bounding box used by `tartarus_scan::pick_art_box`
@@ -176,6 +216,8 @@ pub fn pick_art_bbox_on_rgba(
     mx_hi: u8,
     v_thr: f32,
 ) -> Option<(usize, usize, usize, usize)> {
+    assert!(img_w > 0 && img_h > 0);
+    assert!(rgba.len() >= img_w * img_h * 4);
     let x1 = x1.min(img_w);
     let y1 = y1.min(img_h);
     if x1 <= x0 || y1 <= y0 {
@@ -191,9 +233,7 @@ pub fn pick_art_bbox_on_rgba(
         let mut row_hits = 0u32;
         for (dx, x_slot) in x_hist.iter_mut().enumerate() {
             let o = row_base + (x0 + dx) * 4;
-            let r = rgba[o];
-            let g = rgba[o + 1];
-            let b = rgba[o + 2];
+            let (r, g, b) = (rgba[o], rgba[o + 1], rgba[o + 2]);
             let mx = r.max(g).max(b);
             let matched = if mx >= mx_hi {
                 true
@@ -221,34 +261,23 @@ pub fn pick_art_bbox_on_rgba(
     }
     let rank_lo = (0.01 * ((count - 1) as f64)).round() as u32;
     let rank_hi = (0.99 * ((count - 1) as f64)).round() as u32;
-    let percentile = |hist: &[u32], base: usize, rank: u32| -> usize {
-        let mut acc = 0u32;
-        for (idx, &c) in hist.iter().enumerate() {
-            acc += c;
-            if acc > rank {
-                return base + idx;
-            }
-        }
-        base + hist.len().saturating_sub(1)
-    };
-    let bx0 = percentile(&x_hist, x0, rank_lo);
-    let by0 = percentile(&y_hist, y0, rank_lo);
-    let bx1 = (percentile(&x_hist, x0, rank_hi) + 1).min(img_w);
-    let by1 = (percentile(&y_hist, y0, rank_hi) + 1).min(img_h);
-    if bx1 > bx0 && by1 > by0 {
-        Some((bx0, by0, bx1, by1))
-    } else {
-        None
-    }
+    let bx0 = percentile_from_hist(&x_hist, x0, rank_lo);
+    let by0 = percentile_from_hist(&y_hist, y0, rank_lo);
+    let bx1 = (percentile_from_hist(&x_hist, x0, rank_hi) + 1).min(img_w);
+    let by1 = (percentile_from_hist(&y_hist, y0, rank_hi) + 1).min(img_h);
+    (bx1 > bx0 && by1 > by0).then_some((bx0, by0, bx1, by1))
 }
 
-/// Computes the `4x6` RGB grid (`[f32; 72]`) and 13-bin HSV histogram (`[f32; 13]`) matching `tartarus-scan::art_feature`.
+/// Computes the `4x6` RGB grid (`[f32; 72]`) and 13-bin HSV histogram (`[f32; 13]`)
+/// matching `tartarus-scan::art_feature`.
 pub fn compute_art_feature_region(
     rgba: &[u8],
     (w, h): (usize, usize),
     (x0, y0, x1, y1): (usize, usize, usize, usize),
     bg_rgb: (f32, f32, f32),
 ) -> ([f32; 72], [f32; 13]) {
+    assert!(w > 0 && h > 0);
+    assert!(rgba.len() >= w * h * 4);
     let gx = 4usize;
     let gy = 6usize;
     let mut grid = [0.0f32; 72];
@@ -303,6 +332,8 @@ pub fn synthesize_icon_feature(
     img: &DecodedAssetImage,
     bg_rgb: (f32, f32, f32),
 ) -> ([f32; 72], [f32; 13]) {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(img.rgba8.len() >= img.width * img.height * 4);
     let (x0, y0, x1, y1) = alpha_bbox(&img.rgba8, img.width, img.height);
     compute_art_feature_region(
         &img.rgba8,

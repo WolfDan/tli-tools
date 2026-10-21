@@ -12,6 +12,8 @@ use tartarus_extract::strip_rich_text;
 fn test_strip_rich_text() {
     let raw = "Requires <Red>1</> fewer beast; grants +50% 'Rainbow' [145]!";
     let clean = strip_rich_text(raw);
+    assert!(!clean.is_empty());
+    assert!(!clean.contains("<Red>"));
     assert_eq!(
         clean,
         "Requires 1 fewer beast; grants +50% 'Rainbow' [145]!"

@@ -49,13 +49,23 @@ def review_diff(diff_text: str):
                 warnings.append(f"[{current_file}] Line exceeds 100 columns: '{code[:50]}...'")
 
             # 2. Assertion check
-            if re.search(r'\bassert\s*\(', code) or re.search(r'\bassert!\s*\(', code):
+            if re.search(r'\b(?:debug_)?assert(?:_eq|_ne)?!?\s*\(', code):
                 assertions_count += 1
 
             # 3. Naming check
-            if re.search(r'\b(max_[a-z0-9_]+|min_[a-z0-9_]+)\b', code):
-                match = re.search(r'\b(max_[a-z0-9_]+|min_[a-z0-9_]+)\b', code).group(1)
-                warnings.append(f"[{current_file}] Little-endian identifier detected: '{match}' (prefer '<entity>_max')")
+            allow = {
+                "total_cmp",
+                "min_by_key",
+                "max_by_key",
+                "min_by",
+                "max_by",
+                "min_keycode",
+                "max_keycode",
+            }
+            for m in re.findall(r'\b(max_[a-z0-9_]+|min_[a-z0-9_]+|total_[a-z0-9_]+)\b', code):
+                if m not in allow:
+                    msg = f"[{current_file}] Little-endian identifier: '{m}'"
+                    warnings.append(msg)
 
             # 4. Alloc check
             if re.search(r'\bmalloc\s*\(|\bpage_allocator\b', code):

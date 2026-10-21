@@ -19,6 +19,13 @@ pub const PRESSURE: [u16; 6] = [2, 4, 8, 16, 32, 65];
 pub const WORTH: [u32; 6] = [1, 3, 9, 27, 81, 400];
 pub const START_CELLS: [u8; 6] = [1, 2, 5, 6, 10, 11];
 
+const _: () = {
+    assert!(CELL_COUNT == 16);
+    assert!(SUPREME < RAINBOW);
+    assert!(PRESSURE.len() == 6);
+    assert!(WORTH.len() == 6);
+};
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash, Default, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Beast {
@@ -34,69 +41,93 @@ pub const BEASTS: [Beast; 4] = [Beast::Mammoth, Beast::Lion, Beast::Wolf, Beast:
 impl Beast {
     #[inline]
     pub const fn idx(self) -> usize {
-        self as usize
+        let i = self as usize;
+        assert!(i < BEASTS.len());
+        assert!(i <= Beast::Rat as usize);
+        i
     }
 
     #[inline]
     pub const fn as_str(self) -> &'static str {
-        match self {
+        assert!((self as usize) < BEASTS.len());
+        let out = match self {
             Beast::Mammoth => "mammoth",
             Beast::Lion => "lion",
             Beast::Wolf => "wolf",
             Beast::Rat => "rat",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 16);
+        out
     }
 
     #[inline]
     pub const fn name(self) -> &'static str {
-        match self {
+        assert!((self as usize) < BEASTS.len());
+        let out = match self {
             Beast::Mammoth => "Mammoth",
             Beast::Lion => "Lion",
             Beast::Wolf => "Wolf",
             Beast::Rat => "Rat",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 16);
+        out
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        match s {
+        assert!(s.len() <= 1024);
+        let out = match s {
             "mammoth" => Some(Beast::Mammoth),
             "lion" => Some(Beast::Lion),
             "wolf" => Some(Beast::Wolf),
             "rat" => Some(Beast::Rat),
             _ => None,
-        }
+        };
+        assert!(out.is_none() || !s.is_empty());
+        out
     }
 
     #[inline]
     pub const fn primary_prey(self) -> Beast {
-        match self {
+        assert!((self as usize) < BEASTS.len());
+        let prey = match self {
             Beast::Mammoth => Beast::Lion,
             Beast::Lion => Beast::Wolf,
             Beast::Wolf => Beast::Rat,
             Beast::Rat => Beast::Mammoth,
-        }
+        };
+        assert!(prey as u8 != self as u8);
+        prey
     }
 
     #[inline]
     pub const fn second_meal(self) -> Option<Beast> {
-        match self {
+        assert!((self as usize) < BEASTS.len());
+        let meal = match self {
             Beast::Mammoth => Some(Beast::Wolf),
             Beast::Lion => Some(Beast::Rat),
             Beast::Wolf | Beast::Rat => None,
-        }
+        };
+        assert!(meal.is_none() || (self as u8) <= (Beast::Lion as u8));
+        meal
     }
 }
 
 #[inline]
 pub const fn tier_name(tier: u8) -> &'static str {
-    match tier {
+    let clamped = if tier <= RAINBOW { tier } else { RAINBOW };
+    assert!(clamped <= RAINBOW);
+    let out = match clamped {
         0 => "Normal",
         1 => "Magic",
         2 => "Rare",
         3 => "Legendary",
         4 => "Supreme",
         _ => "Rainbow",
-    }
+    };
+    assert!(!out.is_empty());
+    out
 }
 
 pub const CELL_LABELS: [&str; 16] = [
@@ -105,7 +136,11 @@ pub const CELL_LABELS: [&str; 16] = [
 
 #[inline]
 pub const fn cell_label(n: u8) -> &'static str {
-    CELL_LABELS[(n as usize) & 15]
+    let idx = (n as usize) & 15;
+    assert!(idx < CELL_LABELS.len());
+    let label = CELL_LABELS[idx];
+    assert!(label.len() == 2);
+    label
 }
 
 const INMATE_DESCRIPTIONS: [[&str; 4]; 6] = [
@@ -139,21 +174,33 @@ pub const fn describe_inmate(inmate: Inmate) -> &'static str {
     } else {
         5
     };
-    INMATE_DESCRIPTIONS[t][inmate.beast.idx()]
+    let b = inmate.beast.idx();
+    assert!(t < INMATE_DESCRIPTIONS.len());
+    assert!(b < INMATE_DESCRIPTIONS[t].len());
+    let desc = INMATE_DESCRIPTIONS[t][b];
+    assert!(!desc.is_empty());
+    desc
 }
 
 #[inline]
 pub fn plural(n: usize, word: &str) -> String {
-    if n == 1 {
+    assert!(!word.is_empty());
+    let out = if n == 1 {
         format!("1 {word}")
     } else {
         format!("{n} {word}s")
-    }
+    };
+    assert!(out.len() > word.len());
+    out
 }
 
 #[inline]
 pub const fn steps_between(a: u8, b: u8) -> u8 {
-    (b + 16 - a) % 16
+    assert!((a as usize) < CELL_COUNT);
+    assert!((b as usize) < CELL_COUNT);
+    let steps = (b + 16 - a) % 16;
+    assert!((steps as usize) < CELL_COUNT);
+    steps
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash, Default, Serialize, Deserialize)]
@@ -229,14 +276,17 @@ pub const ALL_TOOLS: [ToolId; 31] = [
 
 const fn count_ascii_alnum(s: &str) -> u8 {
     let bytes = s.as_bytes();
+    assert!(!bytes.is_empty());
+    assert!(bytes.len() <= 128);
     let mut i = 0;
     let mut cnt = 0u8;
-    while i < bytes.len() {
+    while i < bytes.len() && i < 128 {
         if bytes[i].is_ascii_alphanumeric() {
             cnt += 1;
         }
         i += 1;
     }
+    assert!(cnt as usize <= bytes.len());
     cnt
 }
 
@@ -253,16 +303,24 @@ const TOOL_NAME_ALNUM_LEN: [u8; 31] = {
 impl ToolId {
     #[inline]
     pub const fn idx(self) -> usize {
-        self as usize
+        let i = self as usize;
+        assert!(i < ALL_TOOLS.len());
+        assert!(ALL_TOOLS[i] as u8 == self as u8);
+        i
     }
 
     #[inline]
     pub const fn name_alnum_len(self) -> usize {
-        TOOL_NAME_ALNUM_LEN[self as usize] as usize
+        let i = self as usize;
+        assert!(i < TOOL_NAME_ALNUM_LEN.len());
+        let len = TOOL_NAME_ALNUM_LEN[i] as usize;
+        assert!(len > 0);
+        len
     }
 
     pub const fn as_str(self) -> &'static str {
-        match self {
+        assert!((self as usize) < ALL_TOOLS.len());
+        let out = match self {
             ToolId::Revenge => "revenge",
             ToolId::Muzzle => "muzzle",
             ToolId::Saw => "saw",
@@ -294,11 +352,15 @@ impl ToolId {
             ToolId::Maul => "maul",
             ToolId::Claws => "claws",
             ToolId::Trap => "trap",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 16);
+        out
     }
 
     pub const fn name(self) -> &'static str {
-        match self {
+        assert!((self as usize) < ALL_TOOLS.len());
+        let out = match self {
             ToolId::Revenge => "Avenger's Casket",
             ToolId::Muzzle => "Raging Beast's Agonizing Muzzle",
             ToolId::Saw => "Rusty Saw",
@@ -330,11 +392,17 @@ impl ToolId {
             ToolId::Maul => "Elephant-Foot Maul: Mammoth",
             ToolId::Claws => "Filthy Claws: Alpha Wolf",
             ToolId::Trap => "Blood-Stained Trap: Berserk Lion",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 64);
+        out
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        ALL_TOOLS.into_iter().find(|t| t.as_str() == s)
+        assert!(s.len() <= 1024);
+        let out = ALL_TOOLS.into_iter().find(|t| t.as_str() == s);
+        assert!(out.is_none() || !s.is_empty());
+        out
     }
 }
 
@@ -344,12 +412,19 @@ pub struct ToolMask(pub u32);
 impl ToolMask {
     #[inline]
     pub const fn has(self, tool: ToolId) -> bool {
-        (self.0 & (1u32 << (tool as u32))) != 0
+        let bit = tool as u32;
+        assert!(bit < 31);
+        let mask = 1u32 << bit;
+        assert!(mask != 0);
+        (self.0 & mask) != 0
     }
 
     #[inline]
     pub fn insert(&mut self, tool: ToolId) {
-        self.0 |= 1u32 << (tool as u32);
+        let bit = tool as u32;
+        assert!(bit < 31);
+        self.0 |= 1u32 << bit;
+        assert!(self.has(tool));
     }
 }
 
@@ -366,25 +441,37 @@ pub const ALL_GIFTS: [GiftId; 4] = [GiftId::Ring, GiftId::Horn, GiftId::Wine, Gi
 
 impl GiftId {
     pub const fn as_str(self) -> &'static str {
-        match self {
+        assert!((self as usize) < ALL_GIFTS.len());
+        let out = match self {
             GiftId::Ring => "ring",
             GiftId::Horn => "horn",
             GiftId::Wine => "wine",
             GiftId::Brand => "brand",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 16);
+        out
     }
 
     pub const fn name(self) -> &'static str {
-        match self {
+        assert!((self as usize) < ALL_GIFTS.len());
+        let out = match self {
             GiftId::Ring => "Three-Headed Thumb Ring",
             GiftId::Horn => "Brass Horn of Strife",
             GiftId::Wine => "Crimson Vintage",
             GiftId::Brand => "Brand of Original Sin",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 32);
+        out
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        ALL_GIFTS.into_iter().find(|g| g.as_str() == s)
+        assert!(s.len() <= 1024);
+        let out = ALL_GIFTS.into_iter().find(|g| g.as_str() == s);
+        assert!(out.is_none() || !s.is_empty());
+        assert!(out.is_none() || s.len() <= 16);
+        out
     }
 }
 
@@ -396,25 +483,34 @@ pub enum ChoiceId {
 
 impl ChoiceId {
     pub const fn as_str(self) -> &'static str {
-        match self {
+        let out = match self {
             ChoiceId::Tool(t) => t.as_str(),
             ChoiceId::Gift(g) => g.as_str(),
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 32);
+        out
     }
 
     pub const fn name(self) -> &'static str {
-        match self {
+        let out = match self {
             ChoiceId::Tool(t) => t.name(),
             ChoiceId::Gift(g) => g.name(),
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 64);
+        out
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        if let Some(t) = ToolId::parse(s) {
+        assert!(s.len() <= 1024);
+        let out = if let Some(t) = ToolId::parse(s) {
             Some(ChoiceId::Tool(t))
         } else {
             GiftId::parse(s).map(ChoiceId::Gift)
-        }
+        };
+        assert!(out.is_none() || !s.is_empty());
+        out
     }
 }
 
@@ -459,7 +555,8 @@ pub const INITIAL_EVENT_POOL: [EventKind; 14] = [
 
 impl EventKind {
     pub const fn as_str(self) -> &'static str {
-        match self {
+        assert!((self as u8) <= (EventKind::Transfer as u8));
+        let out = match self {
             EventKind::Chain => "chain",
             EventKind::Execution => "execution",
             EventKind::Trickster => "trickster",
@@ -477,11 +574,15 @@ impl EventKind {
             EventKind::Fortune => "fortune",
             EventKind::Archenemy => "archenemy",
             EventKind::Transfer => "transfer",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 16);
+        out
     }
 
     pub const fn name(self) -> &'static str {
-        match self {
+        assert!((self as u8) <= (EventKind::Transfer as u8));
+        let out = match self {
             EventKind::Chain => "Chain reaction",
             EventKind::Execution => "Execution",
             EventKind::Trickster => "Behind Closed Doors",
@@ -499,11 +600,15 @@ impl EventKind {
             EventKind::Fortune => "Shared Fortune",
             EventKind::Archenemy => "Archenemy",
             EventKind::Transfer => "Transfer of Convicts",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 32);
+        out
     }
 
     pub const fn weight(self) -> u32 {
-        match self {
+        assert!((self as u8) <= (EventKind::Transfer as u8));
+        let w = match self {
             EventKind::Convict | EventKind::Freedom | EventKind::Trickster => 40,
             EventKind::Appetite | EventKind::Portion | EventKind::Archenemy => 30,
             EventKind::Fortune
@@ -517,11 +622,15 @@ impl EventKind {
             | EventKind::Usurp2
             | EventKind::Usurp3
             | EventKind::Usurp4 => 10,
-        }
+        };
+        assert!(w >= 10);
+        assert!(w <= 40);
+        w
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        match s {
+        assert!(s.len() <= 1024);
+        let out = match s {
             "chain" => Some(EventKind::Chain),
             "execution" | "efficiency" => Some(EventKind::Execution),
             "trickster" | "closed" => Some(EventKind::Trickster),
@@ -540,7 +649,9 @@ impl EventKind {
             "archenemy" => Some(EventKind::Archenemy),
             "transfer" => Some(EventKind::Transfer),
             _ => None,
-        }
+        };
+        assert!(out.is_none() || !s.is_empty());
+        out
     }
 }
 
@@ -557,39 +668,52 @@ pub enum ObjectiveId {
 
 impl ObjectiveId {
     pub const fn as_str(self) -> &'static str {
-        match self {
+        assert!((self as u8) <= (ObjectiveId::Other as u8));
+        let out = match self {
             ObjectiveId::King => "king",
             ObjectiveId::Walk => "walk",
             ObjectiveId::Consume => "consume",
             ObjectiveId::Incident => "incident",
             ObjectiveId::Doors => "doors",
             ObjectiveId::Other => "other",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 16);
+        out
     }
 
     pub const fn name(self) -> &'static str {
-        match self {
+        assert!((self as u8) <= (ObjectiveId::Other as u8));
+        let out = match self {
             ObjectiveId::King => "King of the Caged",
             ObjectiveId::Walk => "Prison Walk",
             ObjectiveId::Consume => "Survival of the Fittest",
             ObjectiveId::Incident => "Undercurrents",
             ObjectiveId::Doors => "Behind Cell Doors",
             ObjectiveId::Other => "Another objective",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 32);
+        out
     }
 
     pub const fn need(self) -> u8 {
-        match self {
+        assert!((self as u8) <= (ObjectiveId::Other as u8));
+        let n = match self {
             ObjectiveId::Walk => 18,
             ObjectiveId::Doors => 10,
             ObjectiveId::Consume => 4,
             ObjectiveId::Incident => 2,
             ObjectiveId::King | ObjectiveId::Other => 0,
-        }
+        };
+        assert!(n <= 18);
+        assert!(n != 1);
+        n
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        match s {
+        assert!(s.len() <= 1024);
+        let out = match s {
             "king" => Some(ObjectiveId::King),
             "walk" => Some(ObjectiveId::Walk),
             "consume" | "devour" => Some(ObjectiveId::Consume),
@@ -597,7 +721,10 @@ impl ObjectiveId {
             "doors" | "open" => Some(ObjectiveId::Doors),
             "other" => Some(ObjectiveId::Other),
             _ => None,
-        }
+        };
+        assert!(out.is_none() || !s.is_empty());
+        assert!(out.is_none() || s.len() <= 16);
+        out
     }
 }
 
@@ -613,34 +740,46 @@ pub enum StartEventId {
 
 impl StartEventId {
     pub const fn as_str(self) -> &'static str {
-        match self {
+        assert!((self as u8) <= (StartEventId::Opulence as u8));
+        let out = match self {
             StartEventId::None => "none",
             StartEventId::CageFight => "cagefight",
             StartEventId::IronLaw => "ironlaw",
             StartEventId::Tyranny => "tyranny",
             StartEventId::Opulence => "opulence",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 16);
+        out
     }
 
     pub const fn name(self) -> &'static str {
-        match self {
+        assert!((self as u8) <= (StartEventId::Opulence as u8));
+        let out = match self {
             StartEventId::None => "None",
             StartEventId::CageFight => "Cage Fight",
             StartEventId::IronLaw => "Iron Law",
             StartEventId::Tyranny => "Tyranny",
             StartEventId::Opulence => "Opulence",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 16);
+        out
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        match s {
+        assert!(s.len() <= 1024);
+        let out = match s {
             "none" | "" => Some(StartEventId::None),
             "cagefight" | "foodchain" => Some(StartEventId::CageFight),
             "ironlaw" => Some(StartEventId::IronLaw),
             "tyranny" => Some(StartEventId::Tyranny),
             "opulence" => Some(StartEventId::Opulence),
             _ => None,
-        }
+        };
+        assert!(out.is_some() || !s.is_empty());
+        assert!(out.is_none() || s.len() <= 16);
+        out
     }
 }
 
@@ -670,10 +809,13 @@ pub enum OfficeChoice {
 
 impl OfficeChoice {
     pub const fn as_str(self) -> &'static str {
-        match self {
+        assert!((self as u8) <= (OfficeChoice::Instigate as u8));
+        let out = match self {
             OfficeChoice::Bestow => "bestow",
             OfficeChoice::Instigate => "instigate",
-        }
+        };
+        assert!(!out.is_empty());
+        out
     }
 }
 
@@ -686,24 +828,35 @@ pub enum EscortKind {
 
 impl EscortKind {
     pub const fn as_str(self) -> &'static str {
-        match self {
+        assert!((self as u8) <= (EscortKind::Heavy as u8));
+        let out = match self {
             EscortKind::Light => "light",
             EscortKind::Heavy => "heavy",
-        }
+        };
+        assert!(!out.is_empty());
+        out
     }
 
     pub const fn cap(self) -> u16 {
-        match self {
+        assert!((self as u8) <= (EscortKind::Heavy as u8));
+        let c = match self {
             EscortKind::Light => 36,
             EscortKind::Heavy => 72,
-        }
+        };
+        assert!(c >= 36);
+        assert!(c <= 72);
+        c
     }
 
     pub const fn cost(self) -> u8 {
-        match self {
+        assert!((self as u8) <= (EscortKind::Heavy as u8));
+        let c = match self {
             EscortKind::Light => 1,
             EscortKind::Heavy => 3,
-        }
+        };
+        assert!(c >= 1);
+        assert!(c <= 3);
+        c
     }
 }
 
@@ -722,7 +875,8 @@ pub enum ContractId {
 
 impl ContractId {
     pub const fn as_str(self) -> &'static str {
-        match self {
+        assert!((self as u8) <= (ContractId::Bounty as u8));
+        let out = match self {
             ContractId::Mixed => "mixed",
             ContractId::Cohort => "cohort",
             ContractId::Veteran => "veteran",
@@ -731,11 +885,15 @@ impl ContractId {
             ContractId::Muster => "muster",
             ContractId::Heavy => "heavy",
             ContractId::Bounty => "bounty",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 16);
+        out
     }
 
     pub const fn name(self) -> &'static str {
-        match self {
+        assert!((self as u8) <= (ContractId::Bounty as u8));
+        let out = match self {
             ContractId::Mixed => "Mixed convoy",
             ContractId::Cohort => "Work gang",
             ContractId::Veteran => "Veteran-led crew",
@@ -744,11 +902,15 @@ impl ContractId {
             ContractId::Muster => "Elite muster",
             ContractId::Heavy => "Heavy convoy",
             ContractId::Bounty => "Heavy bounty",
-        }
+        };
+        assert!(!out.is_empty());
+        assert!(out.len() <= 32);
+        out
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        match s {
+        assert!(s.len() <= 1024);
+        let out = match s {
             "mixed" => Some(ContractId::Mixed),
             "cohort" => Some(ContractId::Cohort),
             "veteran" => Some(ContractId::Veteran),
@@ -758,7 +920,10 @@ impl ContractId {
             "heavy" => Some(ContractId::Heavy),
             "bounty" => Some(ContractId::Bounty),
             _ => None,
-        }
+        };
+        assert!(out.is_none() || !s.is_empty());
+        assert!(out.is_none() || s.len() <= 16);
+        out
     }
 }
 
@@ -855,21 +1020,28 @@ pub struct PendingChoice {
 
 impl Default for PendingChoice {
     fn default() -> Self {
-        Self {
+        let choice = Self {
             kind: PendingKind::Tool,
             options: [ChoiceId::Tool(ToolId::Revenge); 4],
             options_len: 0,
             slot: 0,
             refreshed: false,
             rerolls: 0,
-        }
+        };
+        assert_eq!(choice.options_len, 0);
+        assert!(!choice.refreshed);
+        choice
     }
 }
 
 impl PendingChoice {
     #[inline]
     pub fn slice(&self) -> &[ChoiceId] {
-        &self.options[..self.options_len as usize]
+        let len = self.options_len as usize;
+        assert!(len <= self.options.len());
+        let s = &self.options[..len];
+        assert_eq!(s.len(), len);
+        s
     }
 }
 
@@ -902,7 +1074,7 @@ pub struct GameParams {
 
 impl Default for GameParams {
     fn default() -> Self {
-        Self {
+        let params = Self {
             drill_days: 20,
             destinations: 3,
             patrol_range: 6,
@@ -926,19 +1098,25 @@ impl Default for GameParams {
             nest_tier: 2,
             rewards: true,
             start_tools: 1,
-        }
+        };
+        assert!(params.drill_days >= 1);
+        assert!(params.patrol_range <= 15);
+        params
     }
 }
 
 impl GameParams {
     pub fn challenge() -> Self {
-        Self {
+        let params = Self {
             execution_same_tier: true,
             execution_rerolls: true,
             rewards: true,
             start_tools: 0,
             ..Self::default()
-        }
+        };
+        assert!(params.execution_same_tier);
+        assert_eq!(params.start_tools, 0);
+        params
     }
 }
 

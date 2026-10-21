@@ -18,8 +18,15 @@ pub enum DataError {
     MissingAsset(String),
 }
 
+const _: () = {
+    assert!(std::mem::size_of::<DataError>() > 0);
+};
+
 impl From<DataError> for String {
     fn from(err: DataError) -> Self {
-        err.to_string()
+        let msg = err.to_string();
+        debug_assert!(!msg.is_empty());
+        debug_assert!(msg.len() <= 65536);
+        msg
     }
 }

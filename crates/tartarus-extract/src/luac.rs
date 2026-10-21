@@ -12,11 +12,21 @@ use crate::error::ExtractError;
 /// Xindong Lua 5.3 bytecode magic after decryption (`\x01XDI\x11\r\n\x1a\n\x01`).
 pub const XDI_LUA_HEADER: &[u8; 10] = b"\x01XDI\x11\r\n\x1a\n\x01";
 
+const PROTO_ITERATIONS_MAX: usize = 16_384;
+
+const _: () = {
+    assert!(XDI_LUA_HEADER.len() == 10);
+    assert!(PROTO_ITERATIONS_MAX >= 1024);
+};
+
 /// Decrypts a `.out` Lua bytecode buffer using *Torchlight: Infinite*'s `0x20210507` stream cipher.
 /// If the buffer is already decrypted (starts with `\x01XDI`), returns a clone unchanged.
 pub fn decrypt_luac_bytes(binary_data: &[u8]) -> Vec<u8> {
+    assert!(binary_data.len() <= 256 * 1024 * 1024);
     if binary_data.starts_with(b"\x01XDI") {
-        return binary_data.to_vec();
+        let copy = binary_data.to_vec();
+        assert_eq!(copy.len(), binary_data.len());
+        return copy;
     }
     let mut out = Vec::with_capacity(binary_data.len());
     let mut v11: u64 = 0;
@@ -34,6 +44,7 @@ pub fn decrypt_luac_bytes(binary_data: &[u8]) -> Vec<u8> {
         out.push(dec);
         v11 = v11.wrapping_add(0x2021_0507);
     }
+    assert_eq!(out.len(), binary_data.len());
     out
 }
 
@@ -52,22 +63,29 @@ pub enum LuaValue {
 
 impl LuaValue {
     pub fn as_str(&self) -> Option<&str> {
-        match self {
+        let res = match self {
             LuaValue::Str(s) => Some(s.as_str()),
             _ => None,
-        }
+        };
+        debug_assert!(res.is_some() == matches!(self, LuaValue::Str(_)));
+        debug_assert!(res.is_none_or(|s| s.len() <= 16 * 1024 * 1024));
+        res
     }
 
     pub fn as_i64(&self) -> Option<i64> {
-        match self {
+        let res = match self {
             LuaValue::Int(v) => Some(*v),
             LuaValue::Float(v) => Some(*v as i64),
             _ => None,
-        }
+        };
+        debug_assert!(res.is_some() == matches!(self, LuaValue::Int(_) | LuaValue::Float(_)));
+        debug_assert!(res.is_none() || !matches!(self, LuaValue::Nil));
+        res
     }
 }
 
-/// Reconstructed read-only config table from `UE_game/Content/Script/Luac/Config/LuaTable/DataCfg/config_*.out`.
+/// Reconstructed read-only config table from
+/// `UE_game/Content/Script/Luac/Config/LuaTable/DataCfg/config_*.out`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LuaConfigTable {
     pub source_name: String,
@@ -77,6 +95,8 @@ pub struct LuaConfigTable {
 
 /// Reads an XDI Lua 5.3 string where the length prefix has `+ 10` added to the byte length.
 fn read_xdi_string(cur: &mut Cursor<&[u8]>) -> Result<String, ExtractError> {
+    let start_pos = cur.position() as usize;
+    assert!(start_pos <= cur.get_ref().len());
     let lb = cur.read_u8().map_err(|_| {
         ExtractError::LuacFormat(format!(
             "Unexpected EOF reading string length at 0x{:x}",
@@ -104,25 +124,17 @@ fn read_xdi_string(cur: &mut Cursor<&[u8]>) -> Result<String, ExtractError> {
         ))
     })?;
     cur.set_position((pos + slen) as u64);
+    assert!((cur.position() as usize) <= buf.len());
     Ok(String::from_utf8_lossy(slice).into_owned())
 }
 
-/// Parses a decrypted `\x01XDI` Lua 5.3 `DataCfg/config_*.out` file by decoding its constant pool
-/// and executing the top-level table-construction instructions (`NEWTABLE`, `LOADK`, `SETTABLE`, `SETLIST`),
-/// merging the metatable `default_values` (`__index`) into every row.
-pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, ExtractError> {
-    let dec = decrypt_luac_bytes(raw_or_dec);
-    if dec.len() < 16 || &dec[..10] != XDI_LUA_HEADER {
-        return Err(ExtractError::LuacFormat(
-            "Buffer does not start with valid \\x01XDI Lua 5.3 header".to_string(),
-        ));
-    }
-    let mut cur = Cursor::new(dec.as_slice());
-    cur.set_position(10);
-    let source_name = read_xdi_string(&mut cur)?;
-
+fn read_xdi_proto_code_and_consts(
+    cur: &mut Cursor<&[u8]>,
+    dec_len: usize,
+) -> Result<(Vec<u32>, Vec<LuaValue>), ExtractError> {
+    assert!((cur.position() as usize) <= dec_len);
     // Skip linedefined (4), lastlinedefined (4), numparams (1), is_vararg (1), maxstacksize (1)
-    if (cur.position() as usize) + 11 > dec.len() {
+    if (cur.position() as usize) + 11 > dec_len {
         return Err(ExtractError::LuacFormat(
             "Unexpected EOF in Lua proto header".to_string(),
         ));
@@ -132,7 +144,7 @@ pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, Extra
     let sizecode = cur
         .read_u32::<LittleEndian>()
         .map_err(|e| ExtractError::LuacFormat(e.to_string()))? as usize;
-    if (cur.position() as usize) + sizecode * 4 > dec.len() {
+    if (cur.position() as usize) + sizecode * 4 > dec_len {
         return Err(ExtractError::LuacFormat(
             "Unexpected EOF in Lua code section".to_string(),
         ));
@@ -169,7 +181,7 @@ pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, Extra
                 cur.read_i64::<LittleEndian>()
                     .map_err(|e| ExtractError::LuacFormat(e.to_string()))?,
             )),
-            0x04 | 0x14 => consts.push(LuaValue::Str(read_xdi_string(&mut cur)?)),
+            0x04 | 0x14 => consts.push(LuaValue::Str(read_xdi_string(cur)?)),
             other => {
                 return Err(ExtractError::LuacFormat(format!(
                     "Unsupported Lua constant tag 0x{:02x} at 0x{:x}",
@@ -179,9 +191,20 @@ pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, Extra
             }
         }
     }
+    assert_eq!(code.len(), sizecode);
+    assert_eq!(consts.len(), sizek);
+    Ok((code, consts))
+}
 
-    // Evaluate the table-building instructions in the main chunk
+fn eval_xdi_table_code(
+    code: &[u32],
+    consts: &[LuaValue],
+) -> (
+    BTreeMap<String, LuaValue>,
+    BTreeMap<i64, BTreeMap<String, LuaValue>>,
+) {
     let mut regs: Vec<LuaValue> = vec![LuaValue::Nil; 256];
+    assert_eq!(regs.len(), 256);
     let rk = |val: usize, regs: &[LuaValue], consts: &[LuaValue]| -> LuaValue {
         if (val & 0x100) != 0 {
             consts.get(val & 0xFF).cloned().unwrap_or(LuaValue::Nil)
@@ -190,10 +213,8 @@ pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, Extra
         }
     };
 
-    // Track row maps inserted into R(0) by integer ID
     let mut raw_rows: BTreeMap<i64, BTreeMap<String, LuaValue>> = BTreeMap::new();
-
-    for w in code {
+    for &w in code {
         let op = (w >> 26) & 0x3F;
         let a = (w & 0xFF) as usize;
         let c = ((w >> 8) & 0x1FF) as usize;
@@ -201,18 +222,11 @@ pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, Extra
         let bx = ((w >> 8) & 0x3FFFF) as usize;
 
         match op {
-            4 => {
-                // NEWTABLE
-                regs[a] = LuaValue::Map(BTreeMap::new());
-            }
-            6 => {
-                // LOADK
-                regs[a] = consts.get(bx).cloned().unwrap_or(LuaValue::Nil);
-            }
+            4 => regs[a] = LuaValue::Map(BTreeMap::new()),
+            6 => regs[a] = consts.get(bx).cloned().unwrap_or(LuaValue::Nil),
             2 => {
-                // SETTABLE A, B, C
-                let key = rk(b, &regs, &consts);
-                let val = rk(c, &regs, &consts);
+                let key = rk(b, &regs, consts);
+                let val = rk(c, &regs, consts);
                 if a == 0 {
                     if let (Some(id), LuaValue::Map(row_map)) = (key.as_i64(), val) {
                         raw_rows.insert(id, row_map);
@@ -227,7 +241,6 @@ pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, Extra
                 }
             }
             28 => {
-                // SETLIST A, B, C
                 let mut list = Vec::with_capacity(b);
                 for i in 1..=b {
                     if a + i < regs.len() {
@@ -244,6 +257,27 @@ pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, Extra
         LuaValue::Map(m) => m.clone(),
         _ => BTreeMap::new(),
     };
+    assert_eq!(regs.len(), 256);
+    (default_values, raw_rows)
+}
+
+/// Parses a decrypted `\x01XDI` Lua 5.3 `DataCfg/config_*.out` file by decoding its constant pool
+/// and executing the top-level table-construction instructions (`NEWTABLE`, `LOADK`, `SETTABLE`,
+/// `SETLIST`), merging the metatable `default_values` (`__index`) into every row.
+pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, ExtractError> {
+    let dec = decrypt_luac_bytes(raw_or_dec);
+    assert_eq!(dec.len(), raw_or_dec.len());
+    if dec.len() < 16 || &dec[..10] != XDI_LUA_HEADER {
+        return Err(ExtractError::LuacFormat(
+            "Buffer does not start with valid \\x01XDI Lua 5.3 header".to_string(),
+        ));
+    }
+    let mut cur = Cursor::new(dec.as_slice());
+    cur.set_position(10);
+    let source_name = read_xdi_string(&mut cur)?;
+    let (code, consts) = read_xdi_proto_code_and_consts(&mut cur, dec.len())?;
+    let (default_values, raw_rows) = eval_xdi_table_code(&code, &consts);
+    let raw_rows_count = raw_rows.len();
 
     let mut rows = BTreeMap::new();
     for (id, row_map) in raw_rows {
@@ -253,6 +287,7 @@ pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, Extra
         }
         rows.insert(id, merged);
     }
+    assert_eq!(rows.len(), raw_rows_count);
 
     Ok(LuaConfigTable {
         source_name,
@@ -261,10 +296,11 @@ pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, Extra
     })
 }
 
-/// Recursively walks all function protos inside a decrypted `\x01XDI` Lua 5.3 bytecode buffer
+/// Walks all function protos inside a decrypted `\x01XDI` Lua 5.3 bytecode buffer
 /// and returns `(source_name, all_string_constants)`.
 pub fn extract_xdi_strings(raw_or_dec: &[u8]) -> Result<(String, Vec<String>), ExtractError> {
     let dec = decrypt_luac_bytes(raw_or_dec);
+    assert_eq!(dec.len(), raw_or_dec.len());
     if dec.len() < 16 || &dec[..10] != XDI_LUA_HEADER {
         return Err(ExtractError::LuacFormat(
             "Buffer does not start with valid \\x01XDI Lua 5.3 header".to_string(),
@@ -274,24 +310,52 @@ pub fn extract_xdi_strings(raw_or_dec: &[u8]) -> Result<(String, Vec<String>), E
     cur.set_position(10);
     let mut strings = Vec::new();
     let source_name = parse_proto_strings(&mut cur, &mut strings)?;
+    assert!((cur.position() as usize) <= dec.len());
     Ok((source_name, strings))
 }
 
-fn parse_proto_strings(
+enum ProtoStep {
+    EnterProto,
+    SkipDebugInfo,
+}
+
+fn skip_proto_debug_info(cur: &mut Cursor<&[u8]>, dec_len: usize) {
+    assert!((cur.position() as usize) <= dec_len);
+    if let Ok(sizeline) = cur.read_u32::<LittleEndian>() {
+        cur.set_position(((cur.position() as usize) + (sizeline as usize) * 4).min(dec_len) as u64);
+        if let Ok(sizelocvars) = cur.read_u32::<LittleEndian>() {
+            for _ in 0..sizelocvars {
+                let _ = read_xdi_string(cur);
+                cur.set_position(((cur.position() as usize) + 8).min(dec_len) as u64);
+            }
+        }
+        if let Ok(sizeupnames) = cur.read_u32::<LittleEndian>() {
+            for _ in 0..sizeupnames {
+                let _ = read_xdi_string(cur);
+            }
+        }
+    }
+    assert!((cur.position() as usize) <= dec_len);
+}
+
+fn read_proto_body_and_queue_children(
     cur: &mut Cursor<&[u8]>,
     out_strings: &mut Vec<String>,
+    stack: &mut Vec<ProtoStep>,
 ) -> Result<String, ExtractError> {
-    let src = read_xdi_string(cur)?;
     let dec_len = cur.get_ref().len();
+    assert!((cur.position() as usize) <= dec_len);
+    let src = read_xdi_string(cur)?;
     if (cur.position() as usize) + 11 > dec_len {
         return Err(ExtractError::LuacFormat("EOF in proto header".to_string()));
     }
-    cur.set_position(cur.position() + 11); // linedefined (4), lastlinedefined (4), numparams (1), is_vararg (1), maxstacksize (1)
+    // linedefined (4), lastlinedefined (4), numparams (1), is_vararg (1), maxstacksize (1)
+    cur.set_position(cur.position() + 11);
 
     let sizecode = cur
         .read_u32::<LittleEndian>()
         .map_err(|e| ExtractError::LuacFormat(e.to_string()))? as usize;
-    cur.set_position(cur.position() + (sizecode * 4) as u64);
+    cur.set_position(((cur.position() as usize) + sizecode * 4).min(dec_len) as u64);
 
     let sizek = cur
         .read_u32::<LittleEndian>()
@@ -315,38 +379,60 @@ fn parse_proto_strings(
         }
     }
 
-    // Upvalues: sizeupvalues (u32), each 2 bytes (instack: u8, idx: u8)
     if let Ok(sizeup) = cur.read_u32::<LittleEndian>() {
         let up_bytes = (sizeup as usize) * 2;
         if (cur.position() as usize) + up_bytes <= dec_len {
             cur.set_position(cur.position() + up_bytes as u64);
-            // Child protos: sizep (u32)
+            stack.push(ProtoStep::SkipDebugInfo);
             if let Ok(sizep) = cur.read_u32::<LittleEndian>() {
-                for _ in 0..sizep {
-                    let _ = parse_proto_strings(cur, out_strings);
-                }
-            }
-            // Debug info: sizelineinfo (u32 * 4), sizelocvars, sizeupvalue_names
-            if let Ok(sizeline) = cur.read_u32::<LittleEndian>() {
-                cur.set_position(
-                    ((cur.position() as usize) + (sizeline as usize) * 4).min(dec_len) as u64,
-                );
-                if let Ok(sizelocvars) = cur.read_u32::<LittleEndian>() {
-                    for _ in 0..sizelocvars {
-                        let _ = read_xdi_string(cur);
-                        cur.set_position(((cur.position() as usize) + 8).min(dec_len) as u64);
-                    }
-                }
-                if let Ok(sizeupnames) = cur.read_u32::<LittleEndian>() {
-                    for _ in 0..sizeupnames {
-                        let _ = read_xdi_string(cur);
-                    }
+                let child_count = (sizep as usize).min(PROTO_ITERATIONS_MAX);
+                for _ in 0..child_count {
+                    stack.push(ProtoStep::EnterProto);
                 }
             }
         }
     }
-
+    assert!((cur.position() as usize) <= dec_len);
     Ok(src)
+}
+
+fn parse_proto_strings(
+    cur: &mut Cursor<&[u8]>,
+    out_strings: &mut Vec<String>,
+) -> Result<String, ExtractError> {
+    let dec_len = cur.get_ref().len();
+    assert!((cur.position() as usize) <= dec_len);
+    let mut stack = Vec::with_capacity(32);
+    stack.push(ProtoStep::EnterProto);
+    let mut root_src: Option<String> = None;
+    let mut iterations = 0usize;
+
+    while let Some(step) = stack.pop() {
+        iterations += 1;
+        assert!(iterations <= PROTO_ITERATIONS_MAX);
+        match step {
+            ProtoStep::EnterProto => {
+                match read_proto_body_and_queue_children(cur, out_strings, &mut stack) {
+                    Ok(src) => {
+                        if root_src.is_none() {
+                            root_src = Some(src);
+                        }
+                    }
+                    Err(e) => {
+                        if root_src.is_none() {
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+            ProtoStep::SkipDebugInfo => {
+                skip_proto_debug_info(cur, dec_len);
+            }
+        }
+    }
+
+    assert!(iterations <= PROTO_ITERATIONS_MAX);
+    root_src.ok_or_else(|| ExtractError::LuacFormat("Empty proto stream".to_string()))
 }
 
 /// Parses `UE_game/Content/Script/Data/language/config_multi_language_*.bin`.
@@ -361,12 +447,18 @@ pub fn parse_multi_language_bin(
     let mut map = BTreeMap::new();
     let prefix_bytes = prefix_filter.map(|s| s.as_bytes()).unwrap_or(&[]);
     let n = data.len();
+    assert!(prefix_bytes.len() <= 4096);
     if n < 20 {
+        assert!(map.is_empty());
         return map;
     }
 
+    let iterations_max = n + 1;
+    let mut iterations = 0usize;
     let mut i = 0usize;
     while i + 16 <= n {
+        iterations += 1;
+        assert!(iterations <= iterations_max);
         let klen = LittleEndian::read_u32(&data[i..i + 4]) as usize;
         if (4..=256).contains(&klen) && i + 8 + 2 * klen + 8 <= n {
             let k1_start = i + 4;
@@ -400,6 +492,7 @@ pub fn parse_multi_language_bin(
         i += 1;
     }
 
+    assert!(i <= n);
     map
 }
 
@@ -408,10 +501,13 @@ pub fn strip_rich_text(input: &str) -> String {
     use std::sync::LazyLock;
     static TAG_RE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"<[^>]*>").unwrap());
-    TAG_RE
+    assert!(input.len() <= 16 * 1024 * 1024);
+    let out = TAG_RE
         .replace_all(input, "")
         .replace("\\n", " ")
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    assert!(out.len() <= input.len());
+    out
 }

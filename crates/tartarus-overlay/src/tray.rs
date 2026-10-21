@@ -8,6 +8,17 @@ use global_hotkey::{
 
 use crate::state::UiToWorker;
 
+const POLL_COMMANDS_MAX: usize = 256;
+const DEFAULT_KEYCODE_O: u8 = 32;
+const DEFAULT_KEYCODE_A: u8 = 38;
+const DEFAULT_KEYCODE_P: u8 = 33;
+
+const _: () = {
+    assert!(POLL_COMMANDS_MAX > 0);
+    assert!(DEFAULT_KEYCODE_O != DEFAULT_KEYCODE_A);
+    assert!(DEFAULT_KEYCODE_A != DEFAULT_KEYCODE_P);
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlCommand {
     ToggleOverlay,
@@ -30,10 +41,11 @@ pub struct ControlHub {
 
 impl ControlHub {
     pub fn init(worker_tx: Sender<UiToWorker>) -> Self {
+        assert!(std::mem::size_of_val(&worker_tx) > 0);
         let (tx, rx) = mpsc::channel();
 
-        // 1a. Linux: Spawn pure-Rust X11 hotkey listener (non-fatal if X_GrabKey returns BadAccess)
-        //     and StatusNotifierItem system tray via ksni
+        // 1a. Linux: Spawn pure-Rust X11 hotkey listener (non-fatal if X_GrabKey
+        //     returns BadAccess) and StatusNotifierItem system tray via ksni.
         #[cfg(target_os = "linux")]
         {
             let hk_tx = tx.clone();
@@ -73,7 +85,7 @@ impl ControlHub {
             (m_opt, i_opt)
         };
 
-        Self {
+        let hub = Self {
             rx,
             tx,
             #[cfg(target_os = "windows")]
@@ -82,14 +94,22 @@ impl ControlHub {
             _hotkey_manager: manager_opt,
             #[cfg(target_os = "windows")]
             hotkey_ids: ids_opt,
-        }
+        };
+        assert!(std::mem::size_of_val(&hub) > 0);
+        hub
     }
 
     pub fn poll(&self) -> Vec<ControlCommand> {
         let mut out = Vec::new();
+        assert!(out.is_empty());
         #[cfg(target_os = "windows")]
         if let Some((id_o, id_a, id_p)) = self.hotkey_ids {
-            while let Ok(ev) = GlobalHotKeyEvent::receiver().try_recv() {
+            let mut hk_iters = 0usize;
+            while hk_iters < POLL_COMMANDS_MAX {
+                let Ok(ev) = GlobalHotKeyEvent::receiver().try_recv() else {
+                    break;
+                };
+                hk_iters += 1;
                 if ev.state == HotKeyState::Pressed {
                     if ev.id == id_o {
                         out.push(ControlCommand::ToggleOverlay);
@@ -102,43 +122,38 @@ impl ControlHub {
                 }
             }
         }
-        while let Ok(cmd) = self.rx.try_recv() {
+        let mut cmd_iters = 0usize;
+        while cmd_iters < POLL_COMMANDS_MAX {
+            let Ok(cmd) = self.rx.try_recv() else {
+                break;
+            };
+            cmd_iters += 1;
             out.push(cmd);
         }
+        assert!(out.len() <= POLL_COMMANDS_MAX * 2);
         out
     }
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux_x11_hotkeys(tx: Sender<ControlCommand>, worker_tx: Sender<UiToWorker>) {
-    use x11rb::connection::Connection;
-    use x11rb::protocol::Event;
-    use x11rb::protocol::xproto::{ConnectionExt, GrabMode, ModMask};
+fn resolve_x11_keycodes(conn: &impl x11rb::connection::Connection) -> [u8; 3] {
+    use x11rb::protocol::xproto::ConnectionExt;
 
-    let Ok((conn, screen_num)) = x11rb::connect(None) else {
-        return;
-    };
     let setup = conn.setup();
-    let Some(screen) = setup.roots.get(screen_num) else {
-        return;
-    };
-    let root = screen.root;
+    let mut code_o: u8 = DEFAULT_KEYCODE_O;
+    let mut code_a: u8 = DEFAULT_KEYCODE_A;
+    let mut code_p: u8 = DEFAULT_KEYCODE_P;
 
-    // Default evdev keycodes on Linux X11: 'o' = 32, 'a' = 38, 'p' = 33
-    let mut code_o: u8 = 32;
-    let mut code_a: u8 = 38;
-    let mut code_p: u8 = 33;
-
-    let min_kc = setup.min_keycode;
-    let max_kc = setup.max_keycode;
-    if max_kc >= min_kc
-        && let Ok(cookie) = conn.get_keyboard_mapping(min_kc, max_kc - min_kc + 1)
+    let kc_min = setup.min_keycode;
+    let kc_max = setup.max_keycode;
+    if kc_max >= kc_min
+        && let Ok(cookie) = conn.get_keyboard_mapping(kc_min, kc_max - kc_min + 1)
         && let Ok(reply) = cookie.reply()
     {
         let per = reply.keysyms_per_keycode as usize;
         if per > 0 {
-            for kc in min_kc..=max_kc {
-                let start = (kc - min_kc) as usize * per;
+            for kc in kc_min..=kc_max {
+                let start = (kc - kc_min) as usize * per;
                 let end = (start + per).min(reply.keysyms.len());
                 for &sym in &reply.keysyms[start..end] {
                     match sym {
@@ -151,7 +166,17 @@ fn run_linux_x11_hotkeys(tx: Sender<ControlCommand>, worker_tx: Sender<UiToWorke
             }
         }
     }
+    assert!(code_o > 0 && code_a > 0 && code_p > 0);
+    assert_ne!(code_o, code_a);
+    [code_o, code_a, code_p]
+}
 
+#[cfg(target_os = "linux")]
+fn grab_x11_hotkeys(conn: &impl x11rb::connection::Connection, root: u32, codes: [u8; 3]) -> bool {
+    use x11rb::protocol::xproto::{ConnectionExt, GrabMode, ModMask};
+
+    assert!(root > 0);
+    assert_eq!(codes.len(), 3);
     let base_mods = u16::from(ModMask::CONTROL | ModMask::M1);
     let mod_variants = [
         base_mods,
@@ -161,7 +186,7 @@ fn run_linux_x11_hotkeys(tx: Sender<ControlCommand>, worker_tx: Sender<UiToWorke
     ];
 
     let mut any_grabbed = false;
-    for &kc in &[code_o, code_a, code_p] {
+    for kc in codes {
         for &m in &mod_variants {
             if let Ok(cookie) = conn.grab_key(
                 false,
@@ -176,8 +201,27 @@ fn run_linux_x11_hotkeys(tx: Sender<ControlCommand>, worker_tx: Sender<UiToWorke
             }
         }
     }
+    any_grabbed
+}
 
-    if !any_grabbed {
+#[cfg(target_os = "linux")]
+fn run_linux_x11_hotkeys(tx: Sender<ControlCommand>, worker_tx: Sender<UiToWorker>) {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::Event;
+
+    let Ok((conn, screen_num)) = x11rb::connect(None) else {
+        return;
+    };
+    let setup = conn.setup();
+    let Some(screen) = setup.roots.get(screen_num) else {
+        return;
+    };
+    let root = screen.root;
+    assert!(root > 0);
+
+    let [code_o, code_a, code_p] = resolve_x11_keycodes(&conn);
+    assert!(code_o > 0 && code_a > 0 && code_p > 0);
+    if !grab_x11_hotkeys(&conn, root, [code_o, code_a, code_p]) {
         return;
     }
 
@@ -204,24 +248,35 @@ struct LinuxTray {
 #[cfg(target_os = "linux")]
 impl ksni::Tray for LinuxTray {
     fn id(&self) -> String {
-        "tartarus-overlay".into()
+        let id = String::from("tartarus-overlay");
+        assert!(!id.is_empty());
+        assert!(id.starts_with("tartarus"));
+        id
     }
 
     fn title(&self) -> String {
-        "Tartarus Architect Overlay".into()
+        let title = String::from("Tartarus Architect Overlay");
+        assert!(!title.is_empty());
+        assert!(title.starts_with("Tartarus"));
+        title
     }
 
     fn icon_name(&self) -> String {
-        "applications-games".into()
+        let icon = String::from("applications-games");
+        assert!(!icon.is_empty());
+        assert!(icon.contains('-'));
+        icon
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
+        assert!(std::mem::size_of_val(&self.tx) > 0);
+        assert!(std::mem::size_of_val(&self.worker_tx) > 0);
         let _ = self.tx.send(ControlCommand::ToggleOverlay);
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
-        vec![
+        let items: Vec<ksni::MenuItem<Self>> = vec![
             StandardItem {
                 label: "Show / Hide Overlay (Ctrl+Alt+O)".into(),
                 activate: Box::new(|this: &mut Self| {
@@ -264,6 +319,9 @@ impl ksni::Tray for LinuxTray {
                 ..Default::default()
             }
             .into(),
-        ]
+        ];
+        assert_eq!(items.len(), 6);
+        assert!(!items.is_empty());
+        items
     }
 }

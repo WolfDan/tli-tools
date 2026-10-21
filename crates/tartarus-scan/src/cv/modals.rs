@@ -1,4 +1,6 @@
-//! Modal screen scanners: 3-card Instrument Pick (`scan_pick_with_slot`), Objective/Start-Event scroll popup (`read_objective_title_with_slot`), and Consume target banner (`read_chain_screen`).
+//! Modal screen scanners: 3-card Instrument Pick (`scan_pick_with_slot`),
+//! Objective/Start-Event scroll popup (`read_objective_title_with_slot`),
+//! and Consume target banner (`read_chain_screen`).
 
 use tartarus_core::{FixedVec, ObjectiveId, StartEventId, ToolId};
 
@@ -8,7 +10,7 @@ use super::data::{REF_PICK_TOOLS, REF_TOOLS};
 use super::hud::{art_feature, art_similarity};
 use super::image::{ImageView, color_share_rgb, hsv, is_banner_red_rgb};
 use super::math::BoardLoc;
-use super::ocr::{text_lines_radii_with_slot, text_radii};
+use super::ocr::{Piece, text_lines_radii_with_slot, text_radii};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ChainRead {
@@ -18,10 +20,15 @@ pub struct ChainRead {
 
 #[inline]
 pub(crate) fn chain_banner_score(img: &ImageView<'_>, loc: &BoardLoc) -> f32 {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(loc.s > 0.0);
     let step = ((2.0 * loc.s).round() as usize).clamp(1, 4);
     let mut banner = 0.0_f32;
     let mut v = 3.9_f64;
+    let mut iterations = 0usize;
     while v <= 5.01 {
+        iterations += 1;
+        assert!(iterations <= 16);
         let (x0, y0) = loc.at(1.0, v);
         let (x1, y1) = loc.at(4.0, v + 0.15);
         let sh = color_share_rgb(
@@ -47,6 +54,8 @@ pub fn read_chain_screen(
     cells: &[ScannedCell; 16],
     warden: Option<&WardenRead>,
 ) -> Option<ChainRead> {
+    assert!(img.width > 0 && img.height > 0);
+    assert_eq!(cells.len(), 16);
     read_chain_screen_with_banner(img, loc, cells, warden, chain_banner_score(img, loc))
 }
 
@@ -57,6 +66,8 @@ pub(crate) fn read_chain_screen_with_banner(
     warden: Option<&WardenRead>,
     banner: f32,
 ) -> Option<ChainRead> {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(banner.is_finite());
     if banner < 0.20 {
         return None;
     }
@@ -88,6 +99,8 @@ pub(crate) fn read_chain_screen_with_banner(
 }
 
 pub(crate) fn has_devour_banner(img: &ImageView<'_>) -> bool {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     let x0 = (img.width * 3) / 10;
     let x1 = (img.width * 7) / 10;
     let y0 = (img.height * 45) / 100;
@@ -130,51 +143,55 @@ pub struct PickScreenRead {
     pub reroll: bool,
 }
 
-/// Fast (< 0.03ms) structural verification that the 3-card Instrument Pick modal (`S16BoardRelicPop`)
-/// is actually rendered on screen before running histograms or OCR.
+#[inline]
+fn pick_card_body_dark_ok(img: &ImageView<'_>, k: i32, s: f64, step: usize) -> bool {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(step >= 1);
+    let c = (img.width as f64) * 0.5 + (k as f64) * 480.0 * s;
+    let x0 = ((c - 150.0 * s).round() as isize).max(0) as usize;
+    let x1 = ((c + 150.0 * s).round() as isize).min(img.width as isize - 1) as usize;
+    let y0 = ((560.0 * s).round() as isize).max(0) as usize;
+    let y1 = ((760.0 * s).round() as isize).min(img.height as isize - 1) as usize;
+    if x1 <= x0 || y1 <= y0 {
+        return false;
+    }
+    let mut total = 0usize;
+    let mut dark_slate = 0usize;
+    let mut sum_v = 0u32;
+    for y in (y0..=y1).step_by(step) {
+        let row = y * img.width * 4;
+        for x in (x0..=x1).step_by(step) {
+            let o = row + x * 4;
+            let (r, g, b) = (img.data[o], img.data[o + 1], img.data[o + 2]);
+            let mx = r.max(g).max(b);
+            let mn = r.min(g).min(b);
+            total += 1;
+            sum_v += mx as u32;
+            if mx <= 105 && (mx - mn) <= 48 {
+                dark_slate += 1;
+            }
+        }
+    }
+    total > 0 && dark_slate * 100 >= total * 48 && (sum_v / (total as u32)) <= 96
+}
+
+/// Fast (< 0.03ms) structural verification that the 3-card Instrument Pick modal
+/// (`S16BoardRelicPop`) is actually rendered on screen before running histograms or OCR.
 /// Checks that the 3 card lower-body panels (`k = -1, 0, 1` at `y = 560..760`) and the two
 /// inter-card dimmed modal gutters (`x = w/2 ± 240s`) have the dark slate backdrop of the popup.
 #[inline]
 fn pick_modal_backdrop_ok(img: &ImageView<'_>) -> bool {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     let s = (img.height as f64) / 1080.0;
     let step = (4.0 * s).round().max(2.0) as usize;
 
-    // 1. Check the 3 dark card description bodies
     for k in [-1i32, 0, 1] {
-        let c = (img.width as f64) * 0.5 + (k as f64) * 480.0 * s;
-        let x0 = ((c - 150.0 * s).round() as isize).max(0) as usize;
-        let x1 = ((c + 150.0 * s).round() as isize).min(img.width as isize - 1) as usize;
-        let y0 = ((560.0 * s).round() as isize).max(0) as usize;
-        let y1 = ((760.0 * s).round() as isize).min(img.height as isize - 1) as usize;
-        if x1 <= x0 || y1 <= y0 {
-            return false;
-        }
-        let mut total = 0usize;
-        let mut dark_slate = 0usize;
-        let mut sum_v = 0u32;
-        for y in (y0..=y1).step_by(step) {
-            let row = y * img.width * 4;
-            for x in (x0..=x1).step_by(step) {
-                let o = row + x * 4;
-                let r = img.data[o];
-                let g = img.data[o + 1];
-                let b = img.data[o + 2];
-                let mx = r.max(g).max(b);
-                let mn = r.min(g).min(b);
-                total += 1;
-                sum_v += mx as u32;
-                // Dark slate card background: low-to-moderate brightness and low saturation
-                if mx <= 105 && (mx - mn) <= 48 {
-                    dark_slate += 1;
-                }
-            }
-        }
-        if total == 0 || dark_slate * 100 < total * 48 || (sum_v / (total as u32)) > 96 {
+        if !pick_card_body_dark_ok(img, k, s, step) {
             return false;
         }
     }
 
-    // 2. Check the two dimmed modal gutters between cards (-240s and +240s)
     for sign in [-1.0_f64, 1.0_f64] {
         let gx = (img.width as f64) * 0.5 + sign * 240.0 * s;
         let x0 = ((gx - 18.0 * s).round() as isize).max(0) as usize;
@@ -203,7 +220,39 @@ fn pick_modal_backdrop_ok(img: &ImageView<'_>) -> bool {
     true
 }
 
+#[inline]
+fn is_pick_art_pixel(r: u8, g: u8, b: u8) -> bool {
+    let mx = r.max(g).max(b);
+    let mn = r.min(g).min(b);
+    debug_assert!(mx >= mn);
+    if mx >= 82 {
+        true
+    } else if mx <= 45 || ((mx - mn) as u32) * 20 <= 9 * (mx as u32) {
+        false
+    } else {
+        let (hue, sat, v) = hsv(r as f32, g as f32, b as f32);
+        debug_assert!(hue.is_finite());
+        v > 0.32 || (sat > 0.45 && v > 0.18 && !(15.0..=50.0).contains(&hue))
+    }
+}
+
+#[inline]
+fn percentile_from_hist(hist: &[u32], base: i32, rank: u32) -> i32 {
+    debug_assert!(!hist.is_empty());
+    debug_assert!(base >= 0);
+    let mut acc = 0u32;
+    for (idx, &c) in hist.iter().enumerate() {
+        acc += c;
+        if acc > rank {
+            return base + (idx as i32);
+        }
+    }
+    base + (hist.len().saturating_sub(1) as i32)
+}
+
 pub fn pick_art_box(img: &ImageView<'_>, k: i32) -> Option<[i32; 4]> {
+    assert!(img.width > 0 && img.height > 0);
+    assert!((-1..=1).contains(&k));
     let s = (img.height as f64) / 1080.0;
     let c = (img.width as f64) * 0.5 + (k as f64) * 480.0 * s;
     let x0 = ((c - 85.0 * s).round() as i32).max(0);
@@ -221,31 +270,13 @@ pub fn pick_art_box(img: &ImageView<'_>, k: i32) -> Option<[i32; 4]> {
     let mut x_hist = [0u32; 512];
     let mut y_hist = [0u32; 512];
     let mut count = 0usize;
-    let ux0 = x0 as usize;
-    let uy0 = y0 as usize;
+    let (ux0, uy0) = (x0 as usize, y0 as usize);
     for (dy, y_slot) in y_hist[..h].iter_mut().enumerate() {
         let row_base = (uy0 + dy) * img.width * 4;
         let mut row_hits = 0u32;
         for (dx, x_slot) in x_hist[..w].iter_mut().enumerate() {
             let o = row_base + (ux0 + dx) * 4;
-            let r = img.data[o];
-            let g = img.data[o + 1];
-            let b = img.data[o + 2];
-            let mx = r.max(g).max(b);
-            let matched = if mx >= 82 {
-                true
-            } else if mx <= 45 {
-                false
-            } else {
-                let mn = r.min(g).min(b);
-                if ((mx - mn) as u32) * 20 <= 9 * (mx as u32) {
-                    false
-                } else {
-                    let (hue, sat, v) = hsv(r as f32, g as f32, b as f32);
-                    v > 0.32 || (sat > 0.45 && v > 0.18 && !(15.0..=50.0).contains(&hue))
-                }
-            };
-            if matched {
+            if is_pick_art_pixel(img.data[o], img.data[o + 1], img.data[o + 2]) {
                 *x_slot += 1;
                 row_hits += 1;
             }
@@ -253,23 +284,12 @@ pub fn pick_art_box(img: &ImageView<'_>, k: i32) -> Option<[i32; 4]> {
         *y_slot = row_hits;
         count += row_hits as usize;
     }
-    let total_area = w * h;
-    // Reject if too few pixels matched OR if the entire search box is uniformly bright (>92% fill)
-    if (count as f64) < 400.0 * s * s || count * 100 > total_area * 92 {
+    let area_total = w * h;
+    if (count as f64) < 400.0 * s * s || count * 100 > area_total * 92 {
         return None;
     }
     let rank_lo = (0.01 * ((count - 1) as f64)).round() as u32;
     let rank_hi = (0.99 * ((count - 1) as f64)).round() as u32;
-    let percentile_from_hist = |hist: &[u32], base: i32, rank: u32| -> i32 {
-        let mut acc = 0u32;
-        for (idx, &c) in hist.iter().enumerate() {
-            acc += c;
-            if acc > rank {
-                return base + (idx as i32);
-            }
-        }
-        base + (hist.len().saturating_sub(1) as i32)
-    };
     Some([
         percentile_from_hist(&x_hist[..w], x0, rank_lo),
         percentile_from_hist(&y_hist[..h], y0, rank_lo),
@@ -285,8 +305,10 @@ fn count_neutral_light_thresh(
     y0: i32,
     x1: i32,
     y1: i32,
-    min_mx: u8,
+    mx_min: u8,
 ) -> usize {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     let ux0 = x0.max(0) as usize;
     let uy0 = y0.max(0) as usize;
     let ux1 = x1.min(img.width as i32 - 1);
@@ -305,7 +327,7 @@ fn count_neutral_light_thresh(
             let g = img.data[o + 1];
             let b = img.data[o + 2];
             let mx = r.max(g).max(b);
-            if mx > min_mx {
+            if mx > mx_min {
                 let mn = r.min(g).min(b);
                 if ((mx - mn) as u32) * 4 < (mx as u32) {
                     light += 1;
@@ -318,10 +340,14 @@ fn count_neutral_light_thresh(
 
 #[inline]
 fn count_neutral_light(img: &ImageView<'_>, x0: i32, y0: i32, x1: i32, y1: i32) -> usize {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     count_neutral_light_thresh(img, x0, y0, x1, y1, 140)
 }
 
 pub fn pick_reroll_shown(img: &ImageView<'_>) -> bool {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     let s = (img.height as f64) / 1080.0;
     let x0 = ((img.width as f64) * 0.5 - 330.0 * s).round() as i32;
     let x1 = ((img.width as f64) * 0.5 - 175.0 * s).round() as i32;
@@ -331,6 +357,8 @@ pub fn pick_reroll_shown(img: &ImageView<'_>) -> bool {
 }
 
 pub fn pick_confirm_shown(img: &ImageView<'_>) -> bool {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     let s = (img.height as f64) / 1080.0;
     let x0 = ((img.width as f64) * 0.5 - 120.0 * s).round() as i32;
     let x1 = ((img.width as f64) * 0.5 + 330.0 * s).round() as i32;
@@ -339,10 +367,156 @@ pub fn pick_confirm_shown(img: &ImageView<'_>) -> bool {
     (count_neutral_light_thresh(img, x0, y0, x1, y1, 115) as f64) > 15.0 * s * s
 }
 
+fn count_pick_title_glyphs(
+    img: &ImageView<'_>,
+    k: i32,
+    s: f64,
+    slot: &mut ScanScratchSlot,
+) -> usize {
+    assert!(img.width > 0 && img.height > 0);
+    assert!((-1..=1).contains(&k));
+    let radii = text_radii(img);
+    let title_radius = [radii[1]];
+    let title_h_min = (15.0 * s).round().max(8.0) as i32;
+    let c = (img.width as f64) * 0.5 + (k as f64) * 480.0 * s;
+    let title_lines = text_lines_radii_with_slot(
+        img,
+        [c - 185.0 * s, 420.0 * s, c + 185.0 * s, 550.0 * s],
+        ((8.0 * s).max(5.0), (45.0 * s).max(16.0)),
+        &title_radius,
+        0.35,
+        slot,
+    );
+    let mut observed_title_glyphs = 0usize;
+    if let Some(lines) = title_lines.first() {
+        for line in lines {
+            let ly = (line.y0 + line.y1) as f64 * 0.5;
+            if ly < 470.0 * s || ly > 548.0 * s || line.h < title_h_min {
+                continue;
+            }
+            for piece in &line.pieces {
+                let px = (piece.x0 + piece.x1) as f64 * 0.5;
+                if (px - c).abs() <= 65.0 * s && piece.glyphs.len() >= 3 {
+                    observed_title_glyphs += piece.glyphs.len();
+                }
+            }
+        }
+        if observed_title_glyphs < 4 {
+            for line in lines {
+                if line.glyphs.len() >= 4 {
+                    observed_title_glyphs = observed_title_glyphs.max(line.glyphs.len());
+                }
+            }
+        }
+    }
+    observed_title_glyphs
+}
+
+fn score_pick_card_templates(img: &ImageView<'_>, bx: [i32; 4]) -> [f32; 31] {
+    assert!(bx[2] >= bx[0]);
+    assert!(bx[3] >= bx[1]);
+    let feats: [([f32; 72], [f32; 13]); 5] = [
+        art_feature(img, bx[0], bx[1], bx[2], bx[3]),
+        art_feature(img, bx[0] - 2, bx[1], bx[2] - 2, bx[3]),
+        art_feature(img, bx[0] + 2, bx[1], bx[2] + 2, bx[3]),
+        art_feature(img, bx[0], bx[1] - 2, bx[2], bx[3] - 2),
+        art_feature(img, bx[0], bx[1] + 2, bx[2], bx[3] + 2),
+    ];
+    let mut best_by_sim = [f32::NEG_INFINITY; 31];
+    for r in &REF_PICK_TOOLS {
+        let sc = feats
+            .iter()
+            .map(|(fg, fh)| art_similarity(fg, fh, &r.grid, &r.hist))
+            .fold(f32::NEG_INFINITY, f32::max);
+        let slot_sc = &mut best_by_sim[r.sim.idx()];
+        if sc > *slot_sc {
+            *slot_sc = sc;
+        }
+    }
+    for r in &REF_TOOLS {
+        if r.is_panel {
+            continue;
+        }
+        let sc = feats
+            .iter()
+            .map(|(fg, fh)| art_similarity(fg, fh, &r.grid, &r.hist))
+            .fold(f32::NEG_INFINITY, f32::max);
+        let slot_sc = &mut best_by_sim[r.sim.idx()];
+        if sc > *slot_sc {
+            *slot_sc = sc;
+        }
+    }
+    best_by_sim
+}
+
+fn classify_pick_card(
+    img: &ImageView<'_>,
+    bx: [i32; 4],
+    observed_title_glyphs: usize,
+) -> Option<PickCardRead> {
+    assert!(observed_title_glyphs >= 4);
+    assert!(bx[2] >= bx[0] && bx[3] >= bx[1]);
+    let best_by_sim = score_pick_card_templates(img, bx);
+    let mut top_sim = ToolId::Revenge;
+    let mut top_raw_sc = f32::NEG_INFINITY;
+    let mut top_sc = f32::NEG_INFINITY;
+    let mut second_sc = f32::NEG_INFINITY;
+    for (&sim_id, &raw_sc) in tartarus_core::ALL_TOOLS.iter().zip(best_by_sim.iter()) {
+        if !raw_sc.is_finite() {
+            continue;
+        }
+        let expected_chars = sim_id.name_alnum_len();
+        let diff = observed_title_glyphs.abs_diff(expected_chars);
+        let title_adj = if diff == 0 {
+            0.035
+        } else if diff <= 1 {
+            0.025
+        } else if diff <= 2 {
+            0.012
+        } else if diff <= 4 {
+            0.0
+        } else {
+            -((diff as f32 - 4.0) * 0.006).min(0.06)
+        };
+        let sc = raw_sc + title_adj;
+        if sc > top_sc {
+            second_sc = top_sc;
+            top_sc = sc;
+            top_raw_sc = raw_sc;
+            top_sim = sim_id;
+        } else if sc > second_sc {
+            second_sc = sc;
+        }
+    }
+    // Require a real minimum template similarity so background textures never pass by margin.
+    if !top_raw_sc.is_finite() || top_raw_sc < 0.80 {
+        return None;
+    }
+    let second = if second_sc.is_finite() {
+        second_sc
+    } else {
+        0.0
+    };
+    let margin = top_sc - second;
+    let eff_sc = top_sc.max(top_raw_sc);
+    let conf = if eff_sc < 0.82 {
+        0.0
+    } else {
+        ((eff_sc - 0.85) * 5.0 + margin * 8.0).clamp(0.0, 1.0)
+    };
+    Some(PickCardRead {
+        sim: top_sim,
+        score: eff_sc,
+        conf,
+    })
+}
+
 pub fn scan_pick_with_slot(
     img: &ImageView<'_>,
     slot: &mut ScanScratchSlot,
 ) -> Option<PickScreenRead> {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     if !pick_confirm_shown(img) || !pick_modal_backdrop_ok(img) {
         return None;
     }
@@ -369,135 +543,18 @@ pub fn scan_pick_with_slot(
         }
     }
 
-    let radii = text_radii(img);
-    let title_radius = [radii[1]];
-    let min_title_h = (15.0 * s).round().max(8.0) as i32;
     let mut cards = [PickCardRead {
         sim: ToolId::Revenge,
         score: 0.0,
         conf: 0.0,
     }; 3];
     for (idx, k) in [-1, 0, 1].into_iter().enumerate() {
-        let c = (img.width as f64) * 0.5 + (k as f64) * 480.0 * s;
-        let title_lines = text_lines_radii_with_slot(
-            img,
-            [c - 185.0 * s, 420.0 * s, c + 185.0 * s, 550.0 * s],
-            ((8.0 * s).max(5.0), (45.0 * s).max(16.0)),
-            &title_radius,
-            0.35,
-            slot,
-        );
-        let mut observed_title_glyphs = 0usize;
-        if let Some(lines) = title_lines.first() {
-            for line in lines {
-                let ly = (line.y0 + line.y1) as f64 * 0.5;
-                if ly < 470.0 * s || ly > 548.0 * s || line.h < min_title_h {
-                    continue;
-                }
-                for piece in &line.pieces {
-                    let px = (piece.x0 + piece.x1) as f64 * 0.5;
-                    if (px - c).abs() <= 65.0 * s && piece.glyphs.len() >= 3 {
-                        observed_title_glyphs += piece.glyphs.len();
-                    }
-                }
-            }
-            if observed_title_glyphs < 4 {
-                for line in lines {
-                    if line.glyphs.len() >= 4 {
-                        observed_title_glyphs = observed_title_glyphs.max(line.glyphs.len());
-                    }
-                }
-            }
-        }
+        let observed_title_glyphs = count_pick_title_glyphs(img, k, s, slot);
         if observed_title_glyphs < 4 {
             return None;
         }
-        let bx = art_boxes[idx];
-        let feats: [([f32; 72], [f32; 13]); 5] = [
-            art_feature(img, bx[0], bx[1], bx[2], bx[3]),
-            art_feature(img, bx[0] - 2, bx[1], bx[2] - 2, bx[3]),
-            art_feature(img, bx[0] + 2, bx[1], bx[2] + 2, bx[3]),
-            art_feature(img, bx[0], bx[1] - 2, bx[2], bx[3] - 2),
-            art_feature(img, bx[0], bx[1] + 2, bx[2], bx[3] + 2),
-        ];
-        let mut best_by_sim = [f32::NEG_INFINITY; 31];
-        for r in &REF_PICK_TOOLS {
-            let sc = feats
-                .iter()
-                .map(|(fg, fh)| art_similarity(fg, fh, &r.grid, &r.hist))
-                .fold(f32::NEG_INFINITY, f32::max);
-            let slot_sc = &mut best_by_sim[r.sim.idx()];
-            if sc > *slot_sc {
-                *slot_sc = sc;
-            }
-        }
-        for r in &REF_TOOLS {
-            if r.is_panel {
-                continue;
-            }
-            let sc = feats
-                .iter()
-                .map(|(fg, fh)| art_similarity(fg, fh, &r.grid, &r.hist))
-                .fold(f32::NEG_INFINITY, f32::max);
-            let slot_sc = &mut best_by_sim[r.sim.idx()];
-            if sc > *slot_sc {
-                *slot_sc = sc;
-            }
-        }
-        let mut top_sim = ToolId::Revenge;
-        let mut top_raw_sc = f32::NEG_INFINITY;
-        let mut top_sc = f32::NEG_INFINITY;
-        let mut second_sc = f32::NEG_INFINITY;
-        for (&sim_id, &raw_sc) in tartarus_core::ALL_TOOLS.iter().zip(best_by_sim.iter()) {
-            if !raw_sc.is_finite() {
-                continue;
-            }
-            let expected_chars = sim_id.name_alnum_len();
-            let diff = observed_title_glyphs.abs_diff(expected_chars);
-            let title_adj = if diff == 0 {
-                0.035
-            } else if diff <= 1 {
-                0.025
-            } else if diff <= 2 {
-                0.012
-            } else if diff <= 4 {
-                0.0
-            } else {
-                -((diff as f32 - 4.0) * 0.006).min(0.06)
-            };
-            let sc = raw_sc + title_adj;
-            if sc > top_sc {
-                second_sc = top_sc;
-                top_sc = sc;
-                top_raw_sc = raw_sc;
-                top_sim = sim_id;
-            } else if sc > second_sc {
-                second_sc = sc;
-            }
-        }
-        // Require a real minimum template similarity so background textures never pass via margin alone
-        if !top_raw_sc.is_finite() || top_raw_sc < 0.80 {
-            return None;
-        }
-        let second = if second_sc.is_finite() {
-            second_sc
-        } else {
-            0.0
-        };
-        let margin = top_sc - second;
-        let eff_sc = top_sc.max(top_raw_sc);
-        let conf = if eff_sc < 0.82 {
-            0.0
-        } else {
-            ((eff_sc - 0.85) * 5.0 + margin * 8.0).clamp(0.0, 1.0)
-        };
-        cards[idx] = PickCardRead {
-            sim: top_sim,
-            score: eff_sc,
-            conf,
-        };
+        cards[idx] = classify_pick_card(img, art_boxes[idx], observed_title_glyphs)?;
     }
-    // Enforce game-rule invariant: the 3 offered instruments in a pick are always distinct
     if cards[0].sim == cards[1].sim || cards[1].sim == cards[2].sim || cards[0].sim == cards[2].sim
     {
         return None;
@@ -523,6 +580,8 @@ fn is_opulence_popup(img: &ImageView<'_>) -> bool {
     if w == 0 || h == 0 {
         return false;
     }
+    assert!(w > 0);
+    assert!(h > 0);
     let mut crimson = 0usize;
     let mut purple = 0usize;
     let ex0 = ((w as f64) * 0.46) as usize;
@@ -563,10 +622,72 @@ fn is_opulence_popup(img: &ImageView<'_>) -> bool {
     crimson > purple.saturating_mul(2).max(10) && cyan_line1 < 5
 }
 
+fn match_title_piece(
+    p: &Piece,
+    line_h: i32,
+    img_w: usize,
+    patterns: &[(TitleRead, &[isize])],
+    best_match: &mut Option<(TitleRead, i32, isize)>,
+) {
+    assert!(line_h > 0);
+    assert!(img_w > 0);
+    let words: Vec<isize> = p.words.iter().map(|w| w.glyphs.len() as isize).collect();
+    if words.is_empty() {
+        return;
+    }
+    let has_obj_prefix = words[0] >= 8 && words[0] <= 11 && words.len() > 1;
+    let name = if has_obj_prefix {
+        &words[1..]
+    } else {
+        &words[..]
+    };
+    let mid_x = ((p.x0 + p.x1) as f64) * 0.5;
+    let centered = (mid_x - (img_w as f64) * 0.5).abs() <= (img_w as f64) * 0.12;
+    for &(id, want) in patterns {
+        if has_obj_prefix && matches!(id, TitleRead::StartEvent(_)) {
+            continue;
+        }
+        if want.len() == 1 && matches!(id, TitleRead::StartEvent(_)) && !centered {
+            continue;
+        }
+        if want.len() != name.len() {
+            continue;
+        }
+        if want
+            .iter()
+            .zip(name.iter())
+            .any(|(&a, &b)| (a - b).abs() > if a >= 8 { 2 } else { 1 })
+        {
+            continue;
+        }
+        let off: isize = want
+            .iter()
+            .zip(name.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        let total: isize = want.iter().sum();
+        if (off as f64) <= 1.0 + (total as f64) * 0.15 {
+            let better = best_match.is_none_or(|(_, bh, boff)| {
+                let same_tier = (line_h - bh).abs() <= bh.max(line_h) / 5;
+                if same_tier {
+                    off < boff || (off == boff && line_h > bh)
+                } else {
+                    line_h > bh
+                }
+            });
+            if better {
+                *best_match = Some((id, line_h, off));
+            }
+        }
+    }
+}
+
 pub fn read_objective_title_with_slot(
     img: &ImageView<'_>,
     slot: &mut ScanScratchSlot,
 ) -> Option<TitleRead> {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     let single_word_start = if is_opulence_popup(img) {
         StartEventId::Opulence
     } else {
@@ -604,56 +725,7 @@ pub fn read_objective_title_with_slot(
     ) {
         for line in lines {
             for p in &line.pieces {
-                let words: Vec<isize> = p.words.iter().map(|w| w.glyphs.len() as isize).collect();
-                if words.is_empty() {
-                    continue;
-                }
-                let has_obj_prefix = words[0] >= 8 && words[0] <= 11 && words.len() > 1;
-                let name = if has_obj_prefix {
-                    &words[1..]
-                } else {
-                    &words[..]
-                };
-                let mid_x = ((p.x0 + p.x1) as f64) * 0.5;
-                let centered =
-                    (mid_x - (img.width as f64) * 0.5).abs() <= (img.width as f64) * 0.12;
-                for &(id, want) in patterns {
-                    if has_obj_prefix && matches!(id, TitleRead::StartEvent(_)) {
-                        continue;
-                    }
-                    if want.len() == 1 && matches!(id, TitleRead::StartEvent(_)) && !centered {
-                        continue;
-                    }
-                    if want.len() != name.len() {
-                        continue;
-                    }
-                    if want
-                        .iter()
-                        .zip(name.iter())
-                        .any(|(&a, &b)| (a - b).abs() > if a >= 8 { 2 } else { 1 })
-                    {
-                        continue;
-                    }
-                    let off: isize = want
-                        .iter()
-                        .zip(name.iter())
-                        .map(|(a, b)| (a - b).abs())
-                        .sum();
-                    let total: isize = want.iter().sum();
-                    if (off as f64) <= 1.0 + (total as f64) * 0.15 {
-                        let better = best_match.is_none_or(|(_, bh, boff)| {
-                            let same_tier = (line.h - bh).abs() <= bh.max(line.h) / 5;
-                            if same_tier {
-                                off < boff || (off == boff && line.h > bh)
-                            } else {
-                                line.h > bh
-                            }
-                        });
-                        if better {
-                            best_match = Some((id, line.h, off));
-                        }
-                    }
-                }
+                match_title_piece(p, line.h, img.width, patterns, &mut best_match);
             }
         }
     }

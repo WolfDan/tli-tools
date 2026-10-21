@@ -1,4 +1,5 @@
-//! Integral-image multi-radius text line extraction, glyph vectorization, digit template matching, and prefix matching.
+//! Integral-image multi-radius text line extraction, glyph vectorization,
+//! digit template matching, and prefix matching.
 
 use super::arena::{Blob, ScanScratchSlot, blobs_from_mask_hits};
 use super::data::{DIGITS, GLYPH_H, GLYPH_W, PREFIX_GLYPHS, PREFIX_H, PREFIX_W};
@@ -34,20 +35,20 @@ pub struct Line {
     pub y1: i32,
 }
 
-fn group_blobs_into_lines(mut found: Vec<Blob>, min_h: f64, max_h: f64) -> Vec<Line> {
+fn cluster_blobs_by_row(mut found: Vec<Blob>, h_min: f64, h_max: f64) -> Vec<Line> {
+    assert!(h_min > 0.0);
+    assert!(h_max >= h_min);
     found.retain(|b| {
-        (b.h as f64) >= min_h * 0.45
-            && (b.h as f64) <= max_h
-            && (b.w as f64) <= max_h * 1.2
+        (b.h as f64) >= h_min * 0.45
+            && (b.h as f64) <= h_max
+            && (b.w as f64) <= h_max * 1.2
             && b.n >= 4
     });
-
     found.sort_by(|a, b| {
         let ma = (a.y0 + a.y1) as f64 * 0.5;
         let mb = (b.y0 + b.y1) as f64 * 0.5;
         ma.partial_cmp(&mb).unwrap()
     });
-
     let mut lines: Vec<Line> = Vec::new();
     for g in found {
         let mid = (g.y0 + g.y1) as f64 * 0.5;
@@ -70,8 +71,79 @@ fn group_blobs_into_lines(mut found: Vec<Blob>, min_h: f64, max_h: f64) -> Vec<L
             });
         }
     }
+    lines
+}
 
-    let mut out = Vec::new();
+fn merge_overlapping_glyphs(glyphs: Vec<Blob>) -> Vec<Blob> {
+    debug_assert!(!glyphs.is_empty());
+    let mut merged: Vec<Blob> = Vec::with_capacity(glyphs.len());
+    for g in glyphs {
+        if let Some(prev) = merged.last_mut() {
+            let overlap = prev.x1.min(g.x1) - prev.x0.max(g.x0) + 1;
+            if (overlap as f64) > 0.5 * (prev.w.min(g.w) as f64) {
+                prev.x0 = prev.x0.min(g.x0);
+                prev.x1 = prev.x1.max(g.x1);
+                prev.y0 = prev.y0.min(g.y0);
+                prev.y1 = prev.y1.max(g.y1);
+                prev.w = prev.x1 - prev.x0 + 1;
+                prev.h = prev.y1 - prev.y0 + 1;
+                prev.n += g.n;
+                continue;
+            }
+        }
+        merged.push(g);
+    }
+    debug_assert!(!merged.is_empty());
+    merged
+}
+
+fn partition_line_pieces(line: &mut Line) {
+    assert!(!line.glyphs.is_empty());
+    assert!(line.h > 0);
+    let lh = line.h as f64;
+    let mut pieces: Vec<Piece> = Vec::new();
+    let mut last_x1: Option<i32> = None;
+    for g in &line.glyphs {
+        let gap = last_x1.map_or(f64::INFINITY, |lx| (g.x0 - lx) as f64);
+        if pieces.is_empty() || gap > 2.0 * lh {
+            pieces.push(Piece {
+                words: Vec::new(),
+                glyphs: Vec::new(),
+                x0: g.x0,
+                x1: g.x1,
+                y0: g.y0,
+                y1: g.y1,
+            });
+        }
+        let piece = pieces.last_mut().unwrap();
+        if piece.words.is_empty() || gap > lh * 0.36 {
+            piece.words.push(Word {
+                glyphs: Vec::new(),
+                x0: g.x0,
+                x1: g.x1,
+            });
+        }
+        let word = piece.words.last_mut().unwrap();
+        word.glyphs.push(*g);
+        word.x1 = word.x1.max(g.x1);
+        piece.glyphs.push(*g);
+        piece.x1 = piece.x1.max(g.x1);
+        piece.y0 = piece.y0.min(g.y0);
+        piece.y1 = piece.y1.max(g.y1);
+        last_x1 = Some(g.x1);
+    }
+    line.x0 = line.glyphs[0].x0;
+    line.x1 = line.glyphs.iter().map(|g| g.x1).max().unwrap();
+    line.y0 = line.glyphs.iter().map(|g| g.y0).min().unwrap();
+    line.y1 = line.glyphs.iter().map(|g| g.y1).max().unwrap();
+    line.pieces = pieces;
+}
+
+fn group_blobs_into_lines(found: Vec<Blob>, h_min: f64, h_max: f64) -> Vec<Line> {
+    assert!(h_min > 0.0);
+    assert!(h_max >= h_min);
+    let lines = cluster_blobs_by_row(found, h_min, h_max);
+    let mut out = Vec::with_capacity(lines.len());
     for mut line in lines {
         line.glyphs.sort_by_key(|g| g.x0);
         let mut tall: Vec<i32> = line.glyphs.iter().map(|g| g.h).collect();
@@ -85,75 +157,132 @@ fn group_blobs_into_lines(mut found: Vec<Blob>, min_h: f64, max_h: f64) -> Vec<L
         if line.glyphs.is_empty() {
             continue;
         }
-
-        let mut merged: Vec<Blob> = Vec::new();
-        for g in line.glyphs {
-            if let Some(prev) = merged.last_mut() {
-                let overlap = prev.x1.min(g.x1) - prev.x0.max(g.x0) + 1;
-                if (overlap as f64) > 0.5 * (prev.w.min(g.w) as f64) {
-                    prev.x0 = prev.x0.min(g.x0);
-                    prev.x1 = prev.x1.max(g.x1);
-                    prev.y0 = prev.y0.min(g.y0);
-                    prev.y1 = prev.y1.max(g.y1);
-                    prev.w = prev.x1 - prev.x0 + 1;
-                    prev.h = prev.y1 - prev.y0 + 1;
-                    prev.n += g.n;
-                    continue;
-                }
-            }
-            merged.push(g);
-        }
-        line.glyphs = merged;
-
-        let mut pieces: Vec<Piece> = Vec::new();
-        let mut last_x1: Option<i32> = None;
-        for g in &line.glyphs {
-            let gap = last_x1.map_or(f64::INFINITY, |lx| (g.x0 - lx) as f64);
-            if pieces.is_empty() || gap > 2.0 * lh {
-                pieces.push(Piece {
-                    words: Vec::new(),
-                    glyphs: Vec::new(),
-                    x0: g.x0,
-                    x1: g.x1,
-                    y0: g.y0,
-                    y1: g.y1,
-                });
-            }
-            let piece = pieces.last_mut().unwrap();
-            if piece.words.is_empty() || gap > lh * 0.36 {
-                piece.words.push(Word {
-                    glyphs: Vec::new(),
-                    x0: g.x0,
-                    x1: g.x1,
-                });
-            }
-            let word = piece.words.last_mut().unwrap();
-            word.glyphs.push(*g);
-            word.x1 = word.x1.max(g.x1);
-            piece.glyphs.push(*g);
-            piece.x1 = piece.x1.max(g.x1);
-            piece.y0 = piece.y0.min(g.y0);
-            piece.y1 = piece.y1.max(g.y1);
-            last_x1 = Some(g.x1);
-        }
-        line.x0 = line.glyphs[0].x0;
-        line.x1 = line.glyphs.iter().map(|g| g.x1).max().unwrap();
-        line.y0 = line.glyphs.iter().map(|g| g.y0).min().unwrap();
-        line.y1 = line.glyphs.iter().map(|g| g.y1).max().unwrap();
-        line.pieces = pieces;
+        line.glyphs = merge_overlapping_glyphs(line.glyphs);
+        partition_line_pieces(&mut line);
         out.push(line);
     }
     out
 }
 
+fn fill_sat_border_row(
+    img: &ImageView<'_>,
+    sat: &mut [u32],
+    dims: [usize; 5],
+    sy: usize,
+    py: usize,
+) {
+    let [bx0, w, r_max, sw, sat_stride] = dims;
+    assert!(w > 0 && sw >= w + 2 * r_max);
+    assert!((sy + 2) * sat_stride <= sat.len());
+    let row_base = (py * img.width + bx0) * 4;
+    let data = &img.data[row_base..row_base + w * 4];
+    let prev_row = sy * sat_stride;
+    let cur_row = (sy + 1) * sat_stride;
+    sat[cur_row] = 0;
+    let mut row_sum = 0u32;
+    let l_q0 = (77 * (data[0] as u32) + 150 * (data[1] as u32) + 29 * (data[2] as u32)) >> 6;
+    for sx in 0..r_max {
+        row_sum += l_q0;
+        sat[cur_row + sx + 1] = sat[prev_row + sx + 1] + row_sum;
+    }
+    for x in 0..w {
+        let o = x * 4;
+        let l_q =
+            (77 * (data[o] as u32) + 150 * (data[o + 1] as u32) + 29 * (data[o + 2] as u32)) >> 6;
+        row_sum += l_q;
+        sat[cur_row + r_max + x + 1] = sat[prev_row + r_max + x + 1] + row_sum;
+    }
+    let o_last = (w - 1) * 4;
+    let l_qn = (77 * (data[o_last] as u32)
+        + 150 * (data[o_last + 1] as u32)
+        + 29 * (data[o_last + 2] as u32))
+        >> 6;
+    for sx in (r_max + w)..sw {
+        row_sum += l_qn;
+        sat[cur_row + sx + 1] = sat[prev_row + sx + 1] + row_sum;
+    }
+}
+
+fn build_sat_and_eligible(
+    img: &ImageView<'_>,
+    bounds: [usize; 6],
+    sat_limit: f32,
+    slot: &mut ScanScratchSlot,
+) {
+    let [bx0, by0, by1, w, h, r_max] = bounds;
+    assert!(w >= 4 && h >= 4);
+    assert!(r_max >= 1);
+    let sw = w + 2 * r_max;
+    let sh = h + 2 * r_max;
+    let sat_stride = sw + 1;
+    let sat_len = (sh + 1) * sat_stride;
+    if slot.sat.len() < sat_len {
+        slot.sat.resize(sat_len, 0);
+    }
+    slot.sat[..sat_stride].fill(0);
+    slot.elig_coords.clear();
+    let sat_mul = (sat_limit * 256.0).round() as u32;
+    let border_dims = [bx0, w, r_max, sw, sat_stride];
+    for sy in 0..r_max {
+        fill_sat_border_row(img, &mut slot.sat, border_dims, sy, by0);
+    }
+    for y in 0..h {
+        let sy = y + r_max;
+        let py = by0 + y;
+        let row_base = (py * img.width + bx0) * 4;
+        let data = &img.data[row_base..row_base + w * 4];
+        let prev_row = sy * sat_stride;
+        let cur_row = (sy + 1) * sat_stride;
+        slot.sat[cur_row] = 0;
+        let mut row_sum = 0u32;
+        let l_q0 = (77 * (data[0] as u32) + 150 * (data[1] as u32) + 29 * (data[2] as u32)) >> 6;
+        for sx in 0..r_max {
+            row_sum += l_q0;
+            slot.sat[cur_row + sx + 1] = slot.sat[prev_row + sx + 1] + row_sum;
+        }
+        for x in 0..w {
+            let o = x * 4;
+            let (rr, gg, bb) = (data[o], data[o + 1], data[o + 2]);
+            let l_256 = 77 * (rr as u32) + 150 * (gg as u32) + 29 * (bb as u32);
+            row_sum += l_256 >> 6;
+            slot.sat[cur_row + r_max + x + 1] = slot.sat[prev_row + r_max + x + 1] + row_sum;
+            let mx = rr.max(gg).max(bb);
+            if mx >= 45 && l_256 >= 45 * 256 {
+                let mn = rr.min(gg).min(bb);
+                if ((mx - mn) as u32) * 256 < sat_mul * (mx as u32) {
+                    slot.elig_coords.push((x as u16, y as u16, l_256 as u16));
+                }
+            }
+        }
+        let o_last = (w - 1) * 4;
+        let l_qn = (77 * (data[o_last] as u32)
+            + 150 * (data[o_last + 1] as u32)
+            + 29 * (data[o_last + 2] as u32))
+            >> 6;
+        for sx in (r_max + w)..sw {
+            row_sum += l_qn;
+            slot.sat[cur_row + sx + 1] = slot.sat[prev_row + sx + 1] + row_sum;
+        }
+    }
+    if !slot.elig_coords.is_empty() {
+        for sy in (r_max + h)..sh {
+            fill_sat_border_row(img, &mut slot.sat, border_dims, sy, by1);
+        }
+    }
+}
+
 pub fn text_lines_radii_with_slot(
     img: &ImageView<'_>,
-    [x0, y0, x1, y1]: [f64; 4],
-    (min_h, max_h): (f64, f64),
+    rect: [f64; 4],
+    h_bounds: (f64, f64),
     radii: &[usize],
     sat_limit: f32,
     slot: &mut ScanScratchSlot,
 ) -> Vec<Vec<Line>> {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(sat_limit.is_finite());
+    let [x0, y0, x1, y1] = rect;
+    let (h_min, h_max) = h_bounds;
     let bx0 = (x0.floor() as isize).max(0) as usize;
     let by0 = (y0.floor() as isize).max(0) as usize;
     let bx1 = (x1.ceil() as isize).min(img.width as isize - 1);
@@ -168,152 +297,57 @@ pub fn text_lines_radii_with_slot(
     if w < 4 || h < 4 || radii.is_empty() {
         return vec![Vec::new(); radii.len()];
     }
-
-    let ScanScratchSlot {
-        sat,
-        elig_coords,
-        hit_coords,
-        mask,
-        stack,
-    } = slot;
-
     let r_max = radii.iter().copied().max().unwrap_or(1).max(1);
-    let sw = w + 2 * r_max;
-    let sh = h + 2 * r_max;
-    let sat_stride = sw + 1;
-    let sat_len = (sh + 1) * sat_stride;
-    if sat.len() < sat_len {
-        sat.resize(sat_len, 0);
-    }
-    sat[..sat_stride].fill(0);
-
-    elig_coords.clear();
-    let sat_mul = (sat_limit * 256.0).round() as u32;
-
-    let fill_border_row = |sat: &mut [u32], sy: usize, py: usize| {
-        let row_base = (py * img.width + bx0) * 4;
-        let data = &img.data[row_base..row_base + w * 4];
-        let prev_row = sy * sat_stride;
-        let cur_row = (sy + 1) * sat_stride;
-        sat[cur_row] = 0;
-        let mut row_sum = 0u32;
-        let l_q0 = (77 * (data[0] as u32) + 150 * (data[1] as u32) + 29 * (data[2] as u32)) >> 6;
-        for sx in 0..r_max {
-            row_sum += l_q0;
-            sat[cur_row + sx + 1] = sat[prev_row + sx + 1] + row_sum;
-        }
-        for x in 0..w {
-            let o = x * 4;
-            let l_q =
-                (77 * (data[o] as u32) + 150 * (data[o + 1] as u32) + 29 * (data[o + 2] as u32))
-                    >> 6;
-            row_sum += l_q;
-            sat[cur_row + r_max + x + 1] = sat[prev_row + r_max + x + 1] + row_sum;
-        }
-        let o_last = (w - 1) * 4;
-        let l_qn = (77 * (data[o_last] as u32)
-            + 150 * (data[o_last + 1] as u32)
-            + 29 * (data[o_last + 2] as u32))
-            >> 6;
-        for sx in (r_max + w)..sw {
-            row_sum += l_qn;
-            sat[cur_row + sx + 1] = sat[prev_row + sx + 1] + row_sum;
-        }
-    };
-
-    for sy in 0..r_max {
-        fill_border_row(sat, sy, by0);
-    }
-
-    for y in 0..h {
-        let sy = y + r_max;
-        let py = by0 + y;
-        let row_base = (py * img.width + bx0) * 4;
-        let data = &img.data[row_base..row_base + w * 4];
-        let prev_row = sy * sat_stride;
-        let cur_row = (sy + 1) * sat_stride;
-        sat[cur_row] = 0;
-        let mut row_sum = 0u32;
-        let l_q0 = (77 * (data[0] as u32) + 150 * (data[1] as u32) + 29 * (data[2] as u32)) >> 6;
-        for sx in 0..r_max {
-            row_sum += l_q0;
-            sat[cur_row + sx + 1] = sat[prev_row + sx + 1] + row_sum;
-        }
-        for x in 0..w {
-            let o = x * 4;
-            let rr = data[o];
-            let gg = data[o + 1];
-            let bb = data[o + 2];
-            let l_256 = 77 * (rr as u32) + 150 * (gg as u32) + 29 * (bb as u32);
-            row_sum += l_256 >> 6;
-            sat[cur_row + r_max + x + 1] = sat[prev_row + r_max + x + 1] + row_sum;
-            let mx = rr.max(gg).max(bb);
-            if mx >= 45 && l_256 >= 45 * 256 {
-                let mn = rr.min(gg).min(bb);
-                if ((mx - mn) as u32) * 256 < sat_mul * (mx as u32) {
-                    elig_coords.push((x as u16, y as u16, l_256 as u16));
-                }
-            }
-        }
-        let o_last = (w - 1) * 4;
-        let l_qn = (77 * (data[o_last] as u32)
-            + 150 * (data[o_last + 1] as u32)
-            + 29 * (data[o_last + 2] as u32))
-            >> 6;
-        for sx in (r_max + w)..sw {
-            row_sum += l_qn;
-            sat[cur_row + sx + 1] = sat[prev_row + sx + 1] + row_sum;
-        }
-    }
-
-    if elig_coords.is_empty() {
+    build_sat_and_eligible(img, [bx0, by0, by1, w, h, r_max], sat_limit, slot);
+    if slot.elig_coords.is_empty() {
         return vec![Vec::new(); radii.len()];
     }
-
-    for sy in (r_max + h)..sh {
-        fill_border_row(sat, sy, by1);
-    }
-
+    let sat_stride = w + 2 * r_max + 1;
     let n = w * h;
-    if mask.len() < n {
-        mask.resize(n, 0);
+    if slot.mask.len() < n {
+        slot.mask.resize(n, 0);
     }
-
     let mut results = Vec::with_capacity(radii.len());
     for &rad in radii {
         let r = rad.max(1);
         let span = 2 * r + 1;
         let inv_area_scaled = 0.25_f32 / ((span * span) as f32);
-        hit_coords.clear();
-        for &(ex_u16, ey_u16, l_256) in elig_coords.iter() {
-            let ex = ex_u16 as usize;
-            let ey = ey_u16 as usize;
-            let cx = ex + r_max;
-            let cy = ey + r_max;
-            let y0s = (cy - r) * sat_stride;
-            let y1s = (cy + r + 1) * sat_stride;
-            let x0s = cx - r;
-            let x1s = cx + r + 1;
-            let box_sum =
-                (sat[y1s + x1s] + sat[y0s + x0s]).saturating_sub(sat[y0s + x1s] + sat[y1s + x0s]);
+        slot.hit_coords.clear();
+        for &(ex_u16, ey_u16, l_256) in slot.elig_coords.iter() {
+            let (ex, ey) = (ex_u16 as usize, ey_u16 as usize);
+            let (cx, cy) = (ex + r_max, ey + r_max);
+            let (y0s, y1s) = ((cy - r) * sat_stride, (cy + r + 1) * sat_stride);
+            let (x0s, x1s) = (cx - r, cx + r + 1);
+            let box_sum = (slot.sat[y1s + x1s] + slot.sat[y0s + x0s])
+                .saturating_sub(slot.sat[y0s + x1s] + slot.sat[y1s + x0s]);
             let around_val = (box_sum as f32) * inv_area_scaled;
             let l = (l_256 as f32) * (1.0 / 256.0);
             if l - around_val >= 16.0_f32.max(0.3 * around_val) {
-                mask[ey * w + ex] = 1;
-                hit_coords.push((ex_u16, ey_u16));
+                slot.mask[ey * w + ex] = 1;
+                slot.hit_coords.push((ex_u16, ey_u16));
             }
         }
-        let found = if hit_coords.is_empty() {
+        let found = if slot.hit_coords.is_empty() {
             Vec::new()
         } else {
-            blobs_from_mask_hits(&mut mask[..n], hit_coords, stack, w, h, bx0, by0)
+            blobs_from_mask_hits(
+                &mut slot.mask[..n],
+                &slot.hit_coords,
+                &mut slot.stack,
+                w,
+                h,
+                bx0,
+                by0,
+            )
         };
-        results.push(group_blobs_into_lines(found, min_h, max_h));
+        results.push(group_blobs_into_lines(found, h_min, h_max));
     }
     results
 }
 
 pub fn glyph_vector(img: &ImageView<'_>, g: &Blob, line_h: i32) -> [f32; 140] {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(g.h > 0 && line_h > 0);
     let mut v = [0.0_f32; 140];
     let scale = (g.h as f64).max((line_h as f64) * 0.7) / (GLYPH_H as f64);
     let cx = (g.x0 + g.x1) as f64 * 0.5;
@@ -345,6 +379,8 @@ pub fn glyph_vector(img: &ImageView<'_>, g: &Blob, line_h: i32) -> [f32; 140] {
 }
 
 pub fn digit_scores(img: &ImageView<'_>, g: &Blob, line_h: i32) -> [f32; 10] {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(line_h > 0);
     let v = glyph_vector(img, g, line_h);
     let mut out = [-1.0_f32; 10];
     for (d, refs) in DIGITS.iter().enumerate() {
@@ -366,11 +402,14 @@ pub(crate) const ALLOWED_DAYS: [u32; 41] = [
 
 #[inline]
 const fn u32_digits(v: u32) -> ([usize; 2], usize) {
-    if v >= 10 {
+    assert!(v < 100);
+    let res = if v >= 10 {
         ([(v / 10) as usize, (v % 10) as usize], 2)
     } else {
         ([v as usize, 0], 1)
-    }
+    };
+    assert!(res.1 >= 1 && res.1 <= 2);
+    res
 }
 
 pub fn read_number(
@@ -379,6 +418,8 @@ pub fn read_number(
     line_h: i32,
     allowed: &[u32],
 ) -> Vec<(u32, f32)> {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(line_h > 0);
     let n_glyphs = glyphs.len();
     if n_glyphs == 0 || n_glyphs > 2 {
         return Vec::new();
@@ -410,6 +451,8 @@ pub fn prefix_vector(
     dy0: i32,
     dy1: i32,
 ) -> [f32; 400] {
+    assert!(!piece.glyphs.is_empty());
+    assert!(end > 0.0 && end.is_finite());
     let g0 = &piece.glyphs[0];
     let x0 = g0.x0 as f64;
     let x1 = x0 + end * (g0.h as f64);
@@ -432,6 +475,8 @@ pub fn prefix_vector(
 }
 
 pub fn prefix_like(img: &ImageView<'_>, piece: &Piece) -> f32 {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(!piece.glyphs.is_empty());
     let pv0 = prefix_vector(img, piece, 5.46, 0, 0);
     let mut best = -1.0_f32;
     for r in &PREFIX_GLYPHS {
@@ -477,16 +522,22 @@ pub fn prefix_like(img: &ImageView<'_>, piece: &Piece) -> f32 {
 
 #[inline]
 pub fn text_radii(img: &ImageView<'_>) -> [usize; 4] {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     [0.006, 0.01, 0.016, 0.026].map(|f| ((img.height as f64 * f).round() as usize).max(3))
 }
 
 #[inline]
 pub fn text_radii_for_scale(s: f64) -> [usize; 4] {
+    assert!(s > 0.0);
+    assert!(s.is_finite());
     let vh = 720.0 * s.max(0.5);
     [0.006, 0.01, 0.016, 0.026].map(|f| ((vh * f).round() as usize).max(3))
 }
 
 pub fn split_glyph(img: &ImageView<'_>, g: &Blob) -> Option<[Blob; 2]> {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(g.w > 0 && g.h > 0);
     let mut cut = -1i32;
     let mut least = f32::INFINITY;
     let start_x = ((g.x0 as f64) + (g.w as f64) * 0.3).round() as i32;
@@ -529,11 +580,13 @@ pub fn find_label_with_slot(
     shape: f64,
     slot: &mut ScanScratchSlot,
 ) -> Option<LabelBox> {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(letters > 0 && shape > 0.0);
     let mut best: Option<(f64, LabelBox)> = None;
     let radii = text_radii(img);
-    let max_h = 40.0_f64.max((img.height as f64) * 0.06);
+    let h_max = 40.0_f64.max((img.height as f64) * 0.06);
     let ordered_radii = [radii[1], radii[2], radii[0]];
-    for lines in text_lines_radii_with_slot(img, bx, (6.0, max_h), &ordered_radii, 0.50, slot) {
+    for lines in text_lines_radii_with_slot(img, bx, (6.0, h_max), &ordered_radii, 0.50, slot) {
         for line in lines {
             for p in &line.pieces {
                 let n: isize = p.words.iter().map(|w| w.glyphs.len() as isize).sum();

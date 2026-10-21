@@ -10,7 +10,7 @@ use crate::assets::{
     DecodedAssetImage, alpha_bbox, alpha_bbox_thresh, compute_art_feature_region,
     pick_art_bbox_on_rgba, synthesize_icon_feature,
 };
-use crate::db::S16GameDatabase;
+use crate::db::{S16GameDatabase, S16RelicEntry};
 use crate::error::DataError;
 use crate::font::{BoardPoint, DigitTemplates, PrefixTemplates, RasterizedGlyph, RoomBox, TtfFont};
 
@@ -49,8 +49,15 @@ pub(crate) const S_1344_TO_BG: f64 = 1.9390;
 pub(crate) const OX_1344_TO_BG: f64 = 324.0;
 pub(crate) const OY_1344_TO_BG: f64 = 240.0;
 
+const _: () = {
+    assert!(H0.len() == 9);
+    assert!(RING.len() == 16);
+};
+
 #[inline]
 fn sample_gray_bilinear(g: &[f32], w: usize, h: usize, mut x: f64, mut y: f64) -> f32 {
+    debug_assert!(w >= 2 && h >= 2);
+    debug_assert!(g.len() >= w * h);
     x = x.clamp(0.0, (w as f64) - 1.001);
     y = y.clamp(0.0, (h as f64) - 1.001);
     let x0 = x as usize;
@@ -64,6 +71,7 @@ fn sample_gray_bilinear(g: &[f32], w: usize, h: usize, mut x: f64, mut y: f64) -
 
 #[inline]
 fn normalize_zero_mean(v: &mut [f32]) {
+    assert!(!v.is_empty());
     let n = v.len() as f32;
     let mean = v.iter().sum::<f32>() / n;
     let mut norm = 0.0f32;
@@ -71,6 +79,7 @@ fn normalize_zero_mean(v: &mut [f32]) {
         *x -= mean;
         norm += *x * *x;
     }
+    assert!(norm >= 0.0);
     let inv = 1.0 / norm.sqrt().max(1.0);
     for x in v.iter_mut() {
         *x *= inv;
@@ -80,12 +89,12 @@ fn normalize_zero_mean(v: &mut [f32]) {
 fn composite_rgba_scaled(
     bg: &DecodedAssetImage,
     fg: &DecodedAssetImage,
-    cx: isize,
-    cy: isize,
-    fg_w: usize,
-    fg_h: usize,
+    (cx, cy): (isize, isize),
+    (fg_w, fg_h): (usize, usize),
     dark_bg: (f32, f32, f32),
 ) -> Vec<u8> {
+    assert!(bg.width > 0 && bg.height > 0);
+    assert!(fg_w > 0 && fg_h > 0);
     let mut out = vec![0u8; bg.width * bg.height * 4];
     for i in 0..(bg.width * bg.height) {
         let o = i * 4;
@@ -134,6 +143,8 @@ fn composite_portrait_on_shield(
 ) -> Vec<f32> {
     let w = shield.width;
     let h = shield.height;
+    assert!(w > 0 && h > 0);
+    assert!(portrait.width > 0 && portrait.height > 0);
     let mut gray = vec![0.0f32; w * h];
     for y in 0..h {
         for x in 0..w {
@@ -172,15 +183,8 @@ fn composite_portrait_on_shield(
     blur
 }
 
-/// Synthesizes the 1002 high-gradient structural board reference points (`REF_BOARD_POINTS`)
-/// in `1344x756` `H0` space and the 16 room highlight boxes (`ROOM_BG_BOXES`) in `3200x1920`
-/// `UI_Img_S16Gameplay_Jail_Bg_Normal` space directly from `.pak` textures.
-pub fn synthesize_board_points_and_rooms(
-    textures: &BTreeMap<String, DecodedAssetImage>,
-) -> Result<(Vec<BoardPoint>, [RoomBox; 16]), DataError> {
-    let bg = textures
-        .get("UI_Img_S16Gameplay_Jail_Bg_Normal")
-        .ok_or_else(|| DataError::MissingAsset("UI_Img_S16Gameplay_Jail_Bg_Normal".to_string()))?;
+fn compute_sharp_1344_from_bg(bg: &DecodedAssetImage) -> Vec<f32> {
+    assert!(bg.width >= 2 && bg.height >= 2);
     let mut bg_gray = vec![0.0f32; bg.width * bg.height];
     for (i, g) in bg_gray.iter_mut().enumerate() {
         let o = i * 4;
@@ -189,30 +193,6 @@ pub fn synthesize_board_points_and_rooms(
             + 0.114 * (bg.rgba8[o + 2] as f32);
     }
 
-    let mut cell_centers_1344 = Vec::with_capacity(16);
-    let mut room_boxes = [(0u16, 0u16, 0u16, 0u16); 16];
-    for (idx, &(u, v)) in RING.iter().enumerate() {
-        let uf = u as f64;
-        let vf = v as f64;
-        let w = H0[6] * uf + H0[7] * vf + H0[8];
-        let x_1344 = (H0[0] * uf + H0[1] * vf + H0[2]) / w;
-        let y_1344 = (H0[3] * uf + H0[4] * vf + H0[5]) / w;
-        cell_centers_1344.push((x_1344, y_1344));
-
-        let pass_name = format!("UI_Img_S16Gameplay_Jail_Pass_White_Light{:02}", idx + 1);
-        let (pw, ph) = textures
-            .get(&pass_name)
-            .map(|t| (t.width as f64, t.height as f64))
-            .unwrap_or((220.0, 168.0));
-        let bx = x_1344 * S_1344_TO_BG + OX_1344_TO_BG;
-        let by = y_1344 * S_1344_TO_BG + OY_1344_TO_BG;
-        let x0 = (bx - pw * 0.5).round().clamp(0.0, bg.width as f64) as u16;
-        let y0 = (by - ph * 0.5).round().clamp(0.0, bg.height as f64) as u16;
-        room_boxes[idx] = (x0, y0, pw as u16, ph as u16);
-    }
-
-    // Render bg_gray (3200x1920) into 1344x756 reference frame with area averaging,
-    // then apply the 3x3 box filter matching `ImageView::sharp_px` / `sample_sharp`.
     let mut ref_1344 = vec![0.0f32; 1344 * 756];
     for ry in 0..756 {
         for rx in 0..1344 {
@@ -227,6 +207,7 @@ pub fn synthesize_board_points_and_rooms(
             ref_1344[ry * 1344 + rx] = acc * (1.0 / 9.0);
         }
     }
+
     let mut sharp_1344 = vec![0.0f32; 1344 * 756];
     for ry in 1..755 {
         for rx in 1..1343 {
@@ -238,7 +219,42 @@ pub fn synthesize_board_points_and_rooms(
             sharp_1344[ry * 1344 + rx] = acc * (1.0 / 9.0);
         }
     }
+    assert_eq!(sharp_1344.len(), 1344 * 756);
+    sharp_1344
+}
 
+/// Synthesizes the 1002 high-gradient structural board reference points (`REF_BOARD_POINTS`)
+/// in `1344x756` `H0` space and the 16 room highlight boxes (`ROOM_BG_BOXES`) in `3200x1920`
+/// `UI_Img_S16Gameplay_Jail_Bg_Normal` space directly from `.pak` textures.
+pub fn synthesize_board_points_and_rooms(
+    textures: &BTreeMap<String, DecodedAssetImage>,
+) -> Result<(Vec<BoardPoint>, [RoomBox; 16]), DataError> {
+    assert!(!textures.is_empty());
+    let bg = textures
+        .get("UI_Img_S16Gameplay_Jail_Bg_Normal")
+        .ok_or_else(|| DataError::MissingAsset("UI_Img_S16Gameplay_Jail_Bg_Normal".to_string()))?;
+
+    let mut room_boxes = [(0u16, 0u16, 0u16, 0u16); 16];
+    for (idx, &(u, v)) in RING.iter().enumerate() {
+        let uf = u as f64;
+        let vf = v as f64;
+        let w = H0[6] * uf + H0[7] * vf + H0[8];
+        let x_1344 = (H0[0] * uf + H0[1] * vf + H0[2]) / w;
+        let y_1344 = (H0[3] * uf + H0[4] * vf + H0[5]) / w;
+
+        let pass_name = format!("UI_Img_S16Gameplay_Jail_Pass_White_Light{:02}", idx + 1);
+        let (pw, ph) = textures
+            .get(&pass_name)
+            .map(|t| (t.width as f64, t.height as f64))
+            .unwrap_or((220.0, 168.0));
+        let bx = x_1344 * S_1344_TO_BG + OX_1344_TO_BG;
+        let by = y_1344 * S_1344_TO_BG + OY_1344_TO_BG;
+        let x0 = (bx - pw * 0.5).round().clamp(0.0, bg.width as f64) as u16;
+        let y0 = (by - ph * 0.5).round().clamp(0.0, bg.height as f64) as u16;
+        room_boxes[idx] = (x0, y0, pw as u16, ph as u16);
+    }
+
+    let sharp_1344 = compute_sharp_1344_from_bg(bg);
     let mut cands: Vec<(i32, i32, f32, f32)> = Vec::new();
     for ry in (226..=284).step_by(2) {
         for rx in (475..=825).step_by(2) {
@@ -247,8 +263,7 @@ pub fn synthesize_board_points_and_rooms(
             let val = sharp_1344[v * 1344 + u];
             let gx = sharp_1344[v * 1344 + (u + 2)] - sharp_1344[v * 1344 + (u - 2)];
             let gy = sharp_1344[(v + 2) * 1344 + u] - sharp_1344[(v - 2) * 1344 + u];
-            let grad = gx.hypot(gy);
-            cands.push((rx, ry, (val * 10.0).round() / 10.0, grad));
+            cands.push((rx, ry, (val * 10.0).round() / 10.0, gx.hypot(gy)));
         }
     }
     cands.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap());
@@ -257,16 +272,19 @@ pub fn synthesize_board_points_and_rooms(
         .take(1002)
         .map(|(x, y, v, _)| (x, y, v))
         .collect();
+    assert_eq!(top_1002.len(), 1002);
     Ok((top_1002, room_boxes))
 }
 
 /// Synthesizes the `18x22 = 396` beast face templates for a beast from its normal (`112x120`)
-/// and jailed (`120x144`) portraits composited onto the `120x144` cell shield (`UI_T_V2_S16BoardCell_046`).
+/// and jailed (`120x144`) portraits composited onto the `120x144` cell shield
+/// (`UI_T_V2_S16BoardCell_046`).
 pub fn synthesize_beast_face_templates(
     shield: &DecodedAssetImage,
     norm_tex: &DecodedAssetImage,
     jail_tex: &DecodedAssetImage,
 ) -> Vec<[f32; 396]> {
+    assert!(shield.width > 0 && shield.height > 0);
     let mut out = Vec::with_capacity(54);
     for (tex, ox, oy) in [(norm_tex, 4isize, 0isize), (jail_tex, 0isize, 0isize)] {
         let blur = composite_portrait_on_shield(shield, tex, ox, oy, (28.0, 26.0, 32.0));
@@ -289,22 +307,16 @@ pub fn synthesize_beast_face_templates(
             }
         }
     }
+    assert_eq!(out.len(), 54);
     out
 }
 
-/// Synthesizes `DIGITS` (`0..9`, `10x14 = 140`) and `PREFIX_GLYPHS` (`"Go to Cell"`, `40x10 = 400`)
-/// directly from `UI_Font_Light_EN_AZ.ufont` and `tl_main.ufont` in the `.pak` archives.
-pub fn synthesize_digits_and_prefix(
-    vfs: &PakVfs,
-) -> Result<(DigitTemplates, PrefixTemplates), DataError> {
-    let f1_bytes = vfs.read_path("UE_game/Content/Art/UI/Fonts/UI_Font_Light_EN_AZ.ufont")?;
-    let f2_bytes = vfs.read_path("UE_game/Content/HotUpdate/Fonts/tl_main.ufont")?;
-    let fonts = [TtfFont::parse(f1_bytes)?, TtfFont::parse(f2_bytes)?];
-
+fn synthesize_digits_from_fonts(fonts: &[TtfFont; 2]) -> DigitTemplates {
+    assert_eq!(fonts.len(), 2);
     let mut digits: DigitTemplates = Default::default();
     for (d, digit_vecs) in digits.iter_mut().enumerate() {
         let ch = char::from_digit(d as u32, 10).unwrap();
-        for font in &fonts {
+        for font in fonts {
             let Some(RasterizedGlyph {
                 cw,
                 ch_px,
@@ -341,9 +353,14 @@ pub fn synthesize_digits_and_prefix(
             }
         }
     }
+    assert_eq!(digits.len(), 10);
+    digits
+}
 
+fn synthesize_prefixes_from_fonts(fonts: &[TtfFont; 2]) -> PrefixTemplates {
+    assert_eq!(fonts.len(), 2);
     let mut prefixes = Vec::new();
-    for font in &fonts {
+    for font in fonts {
         let scale = 22.0 / (font.units_per_em as f32);
         let Some(RasterizedGlyph {
             cw,
@@ -379,7 +396,22 @@ pub fn synthesize_digits_and_prefix(
             }
         }
     }
+    assert!(!prefixes.is_empty());
+    prefixes
+}
 
+/// Synthesizes `DIGITS` (`0..9`, `10x14 = 140`) and `PREFIX_GLYPHS` (`"Go to Cell"`, `40x10 = 400`)
+/// directly from `UI_Font_Light_EN_AZ.ufont` and `tl_main.ufont` in the `.pak` archives.
+pub fn synthesize_digits_and_prefix(
+    vfs: &PakVfs,
+) -> Result<(DigitTemplates, PrefixTemplates), DataError> {
+    let f1_bytes = vfs.read_path("UE_game/Content/Art/UI/Fonts/UI_Font_Light_EN_AZ.ufont")?;
+    let f2_bytes = vfs.read_path("UE_game/Content/HotUpdate/Fonts/tl_main.ufont")?;
+    assert!(!f1_bytes.is_empty() && !f2_bytes.is_empty());
+    let fonts = [TtfFont::parse(f1_bytes)?, TtfFont::parse(f2_bytes)?];
+    let digits = synthesize_digits_from_fonts(&fonts);
+    let prefixes = synthesize_prefixes_from_fonts(&fonts);
+    assert_eq!(digits.len(), 10);
     Ok((digits, prefixes))
 }
 
@@ -398,6 +430,7 @@ pub fn synthesize_card_medallions(
         ("incident", "UI_S16Gameplay_Action_05"),
         ("bestow", "UI_S16Gameplay_Action_06"),
     ];
+    assert_eq!(specs.len(), 8);
     let mut out = Vec::with_capacity(8);
     for (id, asset) in specs {
         let mut grid = [0.0f32; 576];
@@ -425,23 +458,31 @@ pub fn synthesize_card_medallions(
         }
         out.push((id, asset, grid));
     }
+    assert_eq!(out.len(), 8);
     out
 }
 
 fn format_f32_slice(arr: &[f32]) -> String {
-    let mut s = String::from("[");
+    assert!(!arr.is_empty());
+    let mut s = String::from("[\n        ");
     for (i, &v) in arr.iter().enumerate() {
         if i > 0 {
-            s.push_str(", ");
+            if i % 6 == 0 {
+                s.push_str(",\n        ");
+            } else {
+                s.push_str(", ");
+            }
         }
-        s.push_str(&format!("{:.6}_f32", v));
+        s.push_str(&format!("{v:.6}_f32"));
     }
-    s.push(']');
+    s.push_str(",\n    ]");
+    assert!(s.len() > 2);
     s
 }
 
 fn sim_str_to_tool_id_expr(sim: &str) -> &'static str {
-    match sim {
+    assert!(!sim.is_empty());
+    let out = match sim {
         "muzzle" => "ToolId::Muzzle",
         "ravenous" => "ToolId::Ravenous",
         "collar" => "ToolId::Collar",
@@ -474,30 +515,24 @@ fn sim_str_to_tool_id_expr(sim: &str) -> &'static str {
         "ironbox" => "ToolId::Ironbox",
         "skewer" => "ToolId::Skewer",
         _ => unreachable!("unknown active relic sim key"),
-    }
+    };
+    assert!(out.starts_with("ToolId::"));
+    out
 }
 
-/// Generates the self-contained Rust source file `crates/tartarus-scan/src/cv_data.rs`
-/// 100% from the `.pak` archives (`PakVfs`), with zero `.js` dependencies.
-pub fn generate_cv_data_rs(
-    out_rs_path: &Path,
-    vfs: &PakVfs,
+fn emit_relic_meta_and_board(
+    out: &mut String,
     db: &S16GameDatabase,
-    textures: &BTreeMap<String, DecodedAssetImage>,
-) -> Result<(), DataError> {
-    let (board_pts, room_boxes) = synthesize_board_points_and_rooms(textures)?;
-    let (digits, prefixes) = synthesize_digits_and_prefix(vfs)?;
-    let medallions = synthesize_card_medallions(textures);
+    board_pts: &[BoardPoint],
+    room_boxes: &[RoomBox; 16],
+) {
+    assert_eq!(room_boxes.len(), 16);
+    assert!(!board_pts.is_empty());
+    out.push_str("// @generated by `cargo run -p tartarus-data`.\n");
+    out.push_str(
+        "// Authoritative S16 Tartarus CV templates synthesized 100% from .pak assets.\n\n",
+    );
 
-    let shield = textures
-        .get("UI_T_V2_S16BoardCell_046")
-        .ok_or_else(|| DataError::MissingAsset("UI_T_V2_S16BoardCell_046".to_string()))?;
-
-    let mut out = String::with_capacity(640 * 1024);
-    out.push_str("// @generated by `cargo run -p tartarus-data -- --emit-rust crates/tartarus-scan/src/cv_data.rs`.\n");
-    out.push_str("// Authoritative S16 Tartarus CV templates and official game metadata synthesized 100% from .pak assets.\n\n");
-
-    // 1. Official S16 Relic Metadata table (all 31 active relics)
     out.push_str("#[derive(Clone, Copy, Debug)]\n");
     out.push_str("pub struct S16RelicMeta {\n");
     out.push_str("    pub game_id: u16,\n");
@@ -513,23 +548,24 @@ pub fn generate_cv_data_rs(
         db.relics.len()
     ));
     for r in &db.relics {
+        out.push_str("    S16RelicMeta {\n");
+        out.push_str(&format!("        game_id: {},\n", r.id));
         out.push_str(&format!(
-            "    S16RelicMeta {{ game_id: {}, sim: {}, icon_asset: {:?}, name: {:?}, trigger: {:?}, effect: {:?} }},\n",
-            r.id,
-            sim_str_to_tool_id_expr(&r.js_sim),
-            r.icon_asset,
-            r.name,
-            r.trigger_text,
-            r.effect_text
+            "        sim: {},\n",
+            sim_str_to_tool_id_expr(&r.js_sim)
         ));
+        out.push_str(&format!("        icon_asset: {:?},\n", r.icon_asset));
+        out.push_str(&format!("        name: {:?},\n", r.name));
+        out.push_str(&format!("        trigger: {:?},\n", r.trigger_text));
+        out.push_str(&format!("        effect: {:?},\n", r.effect_text));
+        out.push_str("    },\n");
     }
     out.push_str("];\n\n");
 
-    // 2. Board points & 16 Room highlight boxes from UI_Img_S16Gameplay_Jail_Bg_Normal + Pass_White_Light01..16
     out.push_str("pub const REF_BOARD_WIDTH: f32 = 755.0;\n");
     out.push_str("pub const REF_BOARD_HEIGHT: f32 = 424.0;\n");
     out.push_str("pub static ROOM_BG_BOXES: [(u16, u16, u16, u16); 16] = [\n");
-    for &(x, y, w, h) in &room_boxes {
+    for &(x, y, w, h) in room_boxes {
         out.push_str(&format!("    ({x}, {y}, {w}, {h}),\n"));
     }
     out.push_str("];\n\n");
@@ -538,12 +574,18 @@ pub fn generate_cv_data_rs(
         "pub static REF_BOARD_POINTS: [(i32, i32, f32); {}] = [\n",
         board_pts.len()
     ));
-    for &(rx, ry, val) in &board_pts {
+    for &(rx, ry, val) in board_pts {
         out.push_str(&format!("    ({rx}, {ry}, {val:.1}_f32),\n"));
     }
     out.push_str("];\n\n");
+}
 
-    // 3. Beast Faces (18x22 = 396) synthesized from UI_T_V2_S16BoardCell_101..104 & 045/047/050/048 on 046
+fn emit_beast_faces(
+    out: &mut String,
+    shield: &DecodedAssetImage,
+    textures: &BTreeMap<String, DecodedAssetImage>,
+) -> Result<(), DataError> {
+    assert!(shield.width > 0 && shield.height > 0);
     for (const_name, norm_name, jail_name) in [
         (
             "FACES_LION",
@@ -585,8 +627,18 @@ pub fn generate_cv_data_rs(
         }
         out.push_str("];\n\n");
     }
+    assert!(!out.is_empty());
+    Ok(())
+}
 
-    // 4. Digits 0..9 (10x14 = 140) from UI_Font_Light_EN_AZ.ufont & tl_main.ufont
+fn emit_digits_prefixes_and_medallions(
+    out: &mut String,
+    digits: &DigitTemplates,
+    prefixes: &PrefixTemplates,
+    medallions: &[(&str, &str, [f32; 576])],
+) {
+    assert_eq!(digits.len(), 10);
+    assert_eq!(medallions.len(), 8);
     for (d, vecs) in digits.iter().enumerate() {
         out.push_str(&format!(
             "pub static DIGIT_{}: [[f32; 140]; {}] = [\n",
@@ -602,24 +654,22 @@ pub fn generate_cv_data_rs(
     }
     out.push_str("pub static DIGITS: [&[[f32; 140]]; 10] = [\n");
     for d in 0..=9 {
-        out.push_str(&format!("    &DIGIT_{},\n", d));
+        out.push_str(&format!("    &DIGIT_{d},\n"));
     }
     out.push_str("];\n\n");
 
-    // 5. Prefix glyphs ("Go to Cell", 40x10 = 400)
     out.push_str("pub const PREFIX_DIM: usize = 400;\n");
     out.push_str(&format!(
         "pub static PREFIX_GLYPHS: [[f32; 400]; {}] = [\n",
         prefixes.len()
     ));
-    for v in &prefixes {
+    for v in prefixes {
         out.push_str("    ");
         out.push_str(&format_f32_slice(v));
         out.push_str(",\n");
     }
     out.push_str("];\n\n");
 
-    // 6. Route & Action Card Medallions (24x24 = 576)
     out.push_str("#[derive(Clone, Copy, Debug)]\n");
     out.push_str("pub struct CardMedallionTemplate {\n");
     out.push_str("    pub id: &'static str,\n");
@@ -630,55 +680,73 @@ pub fn generate_cv_data_rs(
         "pub static CARD_MEDALLIONS: [CardMedallionTemplate; {}] = [\n",
         medallions.len()
     ));
-    for (id, asset, grid) in &medallions {
-        out.push_str(&format!(
-            "    CardMedallionTemplate {{ id: {:?}, asset: {:?}, grid: {} }},\n",
-            id,
-            asset,
-            format_f32_slice(grid)
-        ));
+    for (id, asset, grid) in medallions {
+        out.push_str("    CardMedallionTemplate {\n");
+        out.push_str(&format!("        id: {:?},\n", id));
+        out.push_str(&format!("        asset: {:?},\n", asset));
+        out.push_str(&format!("        grid: {},\n", format_f32_slice(grid)));
+        out.push_str("    },\n");
     }
     out.push_str("];\n\n");
+}
 
-    // 7. Synthesized REF_TOOLS and REF_PICK_TOOLS for all 31 active S16 Relics
-    let item_bg = textures.get("UI_Img_S16Gameplay_Jail_Item_Bg");
-    let big_pics = textures.get("UI_Btn_S16Gameplay_Jail_Device_Big_Pics");
+struct ToolFeatureRow {
+    id: String,
+    sim: String,
+    name: String,
+    is_panel: bool,
+    grid: [f32; 72],
+    hist: [f32; 13],
+}
 
-    struct ToolFeatureRow {
-        id: String,
-        sim: String,
-        name: String,
-        is_panel: bool,
-        grid: [f32; 72],
-        hist: [f32; 13],
+struct ToolRowsAccum {
+    ref_tools: Vec<ToolFeatureRow>,
+    ref_picks: Vec<(String, [f32; 72], [f32; 13])>,
+}
+
+fn synthesize_relic_panel_rows(
+    r: &S16RelicEntry,
+    icon: &DecodedAssetImage,
+    item_bg: Option<&DecodedAssetImage>,
+    accum: &mut ToolRowsAccum,
+) {
+    assert!(icon.width > 0 && icon.height > 0);
+    let (x0, y0, x1, y1) = alpha_bbox(&icon.rgba8, icon.width, icon.height);
+    let bw = (x1 - x0) as isize;
+    let bh = (y1 - y0) as isize;
+
+    for &pad_f in &[-0.06f32, 0.0, 0.08] {
+        let px = ((bw as f32) * pad_f).round() as isize;
+        let py = ((bh as f32) * pad_f).round() as isize;
+        let cx0 = (x0 as isize - px).clamp(0, icon.width as isize - 1) as usize;
+        let cy0 = (y0 as isize - py).clamp(0, icon.height as isize - 1) as usize;
+        let cx1 = (x1 as isize + px).clamp((cx0 + 1) as isize, icon.width as isize) as usize;
+        let cy1 = (y1 as isize + py).clamp((cy0 + 1) as isize, icon.height as isize) as usize;
+        let (grid, hist) = compute_art_feature_region(
+            &icon.rgba8,
+            (icon.width, icon.height),
+            (cx0, cy0, cx1, cy1),
+            (18.0, 16.0, 20.0),
+        );
+        accum.ref_tools.push(ToolFeatureRow {
+            id: r.js_sim.clone(),
+            sim: r.js_sim.clone(),
+            name: r.name.clone(),
+            is_panel: true,
+            grid,
+            hist,
+        });
     }
-
-    let mut ref_tools_rows: Vec<ToolFeatureRow> = Vec::new();
-    let mut ref_pick_rows: Vec<(String, [f32; 72], [f32; 13])> = Vec::new();
-
-    for r in &db.relics {
-        let Some(icon) = textures.get(&r.icon_asset) else {
-            continue;
-        };
-        let (x0, y0, x1, y1) = alpha_bbox(&icon.rgba8, icon.width, icon.height);
-        let bw = (x1 - x0) as isize;
-        let bh = (y1 - y0) as isize;
-
-        // Panel features: alpha-bbox variants + composited on UI_Img_S16Gameplay_Jail_Item_Bg (104x172)
-        for &pad_f in &[-0.06f32, 0.0, 0.08] {
-            let px = ((bw as f32) * pad_f).round() as isize;
-            let py = ((bh as f32) * pad_f).round() as isize;
-            let cx0 = (x0 as isize - px).clamp(0, icon.width as isize - 1) as usize;
-            let cy0 = (y0 as isize - py).clamp(0, icon.height as isize - 1) as usize;
-            let cx1 = (x1 as isize + px).clamp((cx0 + 1) as isize, icon.width as isize) as usize;
-            let cy1 = (y1 as isize + py).clamp((cy0 + 1) as isize, icon.height as isize) as usize;
+    if let Some(bg) = item_bg {
+        for &s in &[82usize, 92, 100] {
+            let comp = composite_rgba_scaled(bg, icon, (52, 86), (s, s), (16.0, 14.0, 18.0));
             let (grid, hist) = compute_art_feature_region(
-                &icon.rgba8,
-                (icon.width, icon.height),
-                (cx0, cy0, cx1, cy1),
-                (18.0, 16.0, 20.0),
+                &comp,
+                (bg.width, bg.height),
+                (8, 36, bg.width - 8, bg.height - 36),
+                (16.0, 14.0, 18.0),
             );
-            ref_tools_rows.push(ToolFeatureRow {
+            accum.ref_tools.push(ToolFeatureRow {
                 id: r.js_sim.clone(),
                 sim: r.js_sim.clone(),
                 name: r.name.clone(),
@@ -687,71 +755,82 @@ pub fn generate_cv_data_rs(
                 hist,
             });
         }
-        if let Some(bg) = item_bg {
-            for &s in &[82usize, 92, 100] {
-                let comp = composite_rgba_scaled(bg, icon, 52, 86, s, s, (16.0, 14.0, 18.0));
-                let (grid, hist) = compute_art_feature_region(
+    }
+    assert!(!accum.ref_tools.is_empty());
+}
+
+fn synthesize_relic_pick_rows(
+    r: &S16RelicEntry,
+    icon: &DecodedAssetImage,
+    big_pics: Option<&DecodedAssetImage>,
+    accum: &mut ToolRowsAccum,
+) {
+    assert!(icon.width > 0 && icon.height > 0);
+    let (p_grid, p_hist) = synthesize_icon_feature(icon, (28.0, 22.0, 20.0));
+    accum.ref_tools.push(ToolFeatureRow {
+        id: r.js_sim.clone(),
+        sim: r.js_sim.clone(),
+        name: r.name.clone(),
+        is_panel: false,
+        grid: p_grid,
+        hist: p_hist,
+    });
+    for &alpha_thr in &[16u8, 48, 84] {
+        let bbox = alpha_bbox_thresh(&icon.rgba8, icon.width, icon.height, alpha_thr);
+        let (grid, hist) = compute_art_feature_region(
+            &icon.rgba8,
+            (icon.width, icon.height),
+            bbox,
+            (26.0, 21.0, 19.0),
+        );
+        accum.ref_picks.push((r.js_sim.clone(), grid, hist));
+    }
+
+    if let Some(bg) = big_pics {
+        for &s in &[250usize, 285, 315] {
+            let comp = composite_rgba_scaled(bg, icon, (250, 260), (s, s), (22.0, 20.0, 24.0));
+            for &(mx_hi, v_thr) in &[(72u8, 0.28f32), (82, 0.32), (94, 0.36)] {
+                if let Some(bbox) = pick_art_bbox_on_rgba(
                     &comp,
                     (bg.width, bg.height),
-                    (8, 36, bg.width - 8, bg.height - 36),
-                    (16.0, 14.0, 18.0),
-                );
-                ref_tools_rows.push(ToolFeatureRow {
-                    id: r.js_sim.clone(),
-                    sim: r.js_sim.clone(),
-                    name: r.name.clone(),
-                    is_panel: true,
-                    grid,
-                    hist,
-                });
-            }
-        }
-
-        // Non-panel entry in REF_TOOLS + entries in REF_PICK_TOOLS using exact pick_art_box 1%-99% percentile crop
-        let (p_grid, p_hist) = synthesize_icon_feature(icon, (28.0, 22.0, 20.0));
-        ref_tools_rows.push(ToolFeatureRow {
-            id: r.js_sim.clone(),
-            sim: r.js_sim.clone(),
-            name: r.name.clone(),
-            is_panel: false,
-            grid: p_grid,
-            hist: p_hist,
-        });
-        for &alpha_thr in &[16u8, 48, 84] {
-            let (ax0, ay0, ax1, ay1) =
-                alpha_bbox_thresh(&icon.rgba8, icon.width, icon.height, alpha_thr);
-            let (grid, hist) = compute_art_feature_region(
-                &icon.rgba8,
-                (icon.width, icon.height),
-                (ax0, ay0, ax1, ay1),
-                (26.0, 21.0, 19.0),
-            );
-            ref_pick_rows.push((r.js_sim.clone(), grid, hist));
-        }
-
-        if let Some(bg) = big_pics {
-            for &s in &[250usize, 285, 315] {
-                let comp = composite_rgba_scaled(bg, icon, 250, 260, s, s, (22.0, 20.0, 24.0));
-                for &(mx_hi, v_thr) in &[(72u8, 0.28f32), (82, 0.32), (94, 0.36)] {
-                    if let Some((bx0, by0, bx1, by1)) = pick_art_bbox_on_rgba(
+                    (250 - 110, 130, 250 + 110, 395),
+                    mx_hi,
+                    v_thr,
+                ) {
+                    let (grid, hist) = compute_art_feature_region(
                         &comp,
                         (bg.width, bg.height),
-                        (250 - 110, 130, 250 + 110, 395),
-                        mx_hi,
-                        v_thr,
-                    ) {
-                        let (grid, hist) = compute_art_feature_region(
-                            &comp,
-                            (bg.width, bg.height),
-                            (bx0, by0, bx1, by1),
-                            (22.0, 20.0, 24.0),
-                        );
-                        ref_pick_rows.push((r.js_sim.clone(), grid, hist));
-                    }
+                        bbox,
+                        (22.0, 20.0, 24.0),
+                    );
+                    accum.ref_picks.push((r.js_sim.clone(), grid, hist));
                 }
             }
         }
     }
+    assert!(!accum.ref_picks.is_empty());
+}
+
+fn emit_ref_tools_and_pick_tools(
+    out: &mut String,
+    db: &S16GameDatabase,
+    textures: &BTreeMap<String, DecodedAssetImage>,
+) {
+    assert!(!db.relics.is_empty());
+    let item_bg = textures.get("UI_Img_S16Gameplay_Jail_Item_Bg");
+    let big_pics = textures.get("UI_Btn_S16Gameplay_Jail_Device_Big_Pics");
+    let mut accum = ToolRowsAccum {
+        ref_tools: Vec::new(),
+        ref_picks: Vec::new(),
+    };
+
+    for r in &db.relics {
+        if let Some(icon) = textures.get(&r.icon_asset) {
+            synthesize_relic_panel_rows(r, icon, item_bg, &mut accum);
+            synthesize_relic_pick_rows(r, icon, big_pics, &mut accum);
+        }
+    }
+    assert!(!accum.ref_tools.is_empty());
 
     out.push_str("#[derive(Clone, Copy, Debug)]\n");
     out.push_str("pub struct RefToolEntry {\n");
@@ -765,18 +844,20 @@ pub fn generate_cv_data_rs(
 
     out.push_str(&format!(
         "pub static REF_TOOLS: [RefToolEntry; {}] = [\n",
-        ref_tools_rows.len()
+        accum.ref_tools.len()
     ));
-    for row in &ref_tools_rows {
+    for row in &accum.ref_tools {
+        out.push_str("    RefToolEntry {\n");
+        out.push_str(&format!("        id: {:?},\n", row.id));
         out.push_str(&format!(
-            "    RefToolEntry {{ id: {:?}, sim: {}, name: {:?}, is_panel: {}, grid: {}, hist: {} }},\n",
-            row.id,
-            sim_str_to_tool_id_expr(&row.sim),
-            row.name,
-            row.is_panel,
-            format_f32_slice(&row.grid),
-            format_f32_slice(&row.hist)
+            "        sim: {},\n",
+            sim_str_to_tool_id_expr(&row.sim)
         ));
+        out.push_str(&format!("        name: {:?},\n", row.name));
+        out.push_str(&format!("        is_panel: {},\n", row.is_panel));
+        out.push_str(&format!("        grid: {},\n", format_f32_slice(&row.grid)));
+        out.push_str(&format!("        hist: {},\n", format_f32_slice(&row.hist)));
+        out.push_str("    },\n");
     }
     out.push_str("];\n\n");
 
@@ -789,17 +870,41 @@ pub fn generate_cv_data_rs(
 
     out.push_str(&format!(
         "pub static REF_PICK_TOOLS: [RefPickToolEntry; {}] = [\n",
-        ref_pick_rows.len()
+        accum.ref_picks.len()
     ));
-    for (sim, grid, hist) in &ref_pick_rows {
-        out.push_str(&format!(
-            "    RefPickToolEntry {{ sim: {}, grid: {}, hist: {} }},\n",
-            sim_str_to_tool_id_expr(sim),
-            format_f32_slice(grid),
-            format_f32_slice(hist)
-        ));
+    for (sim, grid, hist) in &accum.ref_picks {
+        out.push_str("    RefPickToolEntry {\n");
+        out.push_str(&format!("        sim: {},\n", sim_str_to_tool_id_expr(sim)));
+        out.push_str(&format!("        grid: {},\n", format_f32_slice(grid)));
+        out.push_str(&format!("        hist: {},\n", format_f32_slice(hist)));
+        out.push_str("    },\n");
     }
     out.push_str("];\n");
+}
+
+/// Generates the self-contained Rust source file `crates/tartarus-scan/src/cv_data.rs`
+/// 100% from the `.pak` archives (`PakVfs`), with zero `.js` dependencies.
+pub fn generate_cv_data_rs(
+    out_rs_path: &Path,
+    vfs: &PakVfs,
+    db: &S16GameDatabase,
+    textures: &BTreeMap<String, DecodedAssetImage>,
+) -> Result<(), DataError> {
+    assert!(!out_rs_path.as_os_str().is_empty());
+    let (board_pts, room_boxes) = synthesize_board_points_and_rooms(textures)?;
+    let (digits, prefixes) = synthesize_digits_and_prefix(vfs)?;
+    let medallions = synthesize_card_medallions(textures);
+
+    let shield = textures
+        .get("UI_T_V2_S16BoardCell_046")
+        .ok_or_else(|| DataError::MissingAsset("UI_T_V2_S16BoardCell_046".to_string()))?;
+
+    let mut out = String::with_capacity(640 * 1024);
+    emit_relic_meta_and_board(&mut out, db, &board_pts, &room_boxes);
+    emit_beast_faces(&mut out, shield, textures)?;
+    emit_digits_prefixes_and_medallions(&mut out, &digits, &prefixes, &medallions);
+    emit_ref_tools_and_pick_tools(&mut out, db, textures);
+    assert!(!out.is_empty());
 
     fs::write(out_rs_path, out)?;
     Ok(())

@@ -1,7 +1,10 @@
-//! Pre-allocated scratch buffers (`ScanArena`, `ScanScratchSlot`, `CellScratchSlot`) and connected-component blob extraction.
+//! Pre-allocated scratch buffers (`ScanArena`, `ScanScratchSlot`, `CellScratchSlot`)
+//! and connected-component blob extraction.
 
 use super::board::board_template_refs;
 use super::image::ImageView;
+
+const FLOOD_ITERATIONS_MAX: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Blob {
@@ -17,6 +20,7 @@ pub struct Blob {
 }
 
 /// Pre-allocated scratch slot for zero-allocation OCR and connected-components scanning.
+#[repr(C, align(64))]
 #[derive(Default)]
 pub struct ScanScratchSlot {
     pub sat: Vec<u32>,
@@ -26,22 +30,31 @@ pub struct ScanScratchSlot {
     pub stack: Vec<(u32, u32)>,
 }
 
+const _: () = {
+    assert!(std::mem::align_of::<ScanScratchSlot>() == 64);
+};
+
 fn alloc_pre_faulted<T: Copy>(cap: usize, non_zero_val: T) -> Vec<T> {
+    assert!(cap > 0);
     let mut v = vec![non_zero_val; cap];
     std::hint::black_box(&mut v);
     v.clear();
+    assert!(v.capacity() >= cap);
     v
 }
 
 impl ScanScratchSlot {
     pub fn with_capacity() -> Self {
-        Self {
+        let slot = Self {
             sat: alloc_pre_faulted(1024 * 1024, 0u32), // 4 MB
             elig_coords: alloc_pre_faulted(256 * 1024, (0u16, 0u16, 0u16)), // 1.5 MB
             hit_coords: alloc_pre_faulted(32 * 1024, (0u16, 0u16)), // 128 KB
             mask: alloc_pre_faulted(3 * 1024 * 1024, 0u8), // 3 MB
             stack: alloc_pre_faulted(8 * 1024, (0u32, 0u32)), // 64 KB
-        }
+        };
+        assert!(slot.sat.capacity() >= 1024 * 1024);
+        assert!(slot.mask.capacity() >= 3 * 1024 * 1024);
+        slot
     }
 
     #[inline]
@@ -66,6 +79,8 @@ impl ScanScratchSlot {
             self.mask.clear();
             self.mask.shrink_to(3 * 1024 * 1024);
         }
+        debug_assert!(self.hit_coords.is_empty());
+        debug_assert!(self.stack.is_empty());
     }
 }
 
@@ -77,10 +92,13 @@ pub struct CellScratchSlot {
 
 impl CellScratchSlot {
     pub fn with_capacity() -> Self {
-        Self {
+        let slot = Self {
             row_buf: alloc_pre_faulted(130 * 112, 0.0_f32),
             patch: alloc_pre_faulted(128 * 112, 0.0_f32),
-        }
+        };
+        assert!(slot.row_buf.capacity() >= 130 * 112);
+        assert!(slot.patch.capacity() >= 128 * 112);
+        slot
     }
 
     #[inline]
@@ -93,6 +111,8 @@ impl CellScratchSlot {
             self.patch.clear();
             self.patch.shrink_to(128 * 112);
         }
+        debug_assert!(self.row_buf.capacity() <= 256 * 128);
+        debug_assert!(self.patch.capacity() <= 256 * 128);
     }
 }
 
@@ -112,19 +132,87 @@ impl Default for ScanArena {
 impl ScanArena {
     pub fn new() -> Self {
         let _ = board_template_refs();
-        Self {
+        let arena = Self {
             slots: std::array::from_fn(|_| ScanScratchSlot::with_capacity()),
             cell_slots: std::array::from_fn(|_| CellScratchSlot::with_capacity()),
-        }
+        };
+        assert_eq!(arena.slots.len(), 6);
+        assert_eq!(arena.cell_slots.len(), 16);
+        arena
     }
 
     #[inline]
     pub fn reset(&mut self) {
+        assert_eq!(self.slots.len(), 6);
+        assert_eq!(self.cell_slots.len(), 16);
         for slot in &mut self.slots {
             slot.reset();
         }
         for slot in &mut self.cell_slots {
             slot.reset();
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct BlobAcc {
+    n: usize,
+    sx: usize,
+    sy: usize,
+    x_min: i32,
+    y_min: i32,
+    x_max: i32,
+    y_max: i32,
+}
+
+impl BlobAcc {
+    #[inline]
+    fn new() -> Self {
+        let acc = Self {
+            n: 0,
+            sx: 0,
+            sy: 0,
+            x_min: i32::MAX,
+            y_min: i32::MAX,
+            x_max: -1,
+            y_max: -1,
+        };
+        debug_assert_eq!(acc.n, 0);
+        debug_assert!(acc.x_max < acc.x_min);
+        acc
+    }
+
+    #[inline]
+    fn add(&mut self, xu: u32, yu: u32) {
+        debug_assert!(xu <= i32::MAX as u32);
+        debug_assert!(yu <= i32::MAX as u32);
+        self.n += 1;
+        self.sx += xu as usize;
+        self.sy += yu as usize;
+        let xi = xu as i32;
+        let yi = yu as i32;
+        self.x_min = self.x_min.min(xi);
+        self.x_max = self.x_max.max(xi);
+        self.y_min = self.y_min.min(yi);
+        self.y_max = self.y_max.max(yi);
+        debug_assert!(self.x_max >= self.x_min);
+    }
+
+    #[inline]
+    fn into_blob(self, bx0: usize, by0: usize) -> Blob {
+        debug_assert!(self.n > 0);
+        debug_assert!(self.x_max >= self.x_min);
+        debug_assert!(self.y_max >= self.y_min);
+        Blob {
+            n: self.n,
+            cx: (bx0 as f64) + (self.sx as f64) / (self.n as f64),
+            cy: (by0 as f64) + (self.sy as f64) / (self.n as f64),
+            x0: (bx0 as i32) + self.x_min,
+            y0: (by0 as i32) + self.y_min,
+            x1: (bx0 as i32) + self.x_max,
+            y1: (by0 as i32) + self.y_max,
+            w: self.x_max - self.x_min + 1,
+            h: self.y_max - self.y_min + 1,
         }
     }
 }
@@ -138,6 +226,8 @@ pub(crate) fn blobs_from_mask_hits(
     bx0: usize,
     by0: usize,
 ) -> Vec<Blob> {
+    assert!(w > 0 && h > 0);
+    assert!(mask.len() >= w * h);
     let mut out = Vec::new();
     stack.clear();
     for &(sx0_u16, sy0_u16) in hit_coords {
@@ -149,34 +239,15 @@ pub(crate) fn blobs_from_mask_hits(
         }
         mask[i] = 0;
         stack.push((sx0 as u32, sy0 as u32));
-        let mut n = 0usize;
-        let mut sx = 0usize;
-        let mut sy = 0usize;
-        let mut min_x = i32::MAX;
-        let mut min_y = i32::MAX;
-        let mut max_x = -1i32;
-        let mut max_y = -1i32;
+        let mut acc = BlobAcc::new();
+        let mut iterations = 0usize;
         while let Some((xu, yu)) = stack.pop() {
+            iterations += 1;
+            assert!(iterations < FLOOD_ITERATIONS_MAX);
+            acc.add(xu, yu);
             let x = xu as usize;
             let y = yu as usize;
             let j = y * w + x;
-            n += 1;
-            sx += x;
-            sy += y;
-            let xi = xu as i32;
-            let yi = yu as i32;
-            if xi < min_x {
-                min_x = xi;
-            }
-            if xi > max_x {
-                max_x = xi;
-            }
-            if yi < min_y {
-                min_y = yi;
-            }
-            if yi > max_y {
-                max_y = yi;
-            }
             if x > 0 && mask[j - 1] == 1 {
                 mask[j - 1] = 0;
                 stack.push((xu - 1, yu));
@@ -194,17 +265,7 @@ pub(crate) fn blobs_from_mask_hits(
                 stack.push((xu, yu + 1));
             }
         }
-        out.push(Blob {
-            n,
-            cx: (bx0 as f64) + (sx as f64) / (n as f64),
-            cy: (by0 as f64) + (sy as f64) / (n as f64),
-            x0: (bx0 as i32) + min_x,
-            y0: (by0 as i32) + min_y,
-            x1: (bx0 as i32) + max_x,
-            y1: (by0 as i32) + max_y,
-            w: max_x - min_x + 1,
-            h: max_y - min_y + 1,
-        });
+        out.push(acc.into_blob(bx0, by0));
     }
     out
 }
@@ -221,6 +282,8 @@ pub fn blobs_with_slot<F>(
 where
     F: Fn(usize, usize) -> bool + Sync,
 {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     let bx0 = (x0.floor() as isize).max(0) as usize;
     let by0 = (y0.floor() as isize).max(0) as usize;
     let bx1 = (x1.ceil() as isize).min(img.width as isize - 1);
@@ -261,6 +324,84 @@ where
 }
 
 #[inline]
+fn probe_rgb_neighbor<F>(
+    img: &ImageView<'_>,
+    [bx0, by0, w]: [usize; 3],
+    [nx, ny]: [usize; 2],
+    skip_rect: Option<[usize; 4]>,
+    slot: &mut ScanScratchSlot,
+    test: &F,
+) where
+    F: Fn(u8, u8, u8) -> bool,
+{
+    let ni = ny * w + nx;
+    debug_assert!(ni < slot.mask.len());
+    if slot.mask[ni] != 0 {
+        return;
+    }
+    let px = bx0 + nx;
+    let py = by0 + ny;
+    if let Some([sx0, sy0, sx1, sy1]) = skip_rect
+        && py >= sy0
+        && py <= sy1
+        && px >= sx0
+        && px < sx1
+    {
+        return;
+    }
+    let no = (py * img.width + px) * 4;
+    debug_assert!(no + 3 < img.data.len());
+    slot.hit_coords.push((nx as u16, ny as u16));
+    if test(img.data[no], img.data[no + 1], img.data[no + 2]) {
+        slot.mask[ni] = 1;
+        slot.stack.push((nx as u32, ny as u32));
+    } else {
+        slot.mask[ni] = 2;
+    }
+}
+
+fn flood_rgb_component<F>(
+    img: &ImageView<'_>,
+    [bx0, by0, w, h]: [usize; 4],
+    [sx0, sy0]: [usize; 2],
+    skip_rect: Option<[usize; 4]>,
+    slot: &mut ScanScratchSlot,
+    test: &F,
+) -> Blob
+where
+    F: Fn(u8, u8, u8) -> bool,
+{
+    assert!(w > 0 && h > 0);
+    assert!(sx0 < w && sy0 < h);
+    let i0 = sy0 * w + sx0;
+    slot.mask[i0] = 1;
+    slot.hit_coords.push((sx0 as u16, sy0 as u16));
+    slot.stack.push((sx0 as u32, sy0 as u32));
+    let mut acc = BlobAcc::new();
+    let mut iterations = 0usize;
+    while let Some((xu, yu)) = slot.stack.pop() {
+        iterations += 1;
+        assert!(iterations < FLOOD_ITERATIONS_MAX);
+        acc.add(xu, yu);
+        let x = xu as usize;
+        let y = yu as usize;
+        if x > 0 {
+            probe_rgb_neighbor(img, [bx0, by0, w], [x - 1, y], skip_rect, slot, test);
+        }
+        if x + 1 < w {
+            probe_rgb_neighbor(img, [bx0, by0, w], [x + 1, y], skip_rect, slot, test);
+        }
+        if y > 0 {
+            probe_rgb_neighbor(img, [bx0, by0, w], [x, y - 1], skip_rect, slot, test);
+        }
+        if y + 1 < h {
+            probe_rgb_neighbor(img, [bx0, by0, w], [x, y + 1], skip_rect, slot, test);
+        }
+    }
+    acc.into_blob(bx0, by0)
+}
+
+#[inline]
 pub(crate) fn blobs_rgb_strided_with_slot<F>(
     img: &ImageView<'_>,
     [x0, y0, x1, y1]: [f64; 4],
@@ -272,6 +413,8 @@ pub(crate) fn blobs_rgb_strided_with_slot<F>(
 where
     F: Fn(u8, u8, u8) -> bool,
 {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     let bx0 = (x0.floor() as isize).max(0) as usize;
     let by0 = (y0.floor() as isize).max(0) as usize;
     let bx1 = (x1.ceil() as isize).min(img.width as isize - 1);
@@ -279,34 +422,16 @@ where
     if bx1 < bx0 as isize || by1 < by0 as isize {
         return Vec::new();
     }
-    let bx1 = bx1 as usize;
-    let by1 = by1 as usize;
-    let w = bx1 - bx0 + 1;
-    let h = by1 - by0 + 1;
+    let w = (bx1 as usize) - bx0 + 1;
+    let h = (by1 as usize) - by0 + 1;
     let n_px = w * h;
     let step_y = step_y.max(1);
-
-    let ScanScratchSlot {
-        hit_coords,
-        mask,
-        stack,
-        ..
-    } = slot;
-    if mask.len() < n_px {
-        mask.resize(n_px, 0);
+    if slot.mask.len() < n_px {
+        slot.mask.resize(n_px, 0);
     }
-    hit_coords.clear();
-    stack.clear();
-
+    slot.hit_coords.clear();
+    slot.stack.clear();
     let mut out = Vec::new();
-    let in_skip = |px: usize, py: usize| -> bool {
-        if let Some([sx0, sy0, sx1, sy1]) = skip_rect {
-            py >= sy0 && py <= sy1 && px >= sx0 && px < sx1
-        } else {
-            false
-        }
-    };
-
     for sy0 in (0..h).step_by(step_y) {
         let py0 = by0 + sy0;
         let row_off = sy0 * w;
@@ -314,138 +439,31 @@ where
         let row_data = &img.data[row_base..row_base + w * 4];
         for sx0 in 0..w {
             let px0 = bx0 + sx0;
-            if in_skip(px0, py0) {
+            if let Some([sk_x0, sk_y0, sk_x1, sk_y1]) = skip_rect
+                && py0 >= sk_y0
+                && py0 <= sk_y1
+                && px0 >= sk_x0
+                && px0 < sk_x1
+            {
                 continue;
             }
             let o = sx0 * 4;
-            if !test(row_data[o], row_data[o + 1], row_data[o + 2]) {
-                continue;
+            if slot.mask[row_off + sx0] == 0 && test(row_data[o], row_data[o + 1], row_data[o + 2])
+            {
+                out.push(flood_rgb_component(
+                    img,
+                    [bx0, by0, w, h],
+                    [sx0, sy0],
+                    skip_rect,
+                    slot,
+                    &test,
+                ));
             }
-            let i0 = row_off + sx0;
-            if mask[i0] != 0 {
-                continue;
-            }
-            mask[i0] = 1;
-            hit_coords.push((sx0 as u16, sy0 as u16));
-            stack.push((sx0 as u32, sy0 as u32));
-            let mut n = 0usize;
-            let mut sx = 0usize;
-            let mut sy = 0usize;
-            let mut min_x = i32::MAX;
-            let mut min_y = i32::MAX;
-            let mut max_x = -1i32;
-            let mut max_y = -1i32;
-            while let Some((xu, yu)) = stack.pop() {
-                let x = xu as usize;
-                let y = yu as usize;
-                let j = y * w + x;
-                n += 1;
-                sx += x;
-                sy += y;
-                let xi = xu as i32;
-                let yi = yu as i32;
-                if xi < min_x {
-                    min_x = xi;
-                }
-                if xi > max_x {
-                    max_x = xi;
-                }
-                if yi < min_y {
-                    min_y = yi;
-                }
-                if yi > max_y {
-                    max_y = yi;
-                }
-                if x > 0 {
-                    let ni = j - 1;
-                    if mask[ni] == 0 {
-                        let nx = x - 1;
-                        let ny = y;
-                        if !in_skip(bx0 + nx, by0 + ny) {
-                            let no = ((by0 + ny) * img.width + (bx0 + nx)) * 4;
-                            if test(img.data[no], img.data[no + 1], img.data[no + 2]) {
-                                mask[ni] = 1;
-                                hit_coords.push((nx as u16, ny as u16));
-                                stack.push((xu - 1, yu));
-                            } else {
-                                mask[ni] = 2;
-                                hit_coords.push((nx as u16, ny as u16));
-                            }
-                        }
-                    }
-                }
-                if x + 1 < w {
-                    let ni = j + 1;
-                    if mask[ni] == 0 {
-                        let nx = x + 1;
-                        let ny = y;
-                        if !in_skip(bx0 + nx, by0 + ny) {
-                            let no = ((by0 + ny) * img.width + (bx0 + nx)) * 4;
-                            if test(img.data[no], img.data[no + 1], img.data[no + 2]) {
-                                mask[ni] = 1;
-                                hit_coords.push((nx as u16, ny as u16));
-                                stack.push((xu + 1, yu));
-                            } else {
-                                mask[ni] = 2;
-                                hit_coords.push((nx as u16, ny as u16));
-                            }
-                        }
-                    }
-                }
-                if y > 0 {
-                    let ni = j - w;
-                    if mask[ni] == 0 {
-                        let nx = x;
-                        let ny = y - 1;
-                        if !in_skip(bx0 + nx, by0 + ny) {
-                            let no = ((by0 + ny) * img.width + (bx0 + nx)) * 4;
-                            if test(img.data[no], img.data[no + 1], img.data[no + 2]) {
-                                mask[ni] = 1;
-                                hit_coords.push((nx as u16, ny as u16));
-                                stack.push((xu, yu - 1));
-                            } else {
-                                mask[ni] = 2;
-                                hit_coords.push((nx as u16, ny as u16));
-                            }
-                        }
-                    }
-                }
-                if y + 1 < h {
-                    let ni = j + w;
-                    if mask[ni] == 0 {
-                        let nx = x;
-                        let ny = y + 1;
-                        if !in_skip(bx0 + nx, by0 + ny) {
-                            let no = ((by0 + ny) * img.width + (bx0 + nx)) * 4;
-                            if test(img.data[no], img.data[no + 1], img.data[no + 2]) {
-                                mask[ni] = 1;
-                                hit_coords.push((nx as u16, ny as u16));
-                                stack.push((xu, yu + 1));
-                            } else {
-                                mask[ni] = 2;
-                                hit_coords.push((nx as u16, ny as u16));
-                            }
-                        }
-                    }
-                }
-            }
-            out.push(Blob {
-                n,
-                cx: (bx0 as f64) + (sx as f64) / (n as f64),
-                cy: (by0 as f64) + (sy as f64) / (n as f64),
-                x0: (bx0 as i32) + min_x,
-                y0: (by0 as i32) + min_y,
-                x1: (bx0 as i32) + max_x,
-                y1: (by0 as i32) + max_y,
-                w: max_x - min_x + 1,
-                h: max_y - min_y + 1,
-            });
         }
     }
-
-    for &(hx, hy) in hit_coords.iter() {
-        mask[(hy as usize) * w + (hx as usize)] = 0;
+    for &(hx, hy) in slot.hit_coords.iter() {
+        slot.mask[(hy as usize) * w + (hx as usize)] = 0;
     }
-    hit_coords.clear();
+    slot.hit_coords.clear();
     out
 }

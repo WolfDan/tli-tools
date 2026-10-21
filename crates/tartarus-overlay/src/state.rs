@@ -8,10 +8,18 @@ use tartarus_scan::ScanProfile;
 use crate::capture::GameWindowPlacement;
 use crate::tray::ControlHub;
 
+const _: () = {
+    assert!(std::mem::size_of::<PanelLayout>() <= 4);
+    assert!(std::mem::size_of::<UiToWorker>() <= 24);
+};
+
 pub fn read_process_rss_mb() -> f64 {
-    memory_stats::memory_stats()
+    let rss_mb = memory_stats::memory_stats()
         .map(|s| (s.physical_mem as f64) / (1024.0 * 1024.0))
-        .unwrap_or(0.0)
+        .unwrap_or(0.0);
+    assert!(rss_mb.is_finite());
+    assert!(rss_mb >= 0.0);
+    rss_mb
 }
 
 #[derive(Clone, Debug)]
@@ -32,7 +40,8 @@ pub enum PanelLayout {
     Inspector { tools_drawer: bool },
     /// Manually folded by the user to a single header bar.
     FoldedManual,
-    /// Automatically folded during a Riot cutscene; remembers which layout to restore when Riot ends.
+    /// Automatically folded during a Riot cutscene; remembers which layout
+    /// to restore when Riot ends.
     FoldedForRiot {
         restore_inspector: bool,
         restore_tools: bool,
@@ -56,20 +65,26 @@ impl PanelLayout {
     }
 
     pub fn toggle_fold(&mut self) {
-        *self = if self.is_folded() {
+        let was_folded = self.is_folded();
+        *self = if was_folded {
             Self::Compact
         } else {
             Self::FoldedManual
         };
+        assert_ne!(self.is_folded(), was_folded);
+        assert!(!self.is_inspector_open());
     }
 
     pub fn toggle_inspector(&mut self) {
+        let was_open = self.is_inspector_open();
         *self = match *self {
             Self::Inspector { .. } => Self::Compact,
             _ => Self::Inspector {
                 tools_drawer: false,
             },
         };
+        assert_ne!(self.is_inspector_open(), was_open);
+        assert!(!self.is_folded());
     }
 
     pub fn open_inspector(&mut self, with_tools_drawer: bool) {
@@ -80,18 +95,24 @@ impl PanelLayout {
         *self = Self::Inspector {
             tools_drawer: cur_tools || with_tools_drawer,
         };
+        assert!(self.is_inspector_open());
+        assert!(!self.is_folded());
+        assert!(!with_tools_drawer || self.is_tools_drawer_open());
     }
 
     pub fn toggle_tools_drawer(&mut self) {
+        let prev_tools = self.is_tools_drawer_open();
         if let Self::Inspector { tools_drawer } = self {
             *tools_drawer = !*tools_drawer;
         } else {
             *self = Self::Inspector { tools_drawer: true };
         }
+        assert!(self.is_inspector_open());
+        assert_ne!(self.is_tools_drawer_open(), prev_tools);
     }
 
     pub fn apply_riot(&mut self, riot_on: bool) -> bool {
-        if riot_on {
+        let changed = if riot_on {
             match *self {
                 Self::Compact => {
                     *self = Self::FoldedForRiot {
@@ -124,7 +145,10 @@ impl PanelLayout {
             true
         } else {
             false
-        }
+        };
+        assert!(!riot_on || self.is_folded());
+        assert!(riot_on || !matches!(*self, Self::FoldedForRiot { .. }));
+        changed
     }
 }
 
@@ -148,6 +172,8 @@ impl DisplayTarget {
         if matches!(self, Self::Auto(None)) {
             *self = Self::Auto(fallback);
         }
+        assert!(fallback.is_none() || self.id().is_some());
+        assert!(matches!(self, Self::Auto(_) | Self::Manual(_)));
     }
 }
 
@@ -169,7 +195,7 @@ pub struct OverlaySnapshot {
 }
 
 pub fn initial_snapshot() -> OverlaySnapshot {
-    OverlaySnapshot {
+    let snap = OverlaySnapshot {
         model: BoardModel::blank(),
         advice: AdviceSnapshot::default(),
         phase: RunPhase::WaitingForRun,
@@ -183,7 +209,10 @@ pub fn initial_snapshot() -> OverlaySnapshot {
         solve_ms: 0.0,
         rss_mb: read_process_rss_mb(),
         status_text: "Waiting for the next move".into(),
-    }
+    };
+    assert!(!snap.status_text.is_empty());
+    assert!(snap.rss_mb >= 0.0);
+    snap
 }
 
 #[derive(Clone, Debug)]

@@ -8,14 +8,19 @@ use super::search::playout;
 
 include!("../tool_combos.rs");
 
-pub fn tool_gains(st: &SimState, options: &[ToolId]) -> Option<[f64; 31]> {
-    if st.mode == GameMode::Challenge {
-        return None;
-    }
-    let held = st.tools_slice();
+const _: () = {
+    assert!(ALL_TOOLS.len() == 31);
+    assert!(COMBO_1.len() == 31);
+    assert!(COMBO_2.len() == 31);
+};
+
+fn base_tool_gains(held: &[ToolId], options: &[ToolId]) -> Option<[f64; 31]> {
+    assert!(held.len() <= ALL_TOOLS.len());
+    assert!(options.len() <= ALL_TOOLS.len());
     let mut gains = [f64::NAN; 31];
     if held.is_empty() {
         for &id in options {
+            assert!(id.idx() < 31);
             let v = COMBO_1[id.idx()];
             if v.is_nan() {
                 return None;
@@ -24,9 +29,11 @@ pub fn tool_gains(st: &SimState, options: &[ToolId]) -> Option<[f64; 31]> {
         }
     } else {
         for &id in options {
+            assert!(id.idx() < 31);
             let mut sum = 0.0;
             let mut n = 0usize;
             for &h in held {
+                assert!(h.idx() < 31);
                 let a = COMBO_2[h.idx()][id.idx()];
                 let b = COMBO_1[h.idx()];
                 if a.is_nan() || b.is_nan() {
@@ -41,9 +48,21 @@ pub fn tool_gains(st: &SimState, options: &[ToolId]) -> Option<[f64; 31]> {
             gains[id.idx()] = sum / (n as f64);
         }
     }
+    Some(gains)
+}
 
-    let days_rem = st.max_days.saturating_sub(st.day) as f64;
+pub fn tool_gains(st: &SimState, options: &[ToolId]) -> Option<[f64; 31]> {
+    assert!((st.position as usize) < st.cells.len());
+    assert!(options.len() <= ALL_TOOLS.len());
+    if st.mode == GameMode::Challenge {
+        return None;
+    }
+    let held = st.tools_slice();
+    let mut gains = base_tool_gains(held, options)?;
+
+    let days_rem = st.days_max.saturating_sub(st.day) as f64;
     let horizon = (days_rem / 16.0).clamp(0.15, 1.15);
+    assert!(horizon.is_finite());
     let sealed_cnt = st.cells.iter().filter(|c| c.sealed).count() as f64;
     let open_inmates = st
         .cells
@@ -97,6 +116,8 @@ pub struct RerollOdds {
 }
 
 pub fn reroll_odds(st: &SimState, options: &[ToolId]) -> Option<RerollOdds> {
+    assert!((st.position as usize) < st.cells.len());
+    assert!(options.len() <= ALL_TOOLS.len());
     let mut exclude = ToolMask(0);
     for &t in options {
         exclude.insert(t);
@@ -114,6 +135,7 @@ pub fn reroll_odds(st: &SimState, options: &[ToolId]) -> Option<RerollOdds> {
     let mut ulen = 0usize;
     for &t in options.iter().chain(pool[..plen].iter()) {
         if !union[..ulen].contains(&t) {
+            assert!(ulen < union.len());
             union[ulen] = t;
             ulen += 1;
         }
@@ -131,6 +153,7 @@ pub fn reroll_odds(st: &SimState, options: &[ToolId]) -> Option<RerollOdds> {
             }
         }
     }
+    assert!(n > 0);
     let now = options
         .iter()
         .map(|&id| gains[id.idx()])
@@ -142,6 +165,9 @@ pub fn reroll_odds(st: &SimState, options: &[ToolId]) -> Option<RerollOdds> {
 }
 
 pub fn wants_reroll(st: &SimState, p: &SolverParams, options: &[ToolId]) -> bool {
+    assert!((st.position as usize) < st.cells.len());
+    assert!(p.reroll_margin.is_finite());
+    assert!(options.len() <= ALL_TOOLS.len());
     if !st.can_reroll() || !p.tool_sets {
         return false;
     }
@@ -153,6 +179,9 @@ pub fn wants_reroll(st: &SimState, p: &SolverParams, options: &[ToolId]) -> bool
 }
 
 pub fn pick_tool(st: &SimState, p: &SolverParams, options: &[ToolId]) -> ToolId {
+    assert!(!options.is_empty());
+    assert!(options.len() <= ALL_TOOLS.len());
+    assert!(p.tier_base > 0.0);
     if p.tool_sets
         && let Some(gains) = tool_gains(st, options)
     {
@@ -173,13 +202,17 @@ pub fn pick_tool(st: &SimState, p: &SolverParams, options: &[ToolId]) -> ToolId 
 }
 
 pub fn best_hunt(st: &SimState, ctx: &Context) -> Option<(u8, f64)> {
+    assert!((st.position as usize) < st.cells.len());
+    assert!(ctx.p.tier_base.is_finite());
     if !st.can_hunt_now() {
         return None;
     }
     let lion = st.cells[st.position as usize].inmate?;
     let (targets, tlen) = st.hunt_targets();
+    assert!(tlen <= targets.len());
     let mut best: Option<(u8, f64)> = None;
     for &n in &targets[..tlen] {
+        assert!((n as usize) < st.cells.len());
         let Some(meal) = st.cells[n as usize].inmate else {
             continue;
         };
@@ -206,6 +239,7 @@ pub fn best_hunt(st: &SimState, ctx: &Context) -> Option<(u8, f64)> {
 /// across all 31 active S16 Torture Instruments (including `Claws` and `Trap`).
 pub fn simulate_tool_combos(runs_per_combo: usize, seed: u32) -> (f64, [f64; 31], [[f64; 31]; 31]) {
     let runs = runs_per_combo.max(1);
+    assert!(runs > 0);
     let p = &REWARDS_PROFILE;
     let run_set = |tools: &[ToolId]| -> f64 {
         let sum: u64 = (0..runs)
@@ -224,6 +258,7 @@ pub fn simulate_tool_combos(runs_per_combo: usize, seed: u32) -> (f64, [f64; 31]
     };
 
     let base = run_set(&[]);
+    assert!(base.is_finite());
     let mut combo_1 = [0.0f64; 31];
     for t in ALL_TOOLS {
         combo_1[t.idx()] = run_set(&[t]);
@@ -236,10 +271,13 @@ pub fn simulate_tool_combos(runs_per_combo: usize, seed: u32) -> (f64, [f64; 31]
             combo_2[j][i] = v;
         }
     }
+    assert!(base >= 0.0);
     (base, combo_1, combo_2)
 }
 
 pub fn format_tool_combos_rs(base: f64, combo_1: &[f64; 31], combo_2: &[[f64; 31]; 31]) -> String {
+    assert!(base.is_finite());
+    assert!(base >= 0.0);
     let mut code = String::from(
         "// Auto-generated by `tartarus-data --emit-combos` (pure-Rust Rayon simulation).\n",
     );
@@ -265,5 +303,6 @@ pub fn format_tool_combos_rs(base: f64, combo_1: &[f64; 31], combo_2: &[[f64; 31
         code.push_str("],\n");
     }
     code.push_str("];\n");
+    assert!(!code.is_empty());
     code
 }

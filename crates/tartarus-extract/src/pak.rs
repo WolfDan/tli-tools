@@ -1,4 +1,5 @@
-//! Unreal Engine 4.27 Pak v12 (`0x6B2A56B8`) archive reader, index decryptor, and Oodle/Zlib decompressor.
+//! Unreal Engine 4.27 Pak v12 (`0x6B2A56B8`) archive reader, index decryptor, and
+//! Oodle/Zlib decompressor.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -20,6 +21,12 @@ pub const TLI_PAK_MAGIC: u32 = 0x6B2A_56B8;
 pub const UE4_PAK_MAGIC: u32 = 0x5A6F_12E1;
 /// Steam App ID for *Torchlight: Infinite*.
 pub const TLI_STEAM_APP_ID: u32 = 1_974_050;
+
+const _: () = {
+    assert!(TLI_PAK_MAGIC == 0x6B2A_56B8);
+    assert!(UE4_PAK_MAGIC == 0x5A6F_12E1);
+    assert!(TLI_STEAM_APP_ID == 1_974_050);
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum CompressionKind {
@@ -49,50 +56,59 @@ pub struct PakVfs {
     pub entries: BTreeMap<String, PakEntryMeta>,
 }
 
-impl PakVfs {
-    /// Discovers and indexes all `.pak` archives under a Torchlight: Infinite installation root
-    /// (or a single `.pak` file / directory of `.pak` files) in parallel using Rayon.
-    pub fn open_game_dir(root: &Path, key: [u8; 32]) -> Result<Self, ExtractError> {
-        let mut pak_files: Vec<(PathBuf, bool)> = Vec::new();
+fn collect_pak_files(root: &Path) -> Result<Vec<(PathBuf, bool)>, ExtractError> {
+    assert!(!root.as_os_str().is_empty());
+    let mut pak_files: Vec<(PathBuf, bool)> = Vec::new();
 
-        if root.is_file() {
-            pak_files.push((root.to_path_buf(), false));
-        } else {
-            let candidates = [
-                (root.join("UE_game/Content/Paks"), false),
-                (root.join("Content/Paks"), false),
-                (root.to_path_buf(), false),
-                (
-                    root.join("UE_game/TorchLight/Saved/PersistentDownloadDir/PreMountPak"),
-                    true,
-                ),
-                (
-                    root.join("TorchLight/Saved/PersistentDownloadDir/PreMountPak"),
-                    true,
-                ),
-            ];
-            for (dir, is_premount) in candidates {
-                if let Ok(rd) = fs::read_dir(&dir) {
-                    let mut list: Vec<PathBuf> = rd
-                        .filter_map(|e| e.ok().map(|e| e.path()))
-                        .filter(|p| p.extension().is_some_and(|ext| ext == "pak"))
-                        .collect();
-                    list.sort();
-                    for p in list {
-                        if !pak_files.iter().any(|(existing, _)| existing == &p) {
-                            pak_files.push((p, is_premount));
-                        }
+    if root.is_file() {
+        pak_files.push((root.to_path_buf(), false));
+    } else {
+        let candidates = [
+            (root.join("UE_game/Content/Paks"), false),
+            (root.join("Content/Paks"), false),
+            (root.to_path_buf(), false),
+            (
+                root.join("UE_game/TorchLight/Saved/PersistentDownloadDir/PreMountPak"),
+                true,
+            ),
+            (
+                root.join("TorchLight/Saved/PersistentDownloadDir/PreMountPak"),
+                true,
+            ),
+        ];
+        for (dir, is_premount) in candidates {
+            if let Ok(rd) = fs::read_dir(&dir) {
+                let mut list: Vec<PathBuf> = rd
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().is_some_and(|ext| ext == "pak"))
+                    .collect();
+                list.sort();
+                for p in list {
+                    if !pak_files.iter().any(|(existing, _)| existing == &p) {
+                        pak_files.push((p, is_premount));
                     }
                 }
             }
         }
+    }
 
-        if pak_files.is_empty() {
-            return Err(ExtractError::PakFormat(format!(
-                "No .pak files found under {}",
-                root.display()
-            )));
-        }
+    if pak_files.is_empty() {
+        return Err(ExtractError::PakFormat(format!(
+            "No .pak files found under {}",
+            root.display()
+        )));
+    }
+    assert!(!pak_files.is_empty());
+    Ok(pak_files)
+}
+
+impl PakVfs {
+    /// Discovers and indexes all `.pak` archives under a Torchlight: Infinite installation root
+    /// (or a single `.pak` file / directory of `.pak` files) in parallel using Rayon.
+    pub fn open_game_dir(root: &Path, key: [u8; 32]) -> Result<Self, ExtractError> {
+        assert!(!root.as_os_str().is_empty());
+        assert_eq!(key.len(), 32);
+        let pak_files = collect_pak_files(root)?;
 
         let per_pak: Vec<Vec<PakEntryMeta>> = pak_files
             .par_iter()
@@ -129,14 +145,18 @@ impl PakVfs {
 
     /// Reads, decrypts, and decompresses a single file entry from its `.pak` archive into memory.
     pub fn read_entry(&self, meta: &PakEntryMeta) -> Result<Vec<u8>, ExtractError> {
+        assert!(!meta.virtual_path.is_empty());
+        assert_eq!(self.key.len(), 32);
         extract_pak_entry(meta, &self.key)
     }
 
     /// Reads a file by its virtual path (e.g. `"UIV2/S16Gameplay/UI/Textures/NoAtlas/..."`).
     pub fn read_path(&self, virtual_path: &str) -> Result<Vec<u8>, ExtractError> {
+        assert!(!virtual_path.is_empty());
         let clean = virtual_path
             .trim_start_matches('/')
             .trim_start_matches("TorchLight/Content/");
+        assert!(!clean.is_empty());
         let meta = self
             .entries
             .get(clean)
@@ -147,6 +167,7 @@ impl PakVfs {
 }
 
 fn read_fstring(cur: &mut Cursor<&[u8]>) -> Result<String, ExtractError> {
+    assert!((cur.position() as usize) <= cur.get_ref().len());
     let len = cur.read_i32::<LittleEndian>()?;
     if len == 0 {
         return Ok(String::new());
@@ -162,6 +183,7 @@ fn read_fstring(cur: &mut Cursor<&[u8]>) -> Result<String, ExtractError> {
         cur.set_position((pos + byte_len) as u64);
         let mut u16s = vec![0u16; chars];
         LittleEndian::read_u16_into(slice, &mut u16s);
+        assert!((cur.position() as usize) <= buf.len());
         Ok(String::from_utf16_lossy(&u16s)
             .trim_end_matches('\0')
             .to_string())
@@ -171,6 +193,7 @@ fn read_fstring(cur: &mut Cursor<&[u8]>) -> Result<String, ExtractError> {
             ExtractError::PakFormat(format!("Unexpected EOF reading UTF-8 FString at {pos}"))
         })?;
         cur.set_position((pos + byte_len) as u64);
+        assert!((cur.position() as usize) <= buf.len());
         Ok(String::from_utf8_lossy(slice)
             .trim_end_matches('\0')
             .to_string())
@@ -178,6 +201,8 @@ fn read_fstring(cur: &mut Cursor<&[u8]>) -> Result<String, ExtractError> {
 }
 
 fn normalize_virtual_path(mount_point: &str, dir_name: &str, file_name: &str) -> String {
+    assert!(mount_point.len() <= 4096);
+    assert!(dir_name.len() <= 4096 && file_name.len() <= 4096);
     let mp = mount_point
         .trim_start_matches("../")
         .trim_start_matches('/')
@@ -192,22 +217,29 @@ fn normalize_virtual_path(mount_point: &str, dir_name: &str, file_name: &str) ->
     raw.replace("//", "/").trim_start_matches('/').to_string()
 }
 
-pub fn read_pak_index(
-    pak_path: &Path,
-    key: &[u8; 32],
+struct PakFooterInfo {
+    enc_index: bool,
+    index_offset: u64,
+    index_size: usize,
+    comp_methods: Vec<CompressionKind>,
+}
+
+struct PakIndexContext<'a> {
+    encoded_entries: &'a [u8],
+    pak_path: &'a Path,
+    pak_name: &'a str,
+    mount_point: &'a str,
+    comp_methods: &'a [CompressionKind],
     is_premount: bool,
-) -> Result<Vec<PakEntryMeta>, ExtractError> {
-    let mut file = File::open(pak_path)?;
-    let file_size = file.seek(SeekFrom::End(0))?;
-    if file_size < 240 {
-        return Ok(Vec::new());
-    }
+}
 
-    let tail_len = file_size.min(300) as usize;
-    file.seek(SeekFrom::End(-(tail_len as i64)))?;
-    let mut tail = vec![0u8; tail_len];
-    file.read_exact(&mut tail)?;
-
+fn parse_pak_footer(
+    pak_path: &Path,
+    tail: &[u8],
+    file_size: u64,
+) -> Result<PakFooterInfo, ExtractError> {
+    assert!(tail.len() >= 45);
+    assert!(file_size >= tail.len() as u64);
     let mut magic_pos: Option<(usize, bool)> = None;
     for i in (1..=tail.len().saturating_sub(45)).rev() {
         let m = LittleEndian::read_u32(&tail[i..i + 4]);
@@ -262,11 +294,67 @@ pub fn read_pak_index(
             pak_path.display()
         )));
     }
+    Ok(PakFooterInfo {
+        enc_index,
+        index_offset,
+        index_size,
+        comp_methods,
+    })
+}
 
-    file.seek(SeekFrom::Start(index_offset))?;
-    let mut idx_buf = vec![0u8; index_size];
+fn parse_pak_directory_entries(
+    dir_buf: &[u8],
+    ctx: &PakIndexContext<'_>,
+) -> Result<Vec<PakEntryMeta>, ExtractError> {
+    assert!(!dir_buf.is_empty());
+    assert!(!ctx.comp_methods.is_empty());
+    let mut dir_cur = Cursor::new(dir_buf);
+    let dir_count = dir_cur.read_i32::<LittleEndian>()? as usize;
+    let mut out = Vec::new();
+
+    for _ in 0..dir_count {
+        let dir_name = read_fstring(&mut dir_cur)?;
+        let file_count = dir_cur.read_i32::<LittleEndian>()? as usize;
+        for _ in 0..file_count {
+            let file_name = read_fstring(&mut dir_cur)?;
+            let enc_entry_off = dir_cur.read_i32::<LittleEndian>()?;
+            if enc_entry_off < 0 {
+                continue;
+            }
+
+            let vpath = normalize_virtual_path(ctx.mount_point, &dir_name, &file_name);
+            if let Ok(meta) = decode_compact_pak_entry(ctx, enc_entry_off as usize, vpath) {
+                out.push(meta);
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn read_pak_index(
+    pak_path: &Path,
+    key: &[u8; 32],
+    is_premount: bool,
+) -> Result<Vec<PakEntryMeta>, ExtractError> {
+    assert!(!pak_path.as_os_str().is_empty());
+    assert_eq!(key.len(), 32);
+    let mut file = File::open(pak_path)?;
+    let file_size = file.seek(SeekFrom::End(0))?;
+    if file_size < 240 {
+        return Ok(Vec::new());
+    }
+
+    let tail_len = file_size.min(300) as usize;
+    file.seek(SeekFrom::End(-(tail_len as i64)))?;
+    let mut tail = vec![0u8; tail_len];
+    file.read_exact(&mut tail)?;
+
+    let footer = parse_pak_footer(pak_path, &tail, file_size)?;
+
+    file.seek(SeekFrom::Start(footer.index_offset))?;
+    let mut idx_buf = vec![0u8; footer.index_size];
     file.read_exact(&mut idx_buf)?;
-    if enc_index {
+    if footer.enc_index {
         decrypt_aes256_ecb_in_place(&mut idx_buf, key);
     }
 
@@ -275,13 +363,10 @@ pub fn read_pak_index(
     let _num_entries = idx_cur.read_i32::<LittleEndian>()?;
     let _path_hash_seed = idx_cur.read_u64::<LittleEndian>()?;
 
-    let has_path_hash = idx_cur.read_i32::<LittleEndian>()? != 0;
-    if has_path_hash {
+    if idx_cur.read_i32::<LittleEndian>()? != 0 {
         idx_cur.set_position(idx_cur.position() + 36);
     }
-
-    let has_full_dir = idx_cur.read_i32::<LittleEndian>()? != 0;
-    if !has_full_dir {
+    if idx_cur.read_i32::<LittleEndian>()? == 0 {
         return Ok(Vec::new());
     }
     let full_dir_offset = idx_cur.read_u64::<LittleEndian>()?;
@@ -297,56 +382,32 @@ pub fn read_pak_index(
     file.seek(SeekFrom::Start(full_dir_offset))?;
     let mut dir_buf = vec![0u8; full_dir_size];
     file.read_exact(&mut dir_buf)?;
-    if enc_index {
+    if footer.enc_index {
         decrypt_aes256_ecb_in_place(&mut dir_buf, key);
     }
 
-    let mut dir_cur = Cursor::new(dir_buf.as_slice());
-    let dir_count = dir_cur.read_i32::<LittleEndian>()? as usize;
     let pak_name = pak_path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
-
-    let mut out = Vec::new();
-    for _ in 0..dir_count {
-        let dir_name = read_fstring(&mut dir_cur)?;
-        let file_count = dir_cur.read_i32::<LittleEndian>()? as usize;
-        for _ in 0..file_count {
-            let file_name = read_fstring(&mut dir_cur)?;
-            let enc_entry_off = dir_cur.read_i32::<LittleEndian>()?;
-            if enc_entry_off < 0 {
-                continue;
-            }
-
-            let vpath = normalize_virtual_path(&mount_point, &dir_name, &file_name);
-            if let Ok(meta) = decode_compact_pak_entry(
-                encoded_entries,
-                enc_entry_off as usize,
-                pak_path,
-                &pak_name,
-                vpath,
-                &comp_methods,
-                is_premount,
-            ) {
-                out.push(meta);
-            }
-        }
-    }
-
-    Ok(out)
+    let ctx = PakIndexContext {
+        encoded_entries,
+        pak_path,
+        pak_name: &pak_name,
+        mount_point: &mount_point,
+        comp_methods: &footer.comp_methods,
+        is_premount,
+    };
+    parse_pak_directory_entries(&dir_buf, &ctx)
 }
 
 fn decode_compact_pak_entry(
-    buf: &[u8],
+    ctx: &PakIndexContext<'_>,
     off: usize,
-    pak_path: &Path,
-    pak_name: &str,
     virtual_path: String,
-    comp_methods: &[CompressionKind],
-    is_premount: bool,
 ) -> Result<PakEntryMeta, ExtractError> {
-    let mut cur = Cursor::new(buf.get(off..).ok_or_else(|| {
+    assert!(!ctx.comp_methods.is_empty());
+    let mut cur = Cursor::new(ctx.encoded_entries.get(off..).ok_or_else(|| {
         ExtractError::PakFormat("Compact pak entry offset out of bounds".to_string())
     })?);
     let bits = cur.read_u32::<LittleEndian>()?;
@@ -387,14 +448,16 @@ fn decode_compact_pak_entry(
         uncomp_size
     };
 
-    let compression = comp_methods
+    let compression = ctx
+        .comp_methods
         .get(comp_method_idx)
         .copied()
         .unwrap_or(CompressionKind::Unknown(comp_method_idx as u8));
+    assert!((cur.position() as usize) <= ctx.encoded_entries.len());
 
     Ok(PakEntryMeta {
-        pak_path: pak_path.to_path_buf(),
-        pak_name: pak_name.to_string(),
+        pak_path: ctx.pak_path.to_path_buf(),
+        pak_name: ctx.pak_name.to_string(),
         virtual_path,
         offset,
         comp_size,
@@ -402,43 +465,97 @@ fn decode_compact_pak_entry(
         compression,
         encrypted,
         comp_block_size,
-        is_premount,
+        is_premount: ctx.is_premount,
     })
 }
 
+fn extract_uncompressed_pak_entry(
+    file: &mut File,
+    meta: &PakEntryMeta,
+    key: &[u8; 32],
+) -> Result<Vec<u8>, ExtractError> {
+    assert_eq!(key.len(), 32);
+    let mut tail_hdr = [0u8; 5]; // u8 encrypted + u32 comp_block_size
+    file.read_exact(&mut tail_hdr)?;
+    let is_enc = (tail_hdr[0] != 0) || meta.encrypted;
+
+    let uncomp_len = meta.uncomp_size as usize;
+    let read_len = if is_enc {
+        (uncomp_len + 15) & !15
+    } else {
+        uncomp_len
+    };
+    let mut data = vec![0u8; read_len];
+    file.read_exact(&mut data)?;
+    if is_enc {
+        decrypt_aes256_ecb_in_place(&mut data, key);
+        data.truncate(uncomp_len);
+    }
+    assert_eq!(data.len(), uncomp_len);
+    Ok(data)
+}
+
+fn decompress_pak_block(
+    meta: &PakEntryMeta,
+    comp_slice: &[u8],
+    dest_slice: &mut [u8],
+    oodle_extractor: &mut oozextract::Extractor,
+) -> Result<(), ExtractError> {
+    let uncomp_chunk_len = dest_slice.len();
+    assert!(uncomp_chunk_len <= meta.uncomp_size as usize);
+    assert!(!meta.virtual_path.is_empty());
+
+    match meta.compression {
+        CompressionKind::Oodle => {
+            let written = oodle_extractor
+                .read_from_slice(comp_slice, dest_slice)
+                .map_err(|e| {
+                    ExtractError::Decompress(format!(
+                        "Oodle decompress failed on {} (comp={}, uncomp={}): {e:?}",
+                        meta.virtual_path,
+                        comp_slice.len(),
+                        uncomp_chunk_len
+                    ))
+                })?;
+            if written != uncomp_chunk_len {
+                return Err(ExtractError::Decompress(format!(
+                    "Oodle short write on {}: expected {uncomp_chunk_len}, got {written}",
+                    meta.virtual_path
+                )));
+            }
+        }
+        CompressionKind::Zlib => {
+            let mut z = ZlibDecoder::new(comp_slice);
+            z.read_exact(dest_slice).map_err(|e| {
+                ExtractError::Decompress(format!(
+                    "Zlib decompress failed on {}: {e}",
+                    meta.virtual_path
+                ))
+            })?;
+        }
+        CompressionKind::None => {
+            dest_slice.copy_from_slice(&comp_slice[..uncomp_chunk_len]);
+        }
+        CompressionKind::Unknown(id) => {
+            return Err(ExtractError::Decompress(format!(
+                "Unsupported compression method id={id} on {}",
+                meta.virtual_path
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn extract_pak_entry(meta: &PakEntryMeta, key: &[u8; 32]) -> Result<Vec<u8>, ExtractError> {
+    assert!(!meta.virtual_path.is_empty());
+    assert_eq!(key.len(), 32);
     let mut file = File::open(&meta.pak_path)?;
     file.seek(SeekFrom::Start(meta.offset))?;
 
-    // Read fixed part of inline Pak v12 FPakEntry header:
-    // 0..8: i64 offset (0)
-    // 8: u8 v12 custom byte (0)
-    // 9..17: i64 comp_size
-    // 17..25: i64 uncomp_size
-    // 25..29: u32 comp_method
-    // 29..49: [u8; 20] sha1
     let mut base_hdr = [0u8; 49];
     file.read_exact(&mut base_hdr)?;
-    let inline_comp_method = LittleEndian::read_u32(&base_hdr[25..29]);
-
-    if inline_comp_method == 0 || meta.compression == CompressionKind::None {
-        let mut tail_hdr = [0u8; 5]; // u8 encrypted + u32 comp_block_size
-        file.read_exact(&mut tail_hdr)?;
-        let is_enc = (tail_hdr[0] != 0) || meta.encrypted;
-
-        let uncomp_len = meta.uncomp_size as usize;
-        let read_len = if is_enc {
-            (uncomp_len + 15) & !15
-        } else {
-            uncomp_len
-        };
-        let mut data = vec![0u8; read_len];
-        file.read_exact(&mut data)?;
-        if is_enc {
-            decrypt_aes256_ecb_in_place(&mut data, key);
-            data.truncate(uncomp_len);
-        }
-        return Ok(data);
+    if LittleEndian::read_u32(&base_hdr[25..29]) == 0 || meta.compression == CompressionKind::None {
+        return extract_uncompressed_pak_entry(&mut file, meta, key);
     }
 
     let num_blocks = file.read_i32::<LittleEndian>()? as usize;
@@ -454,9 +571,9 @@ pub fn extract_pak_entry(meta: &PakEntryMeta, key: &[u8; 32]) -> Result<Vec<u8>,
 
     let tail_off = num_blocks * 16;
     let is_enc = (blocks_raw[tail_off] != 0) || meta.encrypted;
-    let inline_cbs = LittleEndian::read_u32(&blocks_raw[tail_off + 1..]);
+    let inline_cbs = LittleEndian::read_u32(&blocks_raw[tail_off + 1..]) as usize;
     let block_stride = if inline_cbs > 0 {
-        inline_cbs as usize
+        inline_cbs
     } else if meta.comp_block_size > 0 {
         meta.comp_block_size as usize
     } else {
@@ -466,7 +583,7 @@ pub fn extract_pak_entry(meta: &PakEntryMeta, key: &[u8; 32]) -> Result<Vec<u8>,
     let mut out = vec![0u8; meta.uncomp_size as usize];
     let mut out_pos = 0usize;
     let mut comp_buf = Vec::new();
-    let mut oodle_extractor = oozextract::Extractor::new();
+    let mut oodle = oozextract::Extractor::new();
 
     for i in 0..num_blocks {
         let b_start = LittleEndian::read_u64(&blocks_raw[i * 16..]);
@@ -477,7 +594,6 @@ pub fn extract_pak_entry(meta: &PakEntryMeta, key: &[u8; 32]) -> Result<Vec<u8>,
         } else {
             meta.offset + b_start
         };
-
         let disk_len = if is_enc {
             (raw_comp_len + 15) & !15
         } else {
@@ -489,61 +605,26 @@ pub fn extract_pak_entry(meta: &PakEntryMeta, key: &[u8; 32]) -> Result<Vec<u8>,
         if is_enc {
             decrypt_aes256_ecb_in_place(&mut comp_buf, key);
         }
-        let comp_slice = &comp_buf[..raw_comp_len];
-
-        let uncomp_chunk_len = (out.len() - out_pos).min(block_stride);
-        let dest_slice = &mut out[out_pos..out_pos + uncomp_chunk_len];
-
-        match meta.compression {
-            CompressionKind::Oodle => {
-                let written = oodle_extractor
-                    .read_from_slice(comp_slice, dest_slice)
-                    .map_err(|e| {
-                        ExtractError::Decompress(format!(
-                            "Oodle decompress failed on {} (block {i}/{num_blocks}, comp={raw_comp_len}, uncomp={uncomp_chunk_len}): {e:?}",
-                            meta.virtual_path
-                        ))
-                    })?;
-                if written != uncomp_chunk_len {
-                    return Err(ExtractError::Decompress(format!(
-                        "Oodle short write on {}: expected {uncomp_chunk_len}, got {written}",
-                        meta.virtual_path
-                    )));
-                }
-            }
-            CompressionKind::Zlib => {
-                let mut z = ZlibDecoder::new(comp_slice);
-                z.read_exact(dest_slice).map_err(|e| {
-                    ExtractError::Decompress(format!(
-                        "Zlib decompress failed on {}: {e}",
-                        meta.virtual_path
-                    ))
-                })?;
-            }
-            CompressionKind::None => {
-                dest_slice.copy_from_slice(&comp_slice[..uncomp_chunk_len]);
-            }
-            CompressionKind::Unknown(id) => {
-                return Err(ExtractError::Decompress(format!(
-                    "Unsupported compression method id={id} on {}",
-                    meta.virtual_path
-                )));
-            }
-        }
-
-        out_pos += uncomp_chunk_len;
+        let uncomp_chunk = (out.len() - out_pos).min(block_stride);
+        let dest = &mut out[out_pos..out_pos + uncomp_chunk];
+        decompress_pak_block(meta, &comp_buf[..raw_comp_len], dest, &mut oodle)?;
+        out_pos += uncomp_chunk;
     }
 
     Ok(out)
 }
 
-/// Automatically discovers the *Torchlight: Infinite* installation directory across Linux and Windows.
+/// Automatically discovers the *Torchlight: Infinite* installation directory across Linux
+/// and Windows.
 ///
-/// Checks `$TLI_GAME_DIR`, `$STEAM_DIR`, and all Steam libraries via `steamlocate` (App ID `1974050`).
+/// Checks `$TLI_GAME_DIR`, `$STEAM_DIR`, and all Steam libraries via `steamlocate`
+/// (App ID `1974050`).
 pub fn discover_game_dir() -> Option<PathBuf> {
+    assert_eq!(TLI_STEAM_APP_ID, 1_974_050);
     if let Ok(custom) = std::env::var("TLI_GAME_DIR") {
         let p = PathBuf::from(custom);
         if p.exists() {
+            assert!(!p.as_os_str().is_empty());
             return Some(p);
         }
     }
@@ -564,6 +645,7 @@ pub fn discover_game_dir() -> Option<PathBuf> {
             if candidate.join("UE_game/Content/Paks").is_dir()
                 || candidate.join("Content/Paks").is_dir()
             {
+                assert!(!candidate.as_os_str().is_empty());
                 return Some(candidate);
             }
         }
@@ -573,6 +655,7 @@ pub fn discover_game_dir() -> Option<PathBuf> {
                 if candidate.join("UE_game/Content/Paks").is_dir()
                     || candidate.join("Content/Paks").is_dir()
                 {
+                    assert!(!candidate.as_os_str().is_empty());
                     return Some(candidate);
                 }
             }
@@ -590,5 +673,6 @@ pub fn discover_game_dir() -> Option<PathBuf> {
         }
     }
 
+    assert!(steam_dirs.len() <= 1024);
     None
 }

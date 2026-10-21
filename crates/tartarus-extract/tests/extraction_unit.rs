@@ -71,5 +71,8 @@ fn rich_text_stripping_and_lang_bin_parsing() {
 fn luac_decrypt_passthrough_on_decrypted_header() {
     let mut sample = XDI_LUA_HEADER.to_vec();
     sample.extend_from_slice(&[1, 2, 3, 4, 5, 6]);
-    assert_eq!(decrypt_luac_bytes(&sample), sample);
+    let dec = decrypt_luac_bytes(&sample);
+    assert_eq!(dec, sample);
+    assert_eq!(dec.len(), 16);
+    assert!(dec.starts_with(XDI_LUA_HEADER));
 }

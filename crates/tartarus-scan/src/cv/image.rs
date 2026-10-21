@@ -9,6 +9,8 @@ pub struct ImageView<'a> {
 impl<'a> ImageView<'a> {
     #[inline]
     pub fn rgb_at(&self, x: isize, y: isize) -> (u8, u8, u8) {
+        debug_assert!(self.width > 0);
+        debug_assert!(self.height > 0);
         let xi = x.clamp(0, self.width as isize - 1) as usize;
         let yi = y.clamp(0, self.height as isize - 1) as usize;
         let o = (yi * self.width + xi) * 4;
@@ -17,18 +19,24 @@ impl<'a> ImageView<'a> {
 
     #[inline]
     pub fn hsv_at(&self, x: f64, y: f64) -> (f32, f32, f32) {
+        debug_assert!(x.is_finite());
+        debug_assert!(y.is_finite());
         let (r, g, b) = self.rgb_at(x.round() as isize, y.round() as isize);
         hsv(r as f32, g as f32, b as f32)
     }
 
     #[inline]
     pub fn gray_px(&self, x: isize, y: isize) -> f32 {
+        debug_assert!(self.width > 0);
+        debug_assert!(self.height > 0);
         let (r, g, b) = self.rgb_at(x, y);
         0.299 * (r as f32) + 0.587 * (g as f32) + 0.114 * (b as f32)
     }
 
     #[inline]
     pub fn sharp_px(&self, x: isize, y: isize) -> f32 {
+        debug_assert!(self.width > 0);
+        debug_assert!(self.height > 0);
         let wi = self.width as isize;
         let hi = self.height as isize;
         if x > 0 && x + 1 < wi && y > 0 && y + 1 < hi {
@@ -59,18 +67,12 @@ impl<'a> ImageView<'a> {
 
     #[inline]
     pub fn sample_sharp(&self, mut x: f64, mut y: f64) -> f32 {
+        debug_assert!(self.width > 0);
+        debug_assert!(self.height > 0);
         let w_max = (self.width as f64) - 1.001;
         let h_max = (self.height as f64) - 1.001;
-        if x < 0.0 {
-            x = 0.0;
-        } else if x > w_max {
-            x = w_max;
-        }
-        if y < 0.0 {
-            y = 0.0;
-        } else if y > h_max {
-            y = h_max;
-        }
+        x = x.clamp(0.0, w_max);
+        y = y.clamp(0.0, h_max);
         let x0 = x as usize;
         let y0 = y as usize;
         let fx = (x - (x0 as f64)) as f32;
@@ -118,12 +120,31 @@ impl<'a> ImageView<'a> {
 #[inline]
 pub fn hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     use palette::{FromColor, Hsv, Srgb};
+    debug_assert!(r.is_finite() && g.is_finite() && b.is_finite());
     let c = Hsv::from_color(Srgb::new(r / 255.0, g / 255.0, b / 255.0));
-    (c.hue.into_positive_degrees(), c.saturation, c.value)
+    let out = (c.hue.into_positive_degrees(), c.saturation, c.value);
+    debug_assert!(out.0.is_finite());
+    out
+}
+
+#[inline]
+fn quad_gray_px(data: &[u8], c0: usize, c2: usize) -> f32 {
+    debug_assert!(c0 + 8 <= data.len());
+    debug_assert!(c2 + 8 <= data.len());
+    let c1 = c0 + 4;
+    let c3 = c2 + 4;
+    let r = (data[c0] as u32 + data[c1] as u32 + data[c2] as u32 + data[c3] as u32) as f32;
+    let g = (data[c0 + 1] as u32 + data[c1 + 1] as u32 + data[c2 + 1] as u32 + data[c3 + 1] as u32)
+        as f32;
+    let b = (data[c0 + 2] as u32 + data[c1 + 2] as u32 + data[c2 + 2] as u32 + data[c3 + 2] as u32)
+        as f32;
+    0.25 * (0.299 * r + 0.587 * g + 0.114 * b)
 }
 
 pub fn half_gray_of(img: &ImageView<'_>) -> (Vec<f32>, usize, usize) {
     use rayon::prelude::*;
+    assert!(img.width >= 2);
+    assert!(img.height >= 2);
     let w = img.width;
     let w2 = w >> 1;
     let h2 = img.height >> 1;
@@ -135,23 +156,8 @@ pub fn half_gray_of(img: &ImageView<'_>) -> (Vec<f32>, usize, usize) {
                 let r0 = (2 * y2) * w * 4;
                 let r1 = (2 * y2 + 1) * w * 4;
                 for (x2, out_px) in row_out.iter_mut().enumerate() {
-                    let c0 = r0 + (2 * x2) * 4;
-                    let c1 = c0 + 4;
-                    let c2 = r1 + (2 * x2) * 4;
-                    let c3 = c2 + 4;
-                    let r = (img.data[c0] as u32
-                        + img.data[c1] as u32
-                        + img.data[c2] as u32
-                        + img.data[c3] as u32) as f32;
-                    let g = (img.data[c0 + 1] as u32
-                        + img.data[c1 + 1] as u32
-                        + img.data[c2 + 1] as u32
-                        + img.data[c3 + 1] as u32) as f32;
-                    let b = (img.data[c0 + 2] as u32
-                        + img.data[c1 + 2] as u32
-                        + img.data[c2 + 2] as u32
-                        + img.data[c3 + 2] as u32) as f32;
-                    *out_px = 0.25 * (0.299 * r + 0.587 * g + 0.114 * b);
+                    let off = (2 * x2) * 4;
+                    *out_px = quad_gray_px(img.data, r0 + off, r1 + off);
                 }
             });
     } else {
@@ -160,23 +166,8 @@ pub fn half_gray_of(img: &ImageView<'_>) -> (Vec<f32>, usize, usize) {
             let r1 = (2 * y2 + 1) * w * 4;
             let row_out = &mut out[y2 * w2..(y2 + 1) * w2];
             for (x2, out_px) in row_out.iter_mut().enumerate() {
-                let c0 = r0 + (2 * x2) * 4;
-                let c1 = c0 + 4;
-                let c2 = r1 + (2 * x2) * 4;
-                let c3 = c2 + 4;
-                let r = (img.data[c0] as u32
-                    + img.data[c1] as u32
-                    + img.data[c2] as u32
-                    + img.data[c3] as u32) as f32;
-                let g = (img.data[c0 + 1] as u32
-                    + img.data[c1 + 1] as u32
-                    + img.data[c2 + 1] as u32
-                    + img.data[c3 + 1] as u32) as f32;
-                let b = (img.data[c0 + 2] as u32
-                    + img.data[c1 + 2] as u32
-                    + img.data[c2 + 2] as u32
-                    + img.data[c3 + 2] as u32) as f32;
-                *out_px = 0.25 * (0.299 * r + 0.587 * g + 0.114 * b);
+                let off = (2 * x2) * 4;
+                *out_px = quad_gray_px(img.data, r0 + off, r1 + off);
             }
         }
     }
@@ -184,6 +175,8 @@ pub fn half_gray_of(img: &ImageView<'_>) -> (Vec<f32>, usize, usize) {
 }
 
 pub fn half(g: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
+    assert!(w >= 2);
+    assert!(h >= 2);
     let w2 = w >> 1;
     let h2 = h >> 1;
     let mut out = vec![0.0_f32; w2 * h2];
@@ -198,6 +191,8 @@ pub fn half(g: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
 
 #[inline]
 pub fn sample(g: &[f32], w: usize, h: usize, mut x: f64, mut y: f64) -> f32 {
+    debug_assert!(w >= 2);
+    debug_assert!(h >= 2);
     if x < 0.0 {
         x = 0.0;
     } else if x > (w as f64) - 1.001 {
@@ -221,6 +216,8 @@ pub fn color_share<F>(img: &ImageView<'_>, x0: f64, y0: f64, x1: f64, y1: f64, m
 where
     F: FnMut(f32, f32, f32) -> bool,
 {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     let bx0 = (x0.floor() as isize).max(0) as usize;
     let by0 = (y0.floor() as isize).max(0) as usize;
     let bx1 = (x1 as isize).min(img.width as isize - 1);
@@ -260,6 +257,8 @@ pub fn color_share_rgb<F>(
 where
     F: Fn(u8, u8, u8) -> bool,
 {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     let bx0 = (x0.floor() as isize).max(0) as usize;
     let by0 = (y0.floor() as isize).max(0) as usize;
     let bx1 = (x1 as isize).min(img.width as isize - 1);
@@ -294,6 +293,8 @@ pub fn is_jaws_rgb(r: u8, g: u8, b: u8) -> bool {
     if r < 141 || r < g || r < b {
         return false;
     }
+    debug_assert!(r >= g);
+    debug_assert!(r >= b);
     let ru = r as u32;
     let mn = g.min(b) as u32;
     let d = ru - mn;
@@ -312,6 +313,8 @@ pub fn is_nest_rgb(r: u8, g: u8, b: u8) -> bool {
     if r < 115 || r <= g || g < b {
         return false;
     }
+    debug_assert!(r > g);
+    debug_assert!(g >= b);
     let ru = r as u32;
     let d = (r - b) as u32;
     let dg = (g - b) as u32;
@@ -323,6 +326,8 @@ pub fn is_banner_red_rgb(r: u8, g: u8, b: u8) -> bool {
     if r < 103 || r < g || r < b {
         return false;
     }
+    debug_assert!(r >= g);
+    debug_assert!(r >= b);
     let ru = r as u32;
     let mn = g.min(b) as u32;
     let d = ru - mn;
@@ -338,16 +343,22 @@ pub fn is_banner_red_rgb(r: u8, g: u8, b: u8) -> bool {
 
 #[inline]
 pub fn is_jaws(h: f32, s: f32, v: f32) -> bool {
+    debug_assert!(h.is_finite());
+    debug_assert!(s.is_finite() && v.is_finite());
     (h < 16.0 || h > 340.0) && s > 0.40 && v > 0.55
 }
 
 #[inline]
 pub fn is_orange(h: f32, s: f32, v: f32) -> bool {
+    debug_assert!(h.is_finite());
+    debug_assert!(s.is_finite() && v.is_finite());
     (18.0..=46.0).contains(&h) && s > 0.60 && v > 0.55
 }
 
 #[inline]
 pub fn is_gold(h: f32, s: f32, v: f32) -> bool {
+    debug_assert!(h.is_finite());
+    debug_assert!(s.is_finite() && v.is_finite());
     (32.0..=56.0).contains(&h) && s > 0.38 && s < 0.90 && v > 0.50
 }
 
@@ -356,6 +367,8 @@ pub fn is_gold_rgb(r: u8, g: u8, b: u8) -> bool {
     if r < 128 || r <= g || g < b {
         return false;
     }
+    debug_assert!(r > g);
+    debug_assert!(g >= b);
     let ru = r as u32;
     let d = (r - b) as u32;
     let dg = (g - b) as u32;
@@ -367,6 +380,8 @@ pub fn is_orange_rgb(r: u8, g: u8, b: u8) -> bool {
     if r < 141 || r <= g || g < b {
         return false;
     }
+    debug_assert!(r > g);
+    debug_assert!(g >= b);
     let ru = r as u32;
     let d = (r - b) as u32;
     let dg = (g - b) as u32;

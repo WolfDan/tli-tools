@@ -9,6 +9,15 @@ use x11rb::protocol::shm::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{ConnectionExt, ImageFormat, Window};
 
 const DEFAULT_CAP_BYTES: usize = 2560 * 1440 * 4;
+const TREE_NODES_MAX: usize = 16_384;
+const WIN_WIDTH_MIN: u16 = 320;
+const WIN_HEIGHT_MIN: u16 = 200;
+
+const _: () = {
+    assert!(DEFAULT_CAP_BYTES == 14_745_600);
+    assert!(TREE_NODES_MAX >= 1024);
+    assert!(WIN_WIDTH_MIN > 0 && WIN_HEIGHT_MIN > 0);
+};
 
 struct ShmSegment {
     seg: shm::Seg,
@@ -21,6 +30,7 @@ unsafe impl Send for ShmSegment {}
 
 impl ShmSegment {
     fn new(conn: &x11rb::rust_connection::RustConnection, cap: usize) -> Option<Self> {
+        assert!(cap > 0);
         conn.shm_query_version().ok()?.reply().ok()?;
         let shmid = unsafe { libc::shmget(libc::IPC_PRIVATE, cap, libc::IPC_CREAT | 0o600) };
         if shmid < 0 {
@@ -64,22 +74,26 @@ impl ShmSegment {
             }
             off += 4096;
         }
+        assert!(!addr.is_null());
         Some(Self { seg, addr, cap })
     }
 
     #[inline]
     fn as_slice(&self, len: usize) -> &[u8] {
         assert!(len <= self.cap);
+        assert!(!self.addr.is_null());
         unsafe { std::slice::from_raw_parts(self.addr, len) }
     }
 
     #[inline]
     fn as_mut_slice(&mut self, len: usize) -> &mut [u8] {
         assert!(len <= self.cap);
+        assert!(!self.addr.is_null());
         unsafe { std::slice::from_raw_parts_mut(self.addr, len) }
     }
 
     fn destroy(&mut self, conn: Option<&x11rb::rust_connection::RustConnection>) {
+        assert!(self.cap > 0);
         if let Some(c) = conn {
             let _ = c.shm_detach(self.seg);
         }
@@ -89,6 +103,7 @@ impl ShmSegment {
             }
             self.addr = std::ptr::null_mut();
         }
+        assert!(self.addr.is_null());
     }
 }
 
@@ -107,20 +122,25 @@ impl Drop for WindowCapturer {
             let conn_ref = self.conn.as_ref().map(|(c, _)| c);
             shm.destroy(conn_ref);
         }
+        assert!(self.shm.is_none());
+        assert!(self.fallback_buf.len() <= self.fallback_buf.capacity());
     }
 }
 
 impl WindowCapturer {
     pub fn new() -> Self {
         let conn = x11rb::connect(None).ok();
-        Self {
+        let cap = Self {
             conn,
             cached_win: None,
             cached_size: None,
             shm: None,
             shm_disabled: false,
             fallback_buf: Vec::new(),
-        }
+        };
+        assert!(cap.cached_win.is_none());
+        assert!(cap.shm.is_none());
+        cap
     }
 
     pub fn new_with_buffer() -> Self {
@@ -131,10 +151,12 @@ impl WindowCapturer {
             .map(|(w, h)| (w as usize) * (h as usize) * 4)
             .unwrap_or(DEFAULT_CAP_BYTES)
             .max(DEFAULT_CAP_BYTES);
+        assert!(init_bytes >= DEFAULT_CAP_BYTES);
         if let Some((conn, _)) = cap.conn.as_ref() {
             cap.shm = ShmSegment::new(conn, init_bytes);
         }
         let _ = cap.capture();
+        assert!(cap.shm.as_ref().is_none_or(|s| s.cap >= DEFAULT_CAP_BYTES));
         cap
     }
 
@@ -142,6 +164,7 @@ impl WindowCapturer {
         conn: &x11rb::rust_connection::RustConnection,
         win: Window,
     ) -> Option<(u16, u16)> {
+        assert!(win > 0);
         let attr_cookie = conn.get_window_attributes(win).ok()?;
         let geom_cookie = conn.get_geometry(win).ok()?;
         let attr = attr_cookie.reply().ok()?;
@@ -149,7 +172,8 @@ impl WindowCapturer {
             return None;
         }
         let geom = geom_cookie.reply().ok()?;
-        if geom.width >= 320 && geom.height >= 200 {
+        if geom.width >= WIN_WIDTH_MIN && geom.height >= WIN_HEIGHT_MIN {
+            assert!(geom.width > 0 && geom.height > 0);
             Some((geom.width, geom.height))
         } else {
             None
@@ -164,9 +188,11 @@ impl WindowCapturer {
             return false;
         };
         let root = conn.setup().roots[*screen_num].root;
+        assert!(root > 0);
         if let Some(win) = self.cached_win {
             if let Some((w, h)) = Self::viewable_window_size(conn, win) {
                 self.cached_size = Some((w, h));
+                assert!(self.cached_size.is_some());
                 return true;
             }
             self.cached_win = None;
@@ -181,10 +207,40 @@ impl WindowCapturer {
         }
     }
 
+    fn window_matches_torchlight(
+        conn: &x11rb::rust_connection::RustConnection,
+        win: Window,
+        net_wm_name: u32,
+        utf8_string: u32,
+        wm_name: u32,
+    ) -> bool {
+        assert!(win > 0);
+        if let Ok(cookie) = conn.get_property(false, win, net_wm_name, utf8_string, 0, 256)
+            && let Ok(reply) = cookie.reply()
+            && !reply.value.is_empty()
+            && let Ok(title) = std::str::from_utf8(&reply.value)
+            && is_torchlight_title(title)
+        {
+            assert!(!title.is_empty());
+            return true;
+        }
+        if let Ok(cookie) = conn.get_property(false, win, wm_name, x11rb::NONE, 0, 256)
+            && let Ok(reply) = cookie.reply()
+            && !reply.value.is_empty()
+            && let Ok(title) = std::str::from_utf8(&reply.value)
+            && is_torchlight_title(title)
+        {
+            assert!(!title.is_empty());
+            return true;
+        }
+        false
+    }
+
     fn find_game_window(
         conn: &x11rb::rust_connection::RustConnection,
         root: Window,
     ) -> Option<(Window, u16, u16)> {
+        assert!(root > 0);
         let c_net = conn.intern_atom(false, b"_NET_WM_NAME").ok()?;
         let c_utf8 = conn.intern_atom(false, b"UTF8_STRING").ok()?;
         let c_wm = conn.intern_atom(false, b"WM_NAME").ok()?;
@@ -194,26 +250,15 @@ impl WindowCapturer {
 
         let mut best: Option<(Window, u16, u16)> = None;
         let mut stack = vec![root];
+        let mut visited = 0usize;
         while let Some(win) = stack.pop() {
-            let mut matched_title = false;
-            if let Ok(cookie) = conn.get_property(false, win, net_wm_name, utf8_string, 0, 256)
-                && let Ok(reply) = cookie.reply()
-                && !reply.value.is_empty()
-                && let Ok(title) = std::str::from_utf8(&reply.value)
-                && is_torchlight_title(title)
-            {
-                matched_title = true;
+            if visited >= TREE_NODES_MAX {
+                break;
             }
-            if !matched_title
-                && let Ok(cookie) = conn.get_property(false, win, wm_name, x11rb::NONE, 0, 256)
-                && let Ok(reply) = cookie.reply()
-                && !reply.value.is_empty()
-                && let Ok(title) = std::str::from_utf8(&reply.value)
-                && is_torchlight_title(title)
+            visited += 1;
+            if Self::window_matches_torchlight(conn, win, net_wm_name, utf8_string, wm_name)
+                && let Some((w, h)) = Self::viewable_window_size(conn, win)
             {
-                matched_title = true;
-            }
-            if matched_title && let Some((w, h)) = Self::viewable_window_size(conn, win) {
                 let area = (w as u32) * (h as u32);
                 let best_area = best
                     .map(|(_, bw, bh)| (bw as u32) * (bh as u32))
@@ -230,48 +275,15 @@ impl WindowCapturer {
                 }
             }
         }
+        assert!(visited <= TREE_NODES_MAX);
         best
     }
 
-    pub fn game_window_placement(&mut self) -> Option<GameWindowPlacement> {
-        if !self.has_game_window() {
-            return None;
-        }
-        let (conn, screen_num) = self.conn.as_ref()?;
-        let root = conn.setup().roots[*screen_num].root;
-        let win = self.cached_win?;
-
-        let geom_cookie = conn.get_geometry(win).ok()?;
-        let trans_cookie = conn.translate_coordinates(win, root, 0, 0).ok()?;
-        let mon_cookie = conn.randr_get_monitors(root, true).ok();
-
-        let geom = geom_cookie.reply().ok()?;
-        let trans = trans_cookie.reply().ok()?;
-        self.cached_size = Some((geom.width, geom.height));
-
-        let wx = trans.dst_x as i32;
-        let wy = trans.dst_y as i32;
-        let ww = geom.width as u32;
-        let wh = geom.height as u32;
-        let wcx = wx + (ww as i32) / 2;
-        let wcy = wy + (wh as i32) / 2;
-
-        let mut monitors = Vec::new();
-        if let Some(cookie) = mon_cookie
-            && let Ok(reply) = cookie.reply()
-        {
-            for m in reply.monitors {
-                if m.width > 0 && m.height > 0 {
-                    monitors.push(MonitorRect {
-                        x: m.x as i32,
-                        y: m.y as i32,
-                        width: m.width as u32,
-                        height: m.height as u32,
-                    });
-                }
-            }
-        }
-
+    fn resolve_monitor_for_point(
+        monitors: &[MonitorRect],
+        wcx: i32,
+        wcy: i32,
+    ) -> (Option<usize>, Option<usize>, Option<MonitorRect>) {
         let mut monitor_index = None;
         for (idx, m) in monitors.iter().enumerate() {
             if wcx >= m.x
@@ -304,6 +316,54 @@ impl WindowCapturer {
         });
 
         let monitor = monitor_index.map(|idx| monitors[idx]);
+        assert!(monitor_index.is_none_or(|idx| idx < monitors.len()));
+        assert!(monitor_spatial_rank.is_none_or(|r| r < monitors.len()));
+        (monitor_index, monitor_spatial_rank, monitor)
+    }
+
+    pub fn game_window_placement(&mut self) -> Option<GameWindowPlacement> {
+        if !self.has_game_window() {
+            return None;
+        }
+        let (conn, screen_num) = self.conn.as_ref()?;
+        let root = conn.setup().roots[*screen_num].root;
+        let win = self.cached_win?;
+        assert!(win > 0 && root > 0);
+
+        let geom_cookie = conn.get_geometry(win).ok()?;
+        let trans_cookie = conn.translate_coordinates(win, root, 0, 0).ok()?;
+        let mon_cookie = conn.randr_get_monitors(root, true).ok();
+
+        let geom = geom_cookie.reply().ok()?;
+        let trans = trans_cookie.reply().ok()?;
+        self.cached_size = Some((geom.width, geom.height));
+
+        let wx = trans.dst_x as i32;
+        let wy = trans.dst_y as i32;
+        let ww = geom.width as u32;
+        let wh = geom.height as u32;
+        assert!(ww > 0 && wh > 0);
+        let wcx = wx + (ww as i32) / 2;
+        let wcy = wy + (wh as i32) / 2;
+
+        let mut monitors = Vec::new();
+        if let Some(cookie) = mon_cookie
+            && let Ok(reply) = cookie.reply()
+        {
+            for m in reply.monitors {
+                if m.width > 0 && m.height > 0 {
+                    monitors.push(MonitorRect {
+                        x: m.x as i32,
+                        y: m.y as i32,
+                        width: m.width as u32,
+                        height: m.height as u32,
+                    });
+                }
+            }
+        }
+
+        let (monitor_index, monitor_spatial_rank, monitor) =
+            Self::resolve_monitor_for_point(&monitors, wcx, wcy);
         Some(GameWindowPlacement {
             x: wx,
             y: wy,
@@ -312,21 +372,22 @@ impl WindowCapturer {
             monitor_index,
             monitor_spatial_rank,
             monitor,
-            total_monitors: monitors.len(),
+            monitors_total: monitors.len(),
         })
     }
 
-    pub fn capture(&mut self) -> Option<CapturedFrame<'_>> {
+    fn resolve_capture_target(&mut self) -> Option<(Window, u16, u16)> {
         if self.conn.is_none() {
             self.conn = x11rb::connect(None).ok();
         }
         let (conn, screen_num) = self.conn.as_ref()?;
         let root = conn.setup().roots[*screen_num].root;
+        assert!(root > 0);
 
         let mut target: Option<(Window, u16, u16)> = None;
         if let Some(win) = self.cached_win {
             if let Some((cw, ch)) = self.cached_size {
-                if cw >= 320 && ch >= 200 {
+                if cw >= WIN_WIDTH_MIN && ch >= WIN_HEIGHT_MIN {
                     target = Some((win, cw, ch));
                 }
             } else if let Some((w, h)) = Self::viewable_window_size(conn, win) {
@@ -344,8 +405,32 @@ impl WindowCapturer {
             self.cached_size = Some((w, h));
             target = Some((win, w, h));
         }
+        let resolved = target?;
+        assert!(resolved.1 >= WIN_WIDTH_MIN && resolved.2 >= WIN_HEIGHT_MIN);
+        Some(resolved)
+    }
 
-        let (mut win, mut width, mut height) = target?;
+    fn frame_from_buffers(&self, width: u16, height: u16) -> CapturedFrame<'_> {
+        let w = width as usize;
+        let h = height as usize;
+        let need = w * h * 4;
+        assert!(w > 0 && h > 0);
+        let slice = if let Some(shm) = self.shm.as_ref() {
+            shm.as_slice(need)
+        } else {
+            &self.fallback_buf[..need]
+        };
+        assert_eq!(slice.len(), need);
+        CapturedFrame {
+            width: w,
+            height: h,
+            rgba: slice,
+        }
+    }
+
+    pub fn capture(&mut self) -> Option<CapturedFrame<'_>> {
+        let (mut win, mut width, mut height) = self.resolve_capture_target()?;
+        assert!(width >= WIN_WIDTH_MIN && height >= WIN_HEIGHT_MIN);
         if !self.capture_into_buffers(win, width, height) {
             let rediscovered = self.conn.as_ref().and_then(|(conn, screen_num)| {
                 if let Some((w, h)) = Self::viewable_window_size(conn, win) {
@@ -362,19 +447,8 @@ impl WindowCapturer {
                 self.cached_win = Some(win);
                 self.cached_size = Some((width, height));
                 if self.capture_into_buffers(win, width, height) {
-                    let w = width as usize;
-                    let h = height as usize;
-                    let need = w * h * 4;
-                    let slice = if let Some(shm) = self.shm.as_ref() {
-                        shm.as_slice(need)
-                    } else {
-                        &self.fallback_buf[..need]
-                    };
-                    return Some(CapturedFrame {
-                        width: w,
-                        height: h,
-                        rgba: slice,
-                    });
+                    assert!(self.cached_win.is_some());
+                    return Some(self.frame_from_buffers(width, height));
                 }
             }
             self.cached_win = None;
@@ -382,25 +456,16 @@ impl WindowCapturer {
             return None;
         }
 
-        let w = width as usize;
-        let h = height as usize;
-        let need = w * h * 4;
-        let slice = if let Some(shm) = self.shm.as_ref() {
-            shm.as_slice(need)
-        } else {
-            &self.fallback_buf[..need]
-        };
-        Some(CapturedFrame {
-            width: w,
-            height: h,
-            rgba: slice,
-        })
+        assert!(self.cached_win.is_some());
+        Some(self.frame_from_buffers(width, height))
     }
 
     fn capture_into_buffers(&mut self, win: Window, width: u16, height: u16) -> bool {
         let w = width as usize;
         let h = height as usize;
         let need = w * h * 4;
+        assert!(need > 0);
+        assert!(width >= WIN_WIDTH_MIN && height >= WIN_HEIGHT_MIN);
         let Some((conn, _)) = self.conn.as_ref() else {
             return false;
         };
@@ -459,6 +524,9 @@ impl WindowCapturer {
 
 impl Default for WindowCapturer {
     fn default() -> Self {
-        Self::new()
+        let cap = Self::new();
+        assert!(cap.cached_win.is_none());
+        assert!(cap.shm.is_none());
+        cap
     }
 }

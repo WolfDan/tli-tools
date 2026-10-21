@@ -6,6 +6,8 @@ use super::data::{H0, PITCH0};
 pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     use std::simd::StdFloat;
     use std::simd::prelude::*;
+    debug_assert!(!a.is_empty());
+    debug_assert_eq!(a.len(), b.len());
     let n = a.len().min(b.len());
     let mut acc0 = f32x8::splat(0.0);
     let mut acc1 = f32x8::splat(0.0);
@@ -37,6 +39,8 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
 pub(crate) fn normalize_zero_mean_in_place(v: &mut [f32], mean: f32) {
     use std::simd::StdFloat;
     use std::simd::prelude::*;
+    debug_assert!(!v.is_empty());
+    debug_assert!(mean.is_finite());
     let n = v.len();
     let vmean = f32x8::splat(mean);
     let mut nacc0 = f32x8::splat(0.0);
@@ -78,6 +82,8 @@ pub(crate) fn normalize_zero_mean_in_place(v: &mut [f32], mean: f32) {
 pub(crate) fn cosine_simd_impl(a: &[f32], b: &[f32]) -> f32 {
     use std::simd::StdFloat;
     use std::simd::prelude::*;
+    debug_assert!(!a.is_empty());
+    debug_assert_eq!(a.len(), b.len());
     let n = a.len().min(b.len());
     let mut v_ab = f32x8::splat(0.0);
     let mut v_aa = f32x8::splat(0.0);
@@ -111,6 +117,8 @@ pub(crate) fn cosine_simd_impl(a: &[f32], b: &[f32]) -> f32 {
 
 #[inline]
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert!(!a.is_empty());
+    debug_assert_eq!(a.len(), b.len());
     cosine_simd_impl(a, b)
 }
 
@@ -118,6 +126,8 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 pub(crate) fn ncc_accum_simd_impl(vals: &[f32], tv: &[f32]) -> (f32, f32, f32) {
     use std::simd::StdFloat;
     use std::simd::prelude::*;
+    debug_assert!(!vals.is_empty());
+    debug_assert_eq!(vals.len(), tv.len());
     let n = vals.len().min(tv.len());
     let mut v_sx = f32x8::splat(0.0);
     let mut v_sxx = f32x8::splat(0.0);
@@ -146,6 +156,8 @@ pub(crate) fn ncc_accum_simd_impl(vals: &[f32], tv: &[f32]) -> (f32, f32, f32) {
 
 #[inline]
 pub(crate) fn ncc_score_slice(vals: &[f32], tv: &[f32]) -> f64 {
+    debug_assert!(!vals.is_empty());
+    debug_assert_eq!(vals.len(), tv.len());
     let m = vals.len().min(tv.len());
     let (sx, sxx, sxt) = ncc_accum_simd_impl(vals, tv);
     let sx64 = sx as f64;
@@ -159,6 +171,8 @@ pub(crate) fn ncc_score_slice(vals: &[f32], tv: &[f32]) -> f64 {
 
 #[inline]
 pub fn project(h: &[f64; 9], u: f64, v: f64) -> (f64, f64) {
+    debug_assert!(u.is_finite());
+    debug_assert!(v.is_finite());
     let p = glam::DMat3::from_cols_array(h)
         .transpose()
         .mul_vec3(glam::DVec3::new(u, v, 1.0));
@@ -166,6 +180,8 @@ pub fn project(h: &[f64; 9], u: f64, v: f64) -> (f64, f64) {
 }
 
 pub fn invert(m: &[f64; 9]) -> [f64; 9] {
+    debug_assert!(m[0].is_finite());
+    debug_assert!(m[8].is_finite());
     glam::DMat3::from_cols_array(m)
         .transpose()
         .inverse()
@@ -188,18 +204,24 @@ pub struct BoardLoc {
 impl BoardLoc {
     #[inline]
     pub fn at(&self, u: f64, v: f64) -> (f64, f64) {
+        debug_assert!(self.s > 0.0);
+        debug_assert!(u.is_finite() && v.is_finite());
         let (x, y) = project(&H0, u, v);
         (self.s * x + self.tx, self.s * y + self.ty)
     }
 
     #[inline]
     pub fn grid_of(&self, x: f64, y: f64) -> (f64, f64) {
+        debug_assert!(self.s > 0.0);
+        debug_assert!(x.is_finite() && y.is_finite());
         let h_inv = invert(&H0);
         project(&h_inv, (x - self.tx) / self.s, (y - self.ty) / self.s)
     }
 
     #[inline]
     pub fn scale_at(&self, u: f64, v: f64) -> f64 {
+        debug_assert!(self.s > 0.0);
+        debug_assert!(u.is_finite() && v.is_finite());
         let (x0, y0) = project(&H0, u - 0.5, v);
         let (x1, y1) = project(&H0, u + 0.5, v);
         (self.s * (x1 - x0).hypot(y1 - y0)) / PITCH0

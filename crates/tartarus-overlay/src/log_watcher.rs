@@ -6,6 +6,16 @@ use std::time::Instant;
 use tartarus_core::TreasureOrigin;
 
 const READ_CHUNK_BYTES: usize = 64 * 1024;
+const INIT_TAIL_BYTES_MAX: u64 = 4 * 1024 * 1024;
+const POLL_READ_BYTES_MAX: u64 = 512 * 1024;
+const READ_CHUNKS_MAX: usize = 128;
+const LINES_PER_DRAIN_MAX: usize = 65_536;
+
+const _: () = {
+    assert!(READ_CHUNK_BYTES == 65_536);
+    assert!(INIT_TAIL_BYTES_MAX >= POLL_READ_BYTES_MAX);
+    assert!(READ_CHUNKS_MAX * READ_CHUNK_BYTES >= INIT_TAIL_BYTES_MAX as usize);
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogEvent {
@@ -25,13 +35,17 @@ pub enum LogEvent {
 
 fn fnv1a_64(s: &str) -> u64 {
     use std::hash::Hasher;
+    assert!(!s.is_empty());
     let mut hasher = fnv::FnvHasher::default();
     hasher.write(s.as_bytes());
     let hash = hasher.finish();
-    if hash == 0 { 1 } else { hash }
+    let non_zero = if hash == 0 { 1 } else { hash };
+    assert_ne!(non_zero, 0);
+    non_zero
 }
 
 fn parse_s16_bgm_begin(line: &str) -> Option<(u64, bool)> {
+    assert!(!line.is_empty());
     let rest = line.split("[S16BGM] board Begin").nth(1)?;
     let mut run_id: Option<u64> = None;
     let mut is_settled = false;
@@ -44,21 +58,26 @@ fn parse_s16_bgm_begin(line: &str) -> Option<(u64, bool)> {
             is_settled = settled_str.eq_ignore_ascii_case("true") || settled_str == "1";
         }
     }
-    run_id.map(|id| (id, is_settled))
+    let id = run_id?;
+    assert_ne!(id, 0);
+    Some((id, is_settled))
 }
 
 fn parse_s16_last_day(line: &str) -> Option<(u8, u8)> {
+    assert!(!line.is_empty());
     let rest = line.split("[S16LastDay] check").nth(1)?;
     let mut cur: Option<u8> = None;
-    let mut max: Option<u8> = None;
+    let mut day_max: Option<u8> = None;
     for tok in rest.split_whitespace() {
         if let Some(c_str) = tok.strip_prefix("cur=") {
             cur = c_str.parse::<u8>().ok();
         } else if let Some(m_str) = tok.strip_prefix("max=") {
-            max = m_str.parse::<u8>().ok();
+            day_max = m_str.parse::<u8>().ok();
         }
     }
-    Some((cur?, max?))
+    let pair = (cur?, day_max?);
+    assert!(pair.0 <= 250 && pair.1 <= 250);
+    Some(pair)
 }
 
 pub struct LogWatcher {
@@ -77,7 +96,10 @@ pub struct LogWatcher {
 
 impl Default for LogWatcher {
     fn default() -> Self {
-        Self::new()
+        let lw = Self::new();
+        assert_eq!(lw.buf.len(), READ_CHUNK_BYTES);
+        assert!(!lw.initialized);
+        lw
     }
 }
 
@@ -85,7 +107,7 @@ impl LogWatcher {
     pub fn new() -> Self {
         let path = Self::discover_log_path();
         let file = path.as_ref().and_then(|p| File::open(p).ok());
-        Self {
+        let lw = Self {
             path,
             file,
             buf: vec![0u8; READ_CHUNK_BYTES],
@@ -97,11 +119,14 @@ impl LogWatcher {
             last_eat_at: None,
             last_gift_confirm_at: None,
             saw_cur_zero: false,
-        }
+        };
+        assert_eq!(lw.buf.len(), READ_CHUNK_BYTES);
+        assert_eq!(lw.offset, 0);
+        lw
     }
 
     pub fn new_isolated() -> Self {
-        Self {
+        let lw = Self {
             path: None,
             file: None,
             buf: vec![0u8; 1024],
@@ -113,15 +138,22 @@ impl LogWatcher {
             last_eat_at: None,
             last_gift_confirm_at: None,
             saw_cur_zero: false,
-        }
+        };
+        assert!(lw.initialized);
+        assert!(lw.path.is_none());
+        lw
     }
 
     pub fn discover_log_path() -> Option<PathBuf> {
         const TLI_STEAM_APP_ID: u32 = 1_974_050;
+        const {
+            assert!(TLI_STEAM_APP_ID > 0);
+        }
 
         if let Ok(custom) = env::var("TAC_OVERLAY_LOG") {
             let p = PathBuf::from(custom);
             if p.exists() {
+                assert!(!p.as_os_str().is_empty());
                 return Some(p);
             }
         }
@@ -164,23 +196,35 @@ impl LogWatcher {
                 }
             }
         }
-        best.map(|(p, _)| p)
+        let found = best.map(|(p, _)| p);
+        assert!(found.as_ref().is_none_or(|p| !p.as_os_str().is_empty()));
+        found
     }
 
     pub fn is_connected(&self) -> bool {
-        self.path.as_ref().is_some_and(|p| p.exists())
+        let connected = self.path.as_ref().is_some_and(|p| p.exists());
+        assert!(!connected || self.path.is_some());
+        assert!(!self.buf.is_empty());
+        connected
     }
 
     fn drain_complete_lines(&mut self, state_only: bool) {
+        assert!(!self.buf.is_empty());
         let mut carry = std::mem::take(&mut self.carry);
         let mut events = std::mem::take(&mut self.events);
         let mut cursor = 0usize;
-        while let Some(rel_nl) = carry[cursor..].find('\n') {
+        let mut lines_count = 0usize;
+        while lines_count < LINES_PER_DRAIN_MAX {
+            let Some(rel_nl) = carry[cursor..].find('\n') else {
+                break;
+            };
+            lines_count += 1;
             let line_end = cursor + rel_nl;
             let line = carry[cursor..line_end].trim_end_matches('\r');
             self.process_line_internal(line, &mut events, state_only);
             cursor = line_end + 1;
         }
+        assert!(cursor <= carry.len());
         if cursor > 0 {
             carry.drain(..cursor);
         }
@@ -188,8 +232,51 @@ impl LogWatcher {
         self.events = events;
     }
 
+    fn read_stream_chunks(&mut self, file: &mut File, remaining_init: usize, state_only: bool) {
+        assert!(!self.buf.is_empty());
+        assert!(remaining_init <= INIT_TAIL_BYTES_MAX as usize);
+        let mut remaining = remaining_init;
+        let mut chunk_iters = 0usize;
+        while remaining > 0 && chunk_iters < READ_CHUNKS_MAX {
+            chunk_iters += 1;
+            let chunk_len = remaining.min(self.buf.len());
+            let Ok(n) = file.read(&mut self.buf[..chunk_len]) else {
+                break;
+            };
+            if n == 0 {
+                break;
+            }
+            if !state_only {
+                self.offset += n as u64;
+            }
+            remaining = remaining.saturating_sub(n);
+            self.carry
+                .push_str(&String::from_utf8_lossy(&self.buf[..n]));
+            self.drain_complete_lines(state_only);
+        }
+    }
+
+    fn initialize_tail(&mut self, len: u64) {
+        assert!(!self.initialized);
+        self.initialized = true;
+        self.offset = len;
+        let tail_start = len.saturating_sub(INIT_TAIL_BYTES_MAX);
+        assert!(tail_start <= len);
+        if let Some(mut file) = self.file.take() {
+            if file.seek(SeekFrom::Start(tail_start)).is_ok() {
+                let remaining = (len - tail_start) as usize;
+                self.read_stream_chunks(&mut file, remaining, true);
+                self.carry.clear();
+                let _ = file.seek(SeekFrom::Start(len));
+            }
+            self.file = Some(file);
+        }
+    }
+
     pub fn poll(&mut self) -> &[LogEvent] {
+        assert!(!self.buf.is_empty());
         self.events.clear();
+        assert!(self.events.is_empty());
         if self.path.is_none() {
             self.path = Self::discover_log_path();
         }
@@ -208,30 +295,7 @@ impl LogWatcher {
         }
 
         if !self.initialized {
-            self.initialized = true;
-            self.offset = len;
-            let tail_start = len.saturating_sub(4 * 1024 * 1024);
-            if let Some(mut file) = self.file.take() {
-                if file.seek(SeekFrom::Start(tail_start)).is_ok() {
-                    let mut remaining = (len - tail_start) as usize;
-                    while remaining > 0 {
-                        let chunk_len = remaining.min(self.buf.len());
-                        let Ok(n) = file.read(&mut self.buf[..chunk_len]) else {
-                            break;
-                        };
-                        if n == 0 {
-                            break;
-                        }
-                        remaining = remaining.saturating_sub(n);
-                        self.carry
-                            .push_str(&String::from_utf8_lossy(&self.buf[..n]));
-                        self.drain_complete_lines(true);
-                    }
-                    self.carry.clear();
-                    let _ = file.seek(SeekFrom::Start(len));
-                }
-                self.file = Some(file);
-            }
+            self.initialize_tail(len);
             return &self.events;
         } else if len < self.offset {
             self.offset = 0;
@@ -250,46 +314,36 @@ impl LogWatcher {
             return &self.events;
         }
 
-        let mut remaining = (len - self.offset).min(512 * 1024) as usize;
-        while remaining > 0 {
-            let chunk_len = remaining.min(self.buf.len());
-            let Ok(n) = file.read(&mut self.buf[..chunk_len]) else {
-                break;
-            };
-            if n == 0 {
-                break;
-            }
-            self.offset += n as u64;
-            remaining = remaining.saturating_sub(n);
-            self.carry
-                .push_str(&String::from_utf8_lossy(&self.buf[..n]));
-            self.drain_complete_lines(false);
-        }
+        let remaining = (len - self.offset).min(POLL_READ_BYTES_MAX) as usize;
+        self.read_stream_chunks(&mut file, remaining, false);
         self.file = Some(file);
         &self.events
     }
 
     pub fn process_line(&mut self, line: &str, out: &mut Vec<LogEvent>) {
+        let prev_len = out.len();
         self.process_line_internal(line, out, false);
+        assert!(out.len() >= prev_len);
+        assert!(!self.buf.is_empty());
     }
 
-    fn process_line_internal(&mut self, line: &str, out: &mut Vec<LogEvent>, state_only: bool) {
-        if !line.contains("S16")
-            && !line.contains("Eating_red_screen")
-            && !line.contains("ColoredPop")
-        {
-            return;
-        }
-        if line.contains("LogDataTable")
+    fn is_relevant_s16_line(line: &str) -> bool {
+        let has_tag = line.contains("S16")
+            || line.contains("Eating_red_screen")
+            || line.contains("ColoredPop");
+        let is_noise = line.contains("LogDataTable")
             || line.contains("AssetLoad@")
             || line.contains("CardMotion")
             || line.contains("CardPose")
-            || line.contains("BGM_")
-        {
-            return;
-        }
+            || line.contains("BGM_");
+        assert!(!line.is_empty() || !has_tag);
+        assert!(!is_noise || !line.is_empty());
+        has_tag && !is_noise
+    }
 
-        let now = Instant::now();
+    fn record_timestamps_and_state(&mut self, line: &str, now: Instant, out: &mut Vec<LogEvent>) {
+        assert!(!line.is_empty());
+        let prev_len = out.len();
         if line.contains("Btn_S16Board_ActionCell") {
             self.last_action_at = Some(now);
         }
@@ -304,13 +358,20 @@ impl LogWatcher {
             out.push(LogEvent::RunBegin { run_id, is_settled });
         }
 
-        if let Some((cur, max)) = parse_s16_last_day(line) {
-            if max > 0 {
+        if let Some((cur, day_max)) = parse_s16_last_day(line) {
+            if day_max > 0 {
                 self.saw_cur_zero = cur == 0;
             }
-            out.push(LogEvent::DayCheck { cur, max });
+            out.push(LogEvent::DayCheck { cur, max: day_max });
         }
 
+        Self::emit_run_and_riot_state(line, out);
+        assert!(out.len() >= prev_len);
+    }
+
+    fn emit_run_and_riot_state(line: &str, out: &mut Vec<LogEvent>) {
+        assert!(!line.is_empty());
+        let prev_len = out.len();
         if line.contains("S16BoardRelicPop Run") {
             out.push(LogEvent::RelicPopState(true));
         } else if line.contains("S16BoardRelicPop Destory")
@@ -321,9 +382,6 @@ impl LogWatcher {
             out.push(LogEvent::RelicPopState(false));
         }
 
-        // Run over vs Run new (from desktop/lib/follow-adapter.js)
-        // S16GamePlayEntry Run is the pre-run "Start Warden's Duty" screen between runs,
-        // and "[S16LastDay] check cur=... max=0" is the end-of-run results screen.
         if line.contains("Btn_S16GamePlay_CheckOut_AbandonChallenge")
             || line.contains("S16GamePlayEntry Run")
             || (line.contains("[S16LastDay] check cur=") && line.contains("max=0"))
@@ -337,7 +395,6 @@ impl LogWatcher {
             out.push(LogEvent::RunNew);
         }
 
-        // Riot auto-fold / unfold (from desktop/lib/follow-adapter.js)
         if line.contains("S16GamePlayCheckOut Run") || line.contains("UI_S16_Riot_Interface") {
             out.push(LogEvent::Riot(true));
         } else if line.contains("S16GamePlayEntry Run")
@@ -348,12 +405,34 @@ impl LogWatcher {
         {
             out.push(LogEvent::Riot(false));
         }
+        assert!(out.len() >= prev_len);
+    }
 
-        if state_only {
-            return;
+    fn resolve_treasure_origin(&self, now: Instant) -> Option<TreasureOrigin> {
+        let act = self.last_action_at?;
+        assert!(now >= act);
+        if now.duration_since(act).as_millis() <= 6000 {
+            let is_consume = self
+                .last_eat_at
+                .is_some_and(|eat| eat + std::time::Duration::from_millis(500) >= act);
+            let origin = if is_consume {
+                TreasureOrigin::Consume
+            } else {
+                TreasureOrigin::Swap
+            };
+            assert!(matches!(
+                origin,
+                TreasureOrigin::Consume | TreasureOrigin::Swap
+            ));
+            Some(origin)
+        } else {
+            None
         }
+    }
 
-        // Exact triggers from js/follow.js DEFAULT_RULES + S16BoardNewDayPop Destory
+    fn emit_action_triggers(&mut self, line: &str, now: Instant, out: &mut Vec<LogEvent>) {
+        assert!(!line.is_empty());
+        let prev_len = out.len();
         if line.contains("S16BoardTaskPop Run") {
             out.push(LogEvent::ObjectivePopup);
         } else if line.contains("S16BoardRelicPop Run")
@@ -372,20 +451,7 @@ impl LogWatcher {
         } else if line.contains("Btn_S16Board_Top_Speed") {
             out.push(LogEvent::SpeedFlip);
         } else if line.contains("S16BoardColoredPop Run") {
-            let after = self.last_action_at.and_then(|act| {
-                if now.duration_since(act).as_millis() <= 6000 {
-                    let is_consume = self
-                        .last_eat_at
-                        .is_some_and(|eat| eat + std::time::Duration::from_millis(500) >= act);
-                    Some(if is_consume {
-                        TreasureOrigin::Consume
-                    } else {
-                        TreasureOrigin::Swap
-                    })
-                } else {
-                    None
-                }
-            });
+            let after = self.resolve_treasure_origin(now);
             out.push(LogEvent::TreasurePopup { after });
         } else if line.contains("S16BoardColoredPop Destory") {
             let confirmed_recently = self
@@ -409,5 +475,20 @@ impl LogWatcher {
                 treasure_view: false,
             });
         }
+        assert!(out.len() >= prev_len);
+    }
+
+    fn process_line_internal(&mut self, line: &str, out: &mut Vec<LogEvent>, state_only: bool) {
+        let prev_len = out.len();
+        if !Self::is_relevant_s16_line(line) {
+            return;
+        }
+        let now = Instant::now();
+        self.record_timestamps_and_state(line, now, out);
+        if !state_only {
+            self.emit_action_triggers(line, now, out);
+        }
+        assert!(out.len() >= prev_len);
+        assert!(!line.is_empty());
     }
 }

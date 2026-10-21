@@ -3,6 +3,12 @@ use serde::{Deserialize, Serialize};
 
 pub const PASS_WEIGHT: f64 = 1000.0;
 
+const _: () = {
+    assert!(DEFAULT_TOOL_RANK.len() == 31);
+    assert!(CHALLENGE_TOOL_RANK.len() == 31);
+    assert!(PASS_WEIGHT > 0.0);
+};
+
 pub const DEFAULT_TOOL_RANK: [ToolId; 31] = [
     ToolId::Trap,
     ToolId::Crown,
@@ -88,7 +94,7 @@ pub struct SolverParams {
     pub w_cage: f64,
     pub reroll_margin: f64,
     pub w_stair: f64,
-    pub min_devour: f64,
+    pub devour_min: f64,
     pub stop_margin: f64,
     pub swap_max_tier: i8,
     pub swap_margin: f64,
@@ -103,7 +109,7 @@ pub struct SolverParams {
     pub reserve: u8,
     pub early_points: f64,
     pub stuck_rainbow: f64,
-    pub min_left: u8,
+    pub left_min: u8,
     pub w_need: f64,
     pub need_days: u8,
     pub need_crit: f64,
@@ -125,7 +131,7 @@ pub const DEFAULT_SOLVER_PARAMS: SolverParams = SolverParams {
     w_cage: 1.0,
     reroll_margin: 0.02,
     w_stair: 0.0,
-    min_devour: 0.0,
+    devour_min: 0.0,
     stop_margin: 0.0,
     swap_max_tier: 0,
     swap_margin: 0.0,
@@ -140,7 +146,7 @@ pub const DEFAULT_SOLVER_PARAMS: SolverParams = SolverParams {
     reserve: 1,
     early_points: 1e9,
     stuck_rainbow: 1.0,
-    min_left: 1,
+    left_min: 1,
     w_need: 0.0,
     need_days: 3,
     need_crit: 2.0,
@@ -157,13 +163,16 @@ pub static CHAIN_ODDS_PROFILE: SolverParams = SolverParams {
 
 impl Default for SolverParams {
     fn default() -> Self {
-        DEFAULT_SOLVER_PARAMS
+        let p = DEFAULT_SOLVER_PARAMS;
+        assert!(p.tier_base > 0.0);
+        assert!(p.reserve > 0);
+        p
     }
 }
 
 impl SolverParams {
     pub const fn rewards_profile() -> Self {
-        Self {
+        let p = Self {
             tier_base: 3.0,
             rainbow_mult: 1.5,
             w_open: 1.5,
@@ -173,17 +182,21 @@ impl SolverParams {
             w_chain: 6.0,
             w_stair: 0.25,
             swap_max_tier: 3,
-            min_devour: 0.0,
+            devour_min: 0.0,
             exec_margin: 0.0,
             accept_chain: true,
             w_crow: 1.0,
             tool_rank: DEFAULT_TOOL_RANK,
             ..DEFAULT_SOLVER_PARAMS
-        }
+        };
+        assert!(p.swap_max_tier == 3);
+        assert!(p.accept_chain);
+        assert!(p.reserve > 0);
+        p
     }
 
     pub const fn notools_profile() -> Self {
-        Self {
+        let p = Self {
             tier_base: 2.75,
             rainbow_mult: 12.0,
             w_open: 2.25,
@@ -193,17 +206,21 @@ impl SolverParams {
             w_chain: 24.0,
             w_stair: 0.125,
             swap_max_tier: 1,
-            min_devour: 0.0,
+            devour_min: 0.0,
             exec_margin: -5.0,
             accept_chain: false,
             w_crow: 1.0,
             tool_rank: DEFAULT_TOOL_RANK,
             ..DEFAULT_SOLVER_PARAMS
-        }
+        };
+        assert!(p.swap_max_tier == 1);
+        assert!(!p.accept_chain);
+        assert!(p.reserve > 0);
+        p
     }
 
     pub const fn challenge_profile() -> Self {
-        Self {
+        let p = Self {
             tier_base: 2.25,
             rainbow_mult: 1.0,
             w_open: 2.0,
@@ -213,7 +230,7 @@ impl SolverParams {
             w_chain: 8.0,
             w_stair: 0.5,
             swap_max_tier: 3,
-            min_devour: -2.0,
+            devour_min: -2.0,
             exec_margin: 5.0,
             accept_chain: true,
             tool_rank: CHALLENGE_TOOL_RANK,
@@ -225,18 +242,26 @@ impl SolverParams {
             need_days: 2,
             need_crit: 4.0,
             ..DEFAULT_SOLVER_PARAMS
-        }
+        };
+        assert!(p.reserve == 3);
+        assert!(p.need_days == 2);
+        assert!(p.accept_chain);
+        p
     }
 
     #[inline]
     pub fn for_state(st: &SimState) -> &'static Self {
-        if st.mode == GameMode::Challenge {
+        assert!((st.position as usize) < st.cells.len());
+        assert!((st.pending_len as usize) <= st.pending.len());
+        let p = if st.mode == GameMode::Challenge {
             &CHALLENGE_PROFILE
         } else if st.params.rewards {
             &REWARDS_PROFILE
         } else {
             &NOTOOLS_PROFILE
-        }
+        };
+        assert!(p.tier_base > 0.0);
+        p
     }
 }
 
@@ -278,7 +303,7 @@ pub enum SimAction {
 
 impl SimAction {
     pub fn type_name(&self) -> &'static str {
-        match self {
+        let name = match self {
             SimAction::Choose(_) => "choose",
             SimAction::Reroll => "reroll",
             SimAction::Event { .. } => "event",
@@ -294,10 +319,15 @@ impl SimAction {
             SimAction::Skip => "skip",
             SimAction::Close => "close",
             SimAction::Early => "early",
-        }
+        };
+        assert!(!name.is_empty());
+        assert!(name.len() <= 16);
+        name
     }
 
     pub fn same_action(&self, other: &Self) -> bool {
+        assert!(!self.type_name().is_empty());
+        assert!(!other.type_name().is_empty());
         match (self, other) {
             (
                 SimAction::Deliver {
@@ -313,6 +343,8 @@ impl SimAction {
                     escort: e2,
                 },
             ) => {
+                assert!((*vl1 as usize) <= v1.len());
+                assert!((*vl2 as usize) <= v2.len());
                 if e1 != e2 || m1 != m2 || vl1 != vl2 {
                     return false;
                 }
@@ -326,6 +358,8 @@ impl SimAction {
 }
 
 pub fn apply_action(st: &mut SimState, action: &SimAction) -> bool {
+    assert!((st.position as usize) < st.cells.len());
+    assert!((st.pending_len as usize) <= st.pending.len());
     match *action {
         SimAction::Choose(id) => st.choose(id),
         SimAction::Reroll => st.reroll_offer(),
@@ -343,7 +377,10 @@ pub fn apply_action(st: &mut SimState, action: &SimAction) -> bool {
             ref vault_ids,
             vault_len,
             escort,
-        } => st.deliver_mask(cell_mask, &vault_ids[..vault_len as usize], escort),
+        } => {
+            assert!((vault_len as usize) <= vault_ids.len());
+            st.deliver_mask(cell_mask, &vault_ids[..vault_len as usize], escort)
+        }
         SimAction::Skip => st.skip_delivery(),
         SimAction::Close => st.cancel_early_delivery(),
         SimAction::Early => st.open_early_delivery(),

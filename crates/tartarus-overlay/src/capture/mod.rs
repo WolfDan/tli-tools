@@ -10,6 +10,13 @@ pub use linux::WindowCapturer;
 #[cfg(target_os = "windows")]
 pub use windows::WindowCapturer;
 
+const THUMB_PIXELS: usize = 64 * 36;
+
+const _: () = {
+    assert!(THUMB_PIXELS == 2304);
+    assert!(THUMB_PIXELS.is_multiple_of(16));
+};
+
 #[derive(Clone, Copy, Debug)]
 pub struct CapturedFrame<'a> {
     pub width: usize,
@@ -34,17 +41,19 @@ pub struct GameWindowPlacement {
     pub monitor_index: Option<usize>,
     pub monitor_spatial_rank: Option<usize>,
     pub monitor: Option<MonitorRect>,
-    pub total_monitors: usize,
+    pub monitors_total: usize,
 }
 
 #[inline]
-fn luma_sad(a: &[f32; 64 * 36], b: &[f32; 64 * 36]) -> f32 {
+fn luma_sad(a: &[f32; THUMB_PIXELS], b: &[f32; THUMB_PIXELS]) -> f32 {
     use std::simd::num::SimdFloat;
     use std::simd::prelude::*;
+    assert_eq!(a.len(), THUMB_PIXELS);
+    assert_eq!(b.len(), THUMB_PIXELS);
     let mut acc0 = f32x8::splat(0.0);
     let mut acc1 = f32x8::splat(0.0);
     let mut i = 0usize;
-    while i < 64 * 36 {
+    while i < THUMB_PIXELS {
         let va0 = f32x8::from_slice(&a[i..i + 8]);
         let vb0 = f32x8::from_slice(&b[i..i + 8]);
         let va1 = f32x8::from_slice(&a[i + 8..i + 16]);
@@ -53,12 +62,15 @@ fn luma_sad(a: &[f32; 64 * 36], b: &[f32; 64 * 36]) -> f32 {
         acc1 += (va1 - vb1).abs();
         i += 16;
     }
-    (acc0 + acc1).reduce_sum()
+    let sad_total = (acc0 + acc1).reduce_sum();
+    assert!(sad_total >= 0.0 && sad_total.is_finite());
+    sad_total
 }
 
 #[inline]
 pub fn bgra_to_rgba_in_place(buf: &mut [u8]) {
     use std::simd::prelude::*;
+    assert!(buf.len().is_multiple_of(4));
     let alpha = u8x32::from_array([
         0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0,
         0, 255, 0, 0, 0, 255,
@@ -77,6 +89,7 @@ pub fn bgra_to_rgba_in_place(buf: &mut [u8]) {
         swapped.copy_to_slice(&mut buf[i..i + 32]);
         i += 32;
     }
+    assert!(i <= n);
     for px in buf[i..].as_chunks_mut::<4>().0 {
         px.swap(0, 2);
         px[3] = 255;
@@ -85,7 +98,7 @@ pub fn bgra_to_rgba_in_place(buf: &mut [u8]) {
 
 /// Downsampled 64x36 luma buffer for sub-millisecond stillness checks.
 pub struct StillnessTracker {
-    prev_thumb: Option<[f32; 64 * 36]>,
+    prev_thumb: Option<[f32; THUMB_PIXELS]>,
     pub moved: bool,
     pub still_count: u8,
     pub last_diff: f32,
@@ -93,7 +106,10 @@ pub struct StillnessTracker {
 
 impl Default for StillnessTracker {
     fn default() -> Self {
-        Self::new()
+        let tracker = Self::new();
+        assert!(!tracker.moved);
+        assert_eq!(tracker.still_count, 0);
+        tracker
     }
 }
 
@@ -105,12 +121,15 @@ impl StillnessTracker {
     pub const STILL_LOOKS: u8 = 7;
 
     pub fn new() -> Self {
-        Self {
+        let tracker = Self {
             prev_thumb: None,
             moved: false,
             still_count: 0,
             last_diff: 0.0,
-        }
+        };
+        assert!(!tracker.moved);
+        assert_eq!(tracker.still_count, 0);
+        tracker
     }
 
     pub fn reset(&mut self) {
@@ -118,13 +137,17 @@ impl StillnessTracker {
         self.moved = false;
         self.still_count = 0;
         self.last_diff = 0.0;
+        assert!(self.prev_thumb.is_none());
+        assert!(!self.moved && self.still_count == 0);
     }
 
-    pub fn compute_thumb(frame: &CapturedFrame<'_>) -> [f32; 64 * 36] {
-        let mut out = [0.0_f32; 64 * 36];
+    pub fn compute_thumb(frame: &CapturedFrame<'_>) -> [f32; THUMB_PIXELS] {
+        let mut out = [0.0_f32; THUMB_PIXELS];
         if frame.width == 0 || frame.height == 0 {
             return out;
         }
+        assert!(frame.rgba.len() >= frame.width * frame.height * 4);
+        assert_eq!(Self::W * Self::H, THUMB_PIXELS);
         for ty in 0..Self::H {
             let sy = (ty * frame.height) / Self::H;
             let row_off = sy * frame.width;
@@ -140,13 +163,15 @@ impl StillnessTracker {
         out
     }
 
-    /// Pushes a frame into the stillness tracker and updates `moved`, `still_count`, and `last_diff`.
+    /// Pushes a frame into the stillness tracker and updates `moved`,
+    /// `still_count`, and `last_diff`.
     pub fn push(&mut self, frame: &CapturedFrame<'_>) {
         let cur = Self::compute_thumb(frame);
+        assert_eq!(cur.len(), THUMB_PIXELS);
         if let Some(prev) = &self.prev_thumb {
             let sum = luma_sad(&cur, prev);
             let mean_diff = sum / ((Self::W * Self::H) as f32);
-            let mut max_tile_diff = 0.0_f32;
+            let mut tile_diff_max = 0.0_f32;
             for ty in 0..6 {
                 for tx in 0..8 {
                     let mut tile_sum = 0.0_f32;
@@ -158,12 +183,13 @@ impl StillnessTracker {
                         }
                     }
                     let tile_mean = tile_sum / 48.0;
-                    if tile_mean > max_tile_diff {
-                        max_tile_diff = tile_mean;
+                    if tile_mean > tile_diff_max {
+                        tile_diff_max = tile_mean;
                     }
                 }
             }
-            let diff = mean_diff.max(max_tile_diff * 0.25);
+            let diff = mean_diff.max(tile_diff_max * 0.25);
+            assert!(diff >= 0.0 && diff.is_finite());
             self.last_diff = diff;
             if diff > Self::MOVE_DIFF {
                 self.moved = true;
@@ -175,22 +201,31 @@ impl StillnessTracker {
             }
         }
         self.prev_thumb = Some(cur);
+        assert!(self.prev_thumb.is_some());
     }
 
     /// Moved, then held still for at least `STILL_LOOKS` probes.
     pub fn settled(&self) -> bool {
+        assert!(self.last_diff.is_finite());
+        assert!(self.last_diff >= 0.0);
         self.moved && self.still_count >= Self::STILL_LOOKS
     }
 
     /// Moving right now (`last_diff > MOVE_DIFF`).
     pub fn moving(&self) -> bool {
+        assert!(self.last_diff.is_finite());
+        assert!(self.last_diff >= 0.0);
         self.prev_thumb.is_some() && self.last_diff > Self::MOVE_DIFF
     }
 }
 
 pub fn is_torchlight_title(title: &str) -> bool {
     let t = title.trim();
-    t.eq_ignore_ascii_case("Torchlight: Infinite") || t.starts_with("Torchlight: Infinite")
+    let matched =
+        t.eq_ignore_ascii_case("Torchlight: Infinite") || t.starts_with("Torchlight: Infinite");
+    assert!(!matched || !t.is_empty());
+    assert!(t.len() <= title.len());
+    matched
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]

@@ -1,4 +1,5 @@
-//! HUD element readers: bottom door cards, decision cards, days remaining, torture instruments panel, chromatic vault, and HUD objective.
+//! HUD element readers: bottom door cards, decision cards, days remaining,
+//! torture instruments panel, chromatic vault, and HUD objective.
 
 use tartarus_core::{FixedVec, ObjectiveId, ToolId};
 
@@ -11,19 +12,69 @@ use super::ocr::{
     text_lines_radii_with_slot, text_radii, text_radii_for_scale,
 };
 
+pub type DoorCandidates = FixedVec<FixedVec<(u8, f32), 8>, 4>;
+
 #[derive(Clone, Debug)]
 pub struct DoorsRead {
     pub cells: FixedVec<u8, 4>,
     pub conf: f32,
-    pub candidates: Vec<Vec<(u8, f32)>>,
+    pub candidates: DoorCandidates,
     pub office_card: bool,
 }
 
+fn search_door_tuples(
+    candidates: &[FixedVec<(u8, f32), 8>],
+    k: usize,
+    warden_cell: Option<u8>,
+) -> (FixedVec<u8, 4>, f32) {
+    assert!((1..=3).contains(&k));
+    assert!(candidates.len() >= k);
+    let mut stack = [(0usize, [0u8; 3], 0.0_f32, 0.0_f32); 85];
+    let mut sp = 1usize;
+    let mut best_adj = f32::NEG_INFINITY;
+    let mut best_raw = 0.0_f32;
+    let mut best_cells = FixedVec::new();
+    let mut iterations = 0usize;
+    while sp > 0 {
+        iterations += 1;
+        assert!(iterations <= 128);
+        sp -= 1;
+        let (idx, cur, adj_sum, raw_sum) = stack[sp];
+        if idx == k {
+            if adj_sum > best_adj {
+                best_adj = adj_sum;
+                best_raw = raw_sum;
+                best_cells.clear();
+                best_cells.extend_from_slice(&cur[..k]);
+            }
+            continue;
+        }
+        let take_n = candidates[idx].len().min(4);
+        for &(cell_idx, sc) in candidates[idx].as_slice()[..take_n].iter().rev() {
+            if cur[..idx].contains(&cell_idx) {
+                continue;
+            }
+            let penalty = if warden_cell == Some(cell_idx) {
+                0.16
+            } else {
+                0.0
+            };
+            let mut next_cur = cur;
+            next_cur[idx] = cell_idx;
+            stack[sp] = (idx + 1, next_cur, adj_sum + sc - penalty, raw_sum + sc);
+            sp += 1;
+        }
+    }
+    (best_cells, best_raw)
+}
+
 fn solve_door_assignment(
-    candidates: &[Vec<(u8, f32)>],
+    candidates: &[FixedVec<(u8, f32), 8>],
     office_card: bool,
     warden_cell: Option<u8>,
 ) -> Option<(FixedVec<u8, 4>, f32)> {
+    assert!(candidates.len() <= 4);
+    assert!(warden_cell.is_none_or(|c| c < 16));
     let k = candidates.len();
     if k == 0 {
         if office_card {
@@ -33,56 +84,8 @@ fn solve_door_assignment(
         }
         return None;
     }
-
-    struct DoorSearch<'a> {
-        k: usize,
-        candidates: &'a [Vec<(u8, f32)>],
-        warden_cell: Option<u8>,
-        cur: [u8; 3],
-        best_adj: f32,
-        best_raw: f32,
-        best_cells: FixedVec<u8, 4>,
-    }
-
-    impl DoorSearch<'_> {
-        fn step(&mut self, idx: usize, adj_sum: f32, raw_sum: f32) {
-            if idx == self.k {
-                if adj_sum > self.best_adj {
-                    self.best_adj = adj_sum;
-                    self.best_raw = raw_sum;
-                    self.best_cells.clear();
-                    self.best_cells.extend_from_slice(&self.cur[..self.k]);
-                }
-                return;
-            }
-            for &(cell_idx, sc) in self.candidates[idx].iter().take(4) {
-                if self.cur[..idx].contains(&cell_idx) {
-                    continue;
-                }
-                let penalty = if self.warden_cell == Some(cell_idx) {
-                    0.16
-                } else {
-                    0.0
-                };
-                self.cur[idx] = cell_idx;
-                self.step(idx + 1, adj_sum + sc - penalty, raw_sum + sc);
-            }
-        }
-    }
-
-    let mut searcher = DoorSearch {
-        k: k.min(3),
-        candidates,
-        warden_cell,
-        cur: [0u8; 3],
-        best_adj: f32::NEG_INFINITY,
-        best_raw: 0.0,
-        best_cells: FixedVec::new(),
-    };
-    searcher.step(0, 0.0, 0.0);
-    let mut best_cells = searcher.best_cells;
-    let mut best_raw_score = searcher.best_raw;
-
+    let (mut best_cells, mut best_raw_score) =
+        search_door_tuples(candidates, k.min(3), warden_cell);
     if best_cells.is_empty() {
         for list in candidates {
             if let Some(&(c, sc)) = list.first() {
@@ -93,7 +96,6 @@ fn solve_door_assignment(
             }
         }
     }
-
     if office_card && !best_cells.contains(&0) {
         let _ = best_cells.try_push(0);
     }
@@ -103,9 +105,11 @@ fn solve_door_assignment(
 }
 
 pub fn refine_doors_with_warden(doors: &mut Option<DoorsRead>, warden_cell: Option<u8>) {
+    assert!(warden_cell.is_none_or(|c| c < 16));
     let Some(d) = doors else {
         return;
     };
+    assert!(d.candidates.len() <= 4);
     if d.candidates.is_empty() {
         return;
     }
@@ -115,52 +119,116 @@ pub fn refine_doors_with_warden(doors: &mut Option<DoorsRead>, warden_cell: Opti
     }
 }
 
+type DoorPieceMatch = (Piece, i32, f64, Vec<Blob>, f32);
+
+fn extract_door_card_piece(img: &ImageView<'_>, p: &Piece) -> Option<DoorPieceMatch> {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(!p.glyphs.is_empty());
+    let cap = p.glyphs[0].h as f64;
+    if cap < 6.0 || p.glyphs.len() < 4 {
+        return None;
+    }
+    let span = ((p.x1 - p.x0) as f64) / cap;
+    if !(5.9..=7.8).contains(&span) {
+        return None;
+    }
+    let mut start = (p.x0 as f64) + PREFIX_NUM * cap;
+    let mut gap_best = 0i32;
+    for i in 0..(p.glyphs.len() - 1) {
+        let end = ((p.glyphs[i].x1 - p.x0) as f64) / cap;
+        let gap = p.glyphs[i + 1].x0 - p.glyphs[i].x1;
+        if (4.9..=6.1).contains(&end) && gap > gap_best {
+            gap_best = gap;
+            start = p.glyphs[i + 1].x0 as f64;
+        }
+    }
+    let num: Vec<Blob> = p
+        .glyphs
+        .iter()
+        .copied()
+        .filter(|g| (g.x0 as f64) >= start && (g.h as f64) >= 0.45 * cap)
+        .collect();
+    if num.is_empty() || num.len() > 2 {
+        return None;
+    }
+    let like = prefix_like(img, p);
+    if like < 0.50 {
+        return None;
+    }
+    let mid = (p.y0 + p.y1) as f64 * 0.5;
+    Some((p.clone(), cap as i32, mid, num, 1.0 - like))
+}
+
+fn has_office_door_card(all_pieces: &[Piece], best_group: &[DoorPieceMatch]) -> bool {
+    if best_group.is_empty() {
+        return false;
+    }
+    let h = best_group[0].1 as f64;
+    assert!(h > 0.0);
+    assert!(!all_pieces.is_empty());
+    all_pieces.iter().any(|p| {
+        let cap = p.glyphs[0].h as f64;
+        let mid = (p.y0 + p.y1) as f64 * 0.5;
+        if (cap - h).abs() > 0.35 * h || !best_group.iter().any(|c| (c.2 - mid).abs() < 2.2 * h) {
+            return false;
+        }
+        if best_group.iter().any(|c| c.0.x0 < p.x1 && p.x0 < c.0.x1) {
+            return false;
+        }
+        let span = ((p.x1 - p.x0) as f64) / cap;
+        let glyph_fill: f64 = p.glyphs.iter().map(|g| g.w.max(1) as f64).sum::<f64>() / cap;
+        (9.5..=20.0).contains(&span) && glyph_fill >= 5.5 && p.glyphs.len() >= 10
+    })
+}
+
+fn decode_door_group_candidates(
+    img: &ImageView<'_>,
+    best_group: &[DoorPieceMatch],
+) -> Option<DoorCandidates> {
+    assert!(!best_group.is_empty());
+    assert!(best_group.len() <= 4);
+    let mut candidates: DoorCandidates = FixedVec::new();
+    for c in best_group {
+        let mut whole = read_number(img, &c.3, c.1, &ALLOWED_CELLS);
+        if c.3.len() == 1
+            && (c.3[0].w as f64) > 0.72 * (c.1 as f64)
+            && let Some(parts) = split_glyph(img, &c.3[0])
+        {
+            whole.extend(read_number(img, &parts, c.1, &ALLOWED_CELLS));
+            whole.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        }
+        if whole.is_empty() {
+            return None;
+        }
+        let mut card_cands: FixedVec<(u8, f32), 8> = FixedVec::new();
+        for (val, sc) in whole {
+            let idx = (val - 1) as u8;
+            if !card_cands.iter().any(|&(existing, _)| existing == idx) {
+                let _ = card_cands.try_push((idx, sc));
+            }
+        }
+        let _ = candidates.try_push(card_cands);
+    }
+    Some(candidates)
+}
+
 pub(crate) fn read_doors_from_lines(
     img: &ImageView<'_>,
     lines_by_r: &[Vec<Line>],
 ) -> Option<DoorsRead> {
-    let mut best_group: Vec<(Piece, i32, f64, Vec<Blob>, f32)> = Vec::new();
+    assert!(img.width > 0);
+    assert!(img.height > 0);
+    let mut best_group: Vec<DoorPieceMatch> = Vec::new();
     let mut best_fit = f32::INFINITY;
     let mut all_pieces: Vec<Piece> = Vec::new();
-
     for lines in lines_by_r {
         let mut cards = Vec::new();
         for line in lines {
             for p in &line.pieces {
                 all_pieces.push(p.clone());
-                let cap = p.glyphs[0].h as f64;
-                if cap < 6.0 || p.glyphs.len() < 4 {
-                    continue;
+                if let Some(card) = extract_door_card_piece(img, p) {
+                    cards.push(card);
                 }
-                let span = ((p.x1 - p.x0) as f64) / cap;
-                if !(5.9..=7.8).contains(&span) {
-                    continue;
-                }
-                let mut start = (p.x0 as f64) + PREFIX_NUM * cap;
-                let mut gap_best = 0i32;
-                for i in 0..(p.glyphs.len() - 1) {
-                    let end = ((p.glyphs[i].x1 - p.x0) as f64) / cap;
-                    let gap = p.glyphs[i + 1].x0 - p.glyphs[i].x1;
-                    if (4.9..=6.1).contains(&end) && gap > gap_best {
-                        gap_best = gap;
-                        start = p.glyphs[i + 1].x0 as f64;
-                    }
-                }
-                let num: Vec<Blob> = p
-                    .glyphs
-                    .iter()
-                    .copied()
-                    .filter(|g| (g.x0 as f64) >= start && (g.h as f64) >= 0.45 * cap)
-                    .collect();
-                if num.is_empty() || num.len() > 2 {
-                    continue;
-                }
-                let like = prefix_like(img, p);
-                if like < 0.50 {
-                    continue;
-                }
-                let mid = (p.y0 + p.y1) as f64 * 0.5;
-                cards.push((p.clone(), cap as i32, mid, num, 1.0 - like));
             }
         }
         for c in &cards {
@@ -183,55 +251,12 @@ pub(crate) fn read_doors_from_lines(
             }
         }
     }
-
-    let office_card = if !best_group.is_empty() {
-        let h = best_group[0].1 as f64;
-        all_pieces.iter().any(|p| {
-            let cap = p.glyphs[0].h as f64;
-            let mid = (p.y0 + p.y1) as f64 * 0.5;
-            if (cap - h).abs() > 0.35 * h || !best_group.iter().any(|c| (c.2 - mid).abs() < 2.2 * h)
-            {
-                return false;
-            }
-            if best_group.iter().any(|c| c.0.x0 < p.x1 && p.x0 < c.0.x1) {
-                return false;
-            }
-            let span = ((p.x1 - p.x0) as f64) / cap;
-            let glyph_fill: f64 = p.glyphs.iter().map(|g| g.w.max(1) as f64).sum::<f64>() / cap;
-            (9.5..=20.0).contains(&span) && glyph_fill >= 5.5 && p.glyphs.len() >= 10
-        })
-    } else {
-        false
-    };
-
+    let office_card = has_office_door_card(&all_pieces, &best_group);
     if best_group.len() < 2 && !(best_group.len() == 1 && office_card) {
         return None;
     }
     best_group.sort_by_key(|c| c.0.x0);
-
-    let mut candidates: Vec<Vec<(u8, f32)>> = Vec::with_capacity(best_group.len());
-    for c in &best_group {
-        let mut whole = read_number(img, &c.3, c.1, &ALLOWED_CELLS);
-        if c.3.len() == 1
-            && (c.3[0].w as f64) > 0.72 * (c.1 as f64)
-            && let Some(parts) = split_glyph(img, &c.3[0])
-        {
-            whole.extend(read_number(img, &parts, c.1, &ALLOWED_CELLS));
-            whole.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        }
-        if whole.is_empty() {
-            return None;
-        }
-        let mut card_cands: Vec<(u8, f32)> = Vec::with_capacity(whole.len());
-        for (val, sc) in whole {
-            let idx = (val - 1) as u8;
-            if !card_cands.iter().any(|&(existing, _)| existing == idx) {
-                card_cands.push((idx, sc));
-            }
-        }
-        candidates.push(card_cands);
-    }
-
+    let candidates = decode_door_group_candidates(img, &best_group)?;
     let (cells, conf) = solve_door_assignment(&candidates, office_card, None)?;
     Some(DoorsRead {
         cells,
@@ -241,7 +266,19 @@ pub(crate) fn read_doors_from_lines(
     })
 }
 
+#[inline]
+fn are_paired_day_digits(a: &Blob, b: &Blob) -> bool {
+    debug_assert!(a.h > 0);
+    debug_assert!(b.h > 0);
+    ((b.h - a.h).abs() as f64) < 0.2 * (a.h as f64)
+        && ((b.x0 - a.x1) as f64) < 0.7 * (a.h as f64)
+        && (b.w as f64) < (b.h as f64) * 1.1
+        && (a.w as f64) < (a.h as f64) * 1.1
+}
+
 fn extract_days_from_lines(img: &ImageView<'_>, lines: &[Line]) -> Option<(u8, f32)> {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     let tallest = lines
         .iter()
         .flat_map(|l| {
@@ -253,14 +290,6 @@ fn extract_days_from_lines(img: &ImageView<'_>, lines: &[Line]) -> Option<(u8, f
         .max()
         .unwrap_or(1)
         .max(1) as f64;
-
-    let pair = |a: &Blob, b: &Blob| -> bool {
-        ((b.h - a.h).abs() as f64) < 0.2 * (a.h as f64)
-            && ((b.x0 - a.x1) as f64) < 0.7 * (a.h as f64)
-            && (b.w as f64) < (b.h as f64) * 1.1
-            && (a.w as f64) < (a.h as f64) * 1.1
-    };
-
     let mut best: Option<(f64, Vec<Blob>, i32)> = None;
     for line in lines {
         let glyphs: Vec<Blob> = line
@@ -276,12 +305,12 @@ fn extract_days_from_lines(img: &ImageView<'_>, lines: &[Line]) -> Option<(u8, f
             if a.h < 8
                 || (a.h as f64) > (img.height as f64) * 0.09
                 || (a.w as f64) > (a.h as f64) * 1.1
-                || (i > 0 && pair(&glyphs[i - 1], &a))
+                || (i > 0 && are_paired_day_digits(&glyphs[i - 1], &a))
             {
                 continue;
             }
             let mut word = vec![a];
-            if i + 1 < glyphs.len() && pair(&a, &glyphs[i + 1]) {
+            if i + 1 < glyphs.len() && are_paired_day_digits(&a, &glyphs[i + 1]) {
                 word.push(glyphs[i + 1]);
             }
             let end = word.last().unwrap().x1;
@@ -306,7 +335,6 @@ fn extract_days_from_lines(img: &ImageView<'_>, lines: &[Line]) -> Option<(u8, f
             }
         }
     }
-
     let (_, word, h_val) = best?;
     let res = read_number(img, &word, h_val, &ALLOWED_DAYS);
     let &(days, score) = res.first()?;
@@ -318,6 +346,8 @@ pub fn read_days_with_slot(
     loc: &BoardLoc,
     slot: &mut ScanScratchSlot,
 ) -> Option<(u8, f32)> {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(loc.s > 0.0);
     if loc.by_labels {
         return None;
     }
@@ -326,7 +356,7 @@ pub fn read_days_with_slot(
         return None;
     }
     let radii = text_radii_for_scale(loc.s);
-    let max_h = (72.0 * loc.s).max(24.0);
+    let h_max = (72.0 * loc.s).max(24.0);
     let y1 = top.min(115.0 * loc.s);
     let fast_lines: Vec<Line> = text_lines_radii_with_slot(
         img,
@@ -336,7 +366,7 @@ pub fn read_days_with_slot(
             (img.width as f64) * 0.65,
             y1,
         ],
-        (8.0, max_h),
+        (8.0, h_max),
         &radii[1..4],
         1.01,
         slot,
@@ -353,7 +383,6 @@ pub fn read_days_with_slot(
     if fast_lines.is_empty() {
         return None;
     }
-
     let rem_radii = [radii[0]];
     let lines: Vec<Line> = text_lines_radii_with_slot(
         img,
@@ -363,7 +392,7 @@ pub fn read_days_with_slot(
             (img.width as f64) * 0.68,
             top,
         ],
-        (8.0, max_h),
+        (8.0, h_max),
         &rem_radii,
         1.01,
         slot,
@@ -385,8 +414,9 @@ pub fn art_feature(
     x1: i32,
     y1: i32,
 ) -> ([f32; 72], [f32; 13]) {
-    let gx = 4usize;
-    let gy = 6usize;
+    assert!(img.width > 0);
+    assert!(img.height > 0);
+    let (gx, gy) = (4usize, 6usize);
     let mut grid = [0.0_f32; 72];
     let mut hist = [0.0_f32; 13];
     let cx0 = x0.clamp(0, img.width as i32 - 1);
@@ -402,26 +432,20 @@ pub fn art_feature(
         for i in 0..gx {
             let px0 = (cx0 as usize) + (i * w) / gx;
             let px1 = (cx0 as usize) + ((i + 1) * w) / gx;
-            let mut r = 0.0_f32;
-            let mut g = 0.0_f32;
-            let mut b = 0.0_f32;
+            let (mut r, mut g, mut b) = (0.0_f32, 0.0_f32, 0.0_f32);
             let mut n = 0usize;
             for y in py0..py1 {
                 let row_base = y * img.width * 4;
                 for x in px0..px1 {
                     let o = row_base + x * 4;
-                    let rr = img.data[o];
-                    let gg = img.data[o + 1];
-                    let bb = img.data[o + 2];
-                    let rf = rr as f32;
-                    let gf = gg as f32;
-                    let bf = bb as f32;
+                    let (rr, gg, bb) = (img.data[o], img.data[o + 1], img.data[o + 2]);
+                    let (rf, gf, bf) = (rr as f32, gg as f32, bb as f32);
                     r += rf;
                     g += gf;
                     b += bf;
                     n += 1;
                     let mx = rr.max(gg).max(bb);
-                    let mn = rr.min(gg).min(bb);
+                    let mn = r_min_u8(rr, gg, bb);
                     if mx > 63 && ((mx - mn) as u32) * 4 > (mx as u32) {
                         let (hh, ss, vv) = hsv(rf, gf, bf);
                         hist[((hh / 30.0).floor() as usize) % 12] += ss * vv;
@@ -443,12 +467,22 @@ pub fn art_feature(
 }
 
 #[inline]
+fn r_min_u8(r: u8, g: u8, b: u8) -> u8 {
+    let mn = r.min(g).min(b);
+    debug_assert!(mn <= r);
+    debug_assert!(mn <= g && mn <= b);
+    mn
+}
+
+#[inline]
 pub fn art_similarity(
     a_grid: &[f32; 72],
     a_hist: &[f32; 13],
     b_grid: &[f32; 72],
     b_hist: &[f32; 13],
 ) -> f32 {
+    debug_assert_eq!(a_grid.len(), 72);
+    debug_assert_eq!(a_hist.len(), 13);
     let am = a_grid.iter().sum::<f32>() / 72.0;
     let bm = b_grid.iter().sum::<f32>() / 72.0;
     let mut ac = [0.0_f32; 72];
@@ -471,102 +505,103 @@ pub struct ScannedTool {
 
 impl Default for ScannedTool {
     fn default() -> Self {
-        Self {
+        let tool = Self {
             id: "",
             sim: ToolId::Revenge,
             name: "",
             score: 0.0,
             conf: 0.0,
-        }
+        };
+        debug_assert!(tool.id.is_empty());
+        debug_assert_eq!(tool.score, 0.0);
+        tool
     }
 }
 
 pub fn is_overlay_occluded(img: &ImageView<'_>, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
     let ix0 = (x0.round() as isize).clamp(0, img.width as isize - 1) as usize;
     let ix1 = (x1.round() as isize).clamp(ix0 as isize, img.width as isize - 1) as usize;
     let iy0 = (y0.round() as isize).clamp(0, img.height as isize - 1) as usize;
     let iy1 = (y1.round() as isize).clamp(iy0 as isize, img.height as isize - 1) as usize;
     let mut cool = 0usize;
     let mut total = 0usize;
-    let mut y = iy0;
-    while y <= iy1 {
-        let mut x = ix0;
-        while x <= ix1 {
+    for y in (iy0..=iy1).step_by(2) {
+        for x in (ix0..=ix1).step_by(2) {
             let (r, g, b) = img.rgb_at(x as isize, y as isize);
             total += 1;
             if b > r.saturating_add(3) && g >= r {
                 cool += 1;
             }
-            x += 2;
         }
-        y += 2;
     }
     total > 0 && cool * 3 >= total
 }
 
-pub fn read_tools_with_slot(
-    img: &ImageView<'_>,
-    loc: &BoardLoc,
-    _slot: &mut ScanScratchSlot,
-) -> (FixedVec<ScannedTool, 6>, Option<LabelBox>) {
-    let left = loc.at(0.0, 0.0).0.min(loc.at(0.0, 3.0).0) - 70.0 * loc.s;
-    if left < 30.0 {
-        return (FixedVec::new(), None);
+#[inline]
+fn mean_value_rect(img: &ImageView<'_>, x0: f64, y0: f64, x1: f64, y1: f64) -> f64 {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
+    let mut sum = 0.0_f64;
+    let mut n = 0usize;
+    let iy0 = (y0.round() as isize).max(0) as usize;
+    let iy1 = (y1 as isize).min(img.height as isize - 1);
+    let ix0 = (x0.round() as isize).max(0) as usize;
+    let ix1 = (x1 as isize).min(img.width as isize - 1);
+    if iy1 < iy0 as isize || ix1 < ix0 as isize {
+        return 0.0;
     }
-    let h = 11.17 * loc.s;
-    let mean_v = |x0: f64, y0: f64, x1: f64, y1: f64| -> f64 {
-        let mut sum = 0.0_f64;
-        let mut n = 0usize;
-        let iy0 = (y0.round() as isize).max(0) as usize;
-        let iy1 = (y1 as isize).min(img.height as isize - 1);
-        let ix0 = (x0.round() as isize).max(0) as usize;
-        let ix1 = (x1 as isize).min(img.width as isize - 1);
-        if iy1 < iy0 as isize || ix1 < ix0 as isize {
-            return 0.0;
+    for y in iy0..=(iy1 as usize) {
+        for x in ix0..=(ix1 as usize) {
+            let (r, g, b) = img.rgb_at(x as isize, y as isize);
+            sum += (r.max(g).max(b) as f64) / 255.0;
+            n += 1;
         }
-        for y in iy0..=(iy1 as usize) {
-            for x in ix0..=(ix1 as usize) {
-                let (r, g, b) = img.rgb_at(x as isize, y as isize);
-                sum += (r.max(g).max(b) as f64) / 255.0;
-                n += 1;
-            }
+    }
+    if n > 0 { sum / (n as f64) } else { 0.0 }
+}
+
+fn card_frame_edge_score(img: &ImageView<'_>, rect: [f64; 4], h: f64) -> f64 {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(h > 0.0 && h.is_finite());
+    let [x0, y0, x1, y1] = rect;
+    let w = (0.1 * h).round().max(2.0);
+    let reach = (0.15 * h).round().max(2.0) as isize;
+    let (ya, yb) = (y0 + 0.8 * h, y1 - 0.8 * h);
+    let (xa, xb) = (x0 + 0.8 * h, x1 - 0.8 * h);
+    let step = |f: &dyn Fn(f64) -> f64| -> f64 {
+        let mut best = 0.0_f64;
+        for o in -reach..=reach {
+            best = best.max(f(o as f64).abs());
         }
-        if n > 0 { sum / (n as f64) } else { 0.0 }
+        best
     };
+    let mut edges = [
+        step(&|o| {
+            mean_value_rect(img, x0 + o - w, ya, x0 + o - 1.0, yb)
+                - mean_value_rect(img, x0 + o + 1.0, ya, x0 + o + w, yb)
+        }),
+        step(&|o| {
+            mean_value_rect(img, x1 + o - w, ya, x1 + o - 1.0, yb)
+                - mean_value_rect(img, x1 + o + 1.0, ya, x1 + o + w, yb)
+        }),
+        step(&|o| {
+            mean_value_rect(img, xa, y0 + o - w, xb, y0 + o - 1.0)
+                - mean_value_rect(img, xa, y0 + o + 1.0, xb, y0 + o + w)
+        }),
+        step(&|o| {
+            mean_value_rect(img, xa, y1 + o - w, xb, y1 + o - 1.0)
+                - mean_value_rect(img, xa, y1 + o + 1.0, xb, y1 + o + w)
+        }),
+    ];
+    edges.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    (edges[1] + edges[2]) * 0.5
+}
 
-    let card_frame_edge = |x0: f64, y0: f64, x1: f64, y1: f64| -> f64 {
-        let w = (0.1 * h).round().max(2.0);
-        let reach = (0.15 * h).round().max(2.0) as isize;
-        let ya = y0 + 0.8 * h;
-        let yb = y1 - 0.8 * h;
-        let xa = x0 + 0.8 * h;
-        let xb = x1 - 0.8 * h;
-        let step = |f: &dyn Fn(f64) -> f64| -> f64 {
-            let mut best = 0.0_f64;
-            for o in -reach..=reach {
-                best = best.max(f(o as f64).abs());
-            }
-            best
-        };
-        let mut edges = [
-            step(&|o| {
-                mean_v(x0 + o - w, ya, x0 + o - 1.0, yb) - mean_v(x0 + o + 1.0, ya, x0 + o + w, yb)
-            }),
-            step(&|o| {
-                mean_v(x1 + o - w, ya, x1 + o - 1.0, yb) - mean_v(x1 + o + 1.0, ya, x1 + o + w, yb)
-            }),
-            step(&|o| {
-                mean_v(xa, y0 + o - w, xb, y0 + o - 1.0) - mean_v(xa, y0 + o + 1.0, xb, y0 + o + w)
-            }),
-            step(&|o| {
-                mean_v(xa, y1 + o - w, xb, y1 + o - 1.0) - mean_v(xa, y1 + o + 1.0, xb, y1 + o + w)
-            }),
-        ];
-        edges.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        (edges[1] + edges[2]) * 0.5
-    };
-
-    // Direct UMG left-panel anchor with sub-millisecond Slot-0 frame micro-alignment (zero OCR)
+fn align_tools_panel_label(img: &ImageView<'_>, loc: &BoardLoc, left: f64, h: f64) -> LabelBox {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(loc.s > 0.0 && h > 0.0);
     let base_x0 = (54.0 * loc.s + if loc.tx < -10.0 * loc.s { loc.tx } else { 0.0 }).max(0.0);
     let base_y1 = loc.ty + 210.4 * loc.s;
     let mut best_dx = 0.0_f64;
@@ -581,7 +616,7 @@ pub fn read_tools_with_slot(
             let sy0 = base_y1 + dy + 1.55 * h;
             let sy1 = sy0 + 7.45 * h;
             if sx1 <= left {
-                let edge = card_frame_edge(sx0, sy0, sx1, sy1);
+                let edge = card_frame_edge_score(img, [sx0, sy0, sx1, sy1], h);
                 if edge > best_edge {
                     best_edge = edge;
                     best_dx = dx;
@@ -590,99 +625,122 @@ pub fn read_tools_with_slot(
             }
         }
     }
-    let label = LabelBox {
+    LabelBox {
         x0: (base_x0 + best_dx).round() as i32,
         x1: (base_x0 + best_dx + 12.2 * h).round() as i32,
         y0: (base_y1 + best_dy - 10.6 * loc.s).round() as i32,
         y1: (base_y1 + best_dy).round() as i32,
         h: h.round().max(1.0) as i32,
-    };
+    }
+}
 
-    let mut out = FixedVec::new();
-    for i in 0..6 {
-        let x0 = (label.x0 as f64) + (0.15 + 6.05 * (i as f64)) * h;
-        let x1 = x0 + 4.45 * h;
-        let y0 = (label.y1 as f64) + 1.55 * h;
-        let y1 = y0 + 7.45 * h;
-        if x1 > left {
-            break;
-        }
-        let mut sy0 = (y0 + 0.4 * h).round().clamp(0.0, img.height as f64 - 1.0) as i32;
-        let sy1 = (y1 - 0.4 * h).floor().clamp(0.0, img.height as f64 - 1.0) as i32;
-        let sx0 = (x0 + 0.4 * h).round().clamp(0.0, img.width as f64 - 1.0) as i32;
-        let sx1 = (x1 - 0.4 * h).floor().clamp(0.0, img.width as f64 - 1.0) as i32;
-        while sy0 < sy1 {
-            let mut cool_px = 0usize;
-            let mut tot_px = 0usize;
-            for x in sx0..=sx1 {
-                let (r, g, b) = img.rgb_at(x as isize, sy0 as isize);
-                tot_px += 1;
-                if b > r.saturating_add(2) && g >= r {
-                    cool_px += 1;
-                }
-            }
-            if tot_px > 0 && cool_px * 3 >= tot_px {
-                sy0 += 1;
-            } else {
-                break;
+fn find_tool_slot_art_bounds(img: &ImageView<'_>, rect: [f64; 4], h: f64) -> Option<[i32; 4]> {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(h > 0.0 && h.is_finite());
+    let [x0, y0, x1, y1] = rect;
+    let mut sy0 = (y0 + 0.4 * h).round().clamp(0.0, img.height as f64 - 1.0) as i32;
+    let sy1 = (y1 - 0.4 * h).floor().clamp(0.0, img.height as f64 - 1.0) as i32;
+    let sx0 = (x0 + 0.4 * h).round().clamp(0.0, img.width as f64 - 1.0) as i32;
+    let sx1 = (x1 - 0.4 * h).floor().clamp(0.0, img.width as f64 - 1.0) as i32;
+    let mut iter_rows = 0usize;
+    while sy0 < sy1 {
+        iter_rows += 1;
+        assert!(iter_rows <= 4096);
+        let mut cool_px = 0usize;
+        let mut tot_px = 0usize;
+        for x in sx0..=sx1 {
+            let (r, g, b) = img.rgb_at(x as isize, sy0 as isize);
+            tot_px += 1;
+            if b > r.saturating_add(2) && g >= r {
+                cool_px += 1;
             }
         }
-        // If we skipped overlay rows at the top, skip 1 extra border row
-        if sy0 > (y0 + 0.4 * h).round() as i32 && sy0 < sy1 {
+        if tot_px > 0 && cool_px * 3 >= tot_px {
             sy0 += 1;
+        } else {
+            break;
         }
-        let inside = mean_v(
-            x0 + 0.5 * h,
-            (sy0 as f64).max(y0 + 0.5 * h),
-            x1 - 0.5 * h,
-            y1 - 0.5 * h,
-        );
-        let wall = mean_v(x1 + 0.35 * h, (sy0 as f64).max(y0), x1 + 1.3 * h, y1);
-        let thr = 0.16_f32.max((inside * 1.9) as f32);
-        let mut ax0 = i32::MAX;
-        let mut ay0 = i32::MAX;
-        let mut ax1 = -1i32;
-        let mut ay1 = -1i32;
-        let mut art = 0usize;
-        for y in sy0..=sy1 {
-            let row_base = (y as usize) * img.width * 4;
-            for x in sx0..=sx1 {
-                let o = row_base + (x as usize) * 4;
-                let r = img.data[o];
-                let g = img.data[o + 1];
-                let b = img.data[o + 2];
-                let mx = r.max(g).max(b);
-                let v = (mx as f32) * (1.0 / 255.0);
-                if v > thr {
-                    let mn = r.min(g).min(b);
-                    if ((mx - mn) as u32) * 5 > (mx as u32) || v > thr * 1.3 {
-                        art += 1;
-                        ax0 = ax0.min(x);
-                        ax1 = ax1.max(x);
-                        ay0 = ay0.min(y);
-                        ay1 = ay1.max(y);
-                    }
-                }
+    }
+    if sy0 > (y0 + 0.4 * h).round() as i32 && sy0 < sy1 {
+        sy0 += 1;
+    }
+    let inside = mean_value_rect(
+        img,
+        x0 + 0.5 * h,
+        (sy0 as f64).max(y0 + 0.5 * h),
+        x1 - 0.5 * h,
+        y1 - 0.5 * h,
+    );
+    let wall = mean_value_rect(img, x1 + 0.35 * h, (sy0 as f64).max(y0), x1 + 1.3 * h, y1);
+    let thr = 0.16_f32.max((inside * 1.9) as f32);
+    let (mut ax0, mut ay0, mut ax1, mut ay1) = (i32::MAX, i32::MAX, -1i32, -1i32);
+    let mut art = 0usize;
+    for y in sy0..=sy1 {
+        let row_base = (y as usize) * img.width * 4;
+        for x in sx0..=sx1 {
+            let o = row_base + (x as usize) * 4;
+            let (r, g, b) = (img.data[o], img.data[o + 1], img.data[o + 2]);
+            let mx = r.max(g).max(b);
+            let v = (mx as f32) * (1.0 / 255.0);
+            if v > thr && (((mx - r_min_u8(r, g, b)) as u32) * 5 > (mx as u32) || v > thr * 1.3) {
+                art += 1;
+                ax0 = ax0.min(x);
+                ax1 = ax1.max(x);
+                ay0 = ay0.min(y);
+                ay1 = ay1.max(y);
             }
         }
-        if (art as f64) < 1.0 * h * h && !((art as f64) > 0.5 * h * h && inside > wall + 0.012) {
-            break;
-        }
-        let bw = (ax1 - ax0 + 1) as f64;
-        let bh = (ay1 - ay0 + 1) as f64;
-        if (art as f64) / (bw * bh).max(1.0) < 0.065 || bw > 2.0 * bh {
-            break;
-        }
-        if card_frame_edge(x0, y0, x1, y1) < CARD_FRAME && inside - wall < CARD_LIFT {
-            break;
-        }
+    }
+    if (art as f64) < 1.0 * h * h && !((art as f64) > 0.5 * h * h && inside > wall + 0.012) {
+        return None;
+    }
+    let bw = (ax1 - ax0 + 1) as f64;
+    let bh = (ay1 - ay0 + 1) as f64;
+    if (art as f64) / (bw * bh).max(1.0) < 0.065 || bw > 2.0 * bh {
+        return None;
+    }
+    if card_frame_edge_score(img, [x0, y0, x1, y1], h) < CARD_FRAME && inside - wall < CARD_LIFT {
+        return None;
+    }
+    Some([ax0, ay0, ax1, ay1])
+}
 
-        let (fg0, fh0) = art_feature(img, ax0, ay0, ax1, ay1);
-        let mut best_entry = &REF_TOOLS[0];
-        let mut best_sc = f32::NEG_INFINITY;
-        let mut second_sc = f32::NEG_INFINITY;
+fn match_tool_art_templates(img: &ImageView<'_>, art_box: [i32; 4]) -> ScannedTool {
+    let [ax0, ay0, ax1, ay1] = art_box;
+    assert!(ax1 >= ax0);
+    assert!(ay1 >= ay0);
+    let (fg0, fh0) = art_feature(img, ax0, ay0, ax1, ay1);
+    let mut best_entry = &REF_TOOLS[0];
+    let mut best_sc = f32::NEG_INFINITY;
+    let mut second_sc = f32::NEG_INFINITY;
+    for t in &REF_TOOLS {
+        let sc = art_similarity(&fg0, &fh0, &t.grid, &t.hist);
+        if sc > best_sc {
+            if t.id != best_entry.id {
+                second_sc = best_sc;
+            }
+            best_sc = sc;
+            best_entry = t;
+        } else if t.id != best_entry.id && sc > second_sc {
+            second_sc = sc;
+        }
+    }
+    if best_sc < 0.86 || (best_sc - second_sc) < 0.04 {
+        let extra_feats: [([f32; 72], [f32; 13]); 4] = [
+            art_feature(img, ax0 - 1, ay0, ax1 - 1, ay1),
+            art_feature(img, ax0 + 1, ay0, ax1 + 1, ay1),
+            art_feature(img, ax0, ay0 - 1, ax1, ay1 - 1),
+            art_feature(img, ax0, ay0 + 1, ax1, ay1 + 1),
+        ];
+        best_entry = &REF_TOOLS[0];
+        best_sc = f32::NEG_INFINITY;
+        second_sc = f32::NEG_INFINITY;
         for t in &REF_TOOLS {
-            let sc = art_similarity(&fg0, &fh0, &t.grid, &t.hist);
+            let sc0 = art_similarity(&fg0, &fh0, &t.grid, &t.hist);
+            let sc = extra_feats
+                .iter()
+                .map(|(fg, fh)| art_similarity(fg, fh, &t.grid, &t.hist))
+                .fold(sc0, f32::max);
             if sc > best_sc {
                 if t.id != best_entry.id {
                     second_sc = best_sc;
@@ -693,75 +751,57 @@ pub fn read_tools_with_slot(
                 second_sc = sc;
             }
         }
-        if best_sc < 0.86 || (best_sc - second_sc) < 0.04 {
-            let extra_feats: [([f32; 72], [f32; 13]); 4] = [
-                art_feature(img, ax0 - 1, ay0, ax1 - 1, ay1),
-                art_feature(img, ax0 + 1, ay0, ax1 + 1, ay1),
-                art_feature(img, ax0, ay0 - 1, ax1, ay1 - 1),
-                art_feature(img, ax0, ay0 + 1, ax1, ay1 + 1),
-            ];
-            best_entry = &REF_TOOLS[0];
-            best_sc = f32::NEG_INFINITY;
-            second_sc = f32::NEG_INFINITY;
-            for t in &REF_TOOLS {
-                let sc0 = art_similarity(&fg0, &fh0, &t.grid, &t.hist);
-                let sc = extra_feats
-                    .iter()
-                    .map(|(fg, fh)| art_similarity(fg, fh, &t.grid, &t.hist))
-                    .fold(sc0, f32::max);
-                if sc > best_sc {
-                    if t.id != best_entry.id {
-                        second_sc = best_sc;
-                    }
-                    best_sc = sc;
-                    best_entry = t;
-                } else if t.id != best_entry.id && sc > second_sc {
-                    second_sc = sc;
-                }
-            }
+    }
+    let second = if second_sc.is_finite() {
+        second_sc
+    } else {
+        0.0
+    };
+    let margin = best_sc - second;
+    let conf = ((best_sc - 0.60) * 2.5 + margin * 5.0).clamp(0.1, 1.0);
+    ScannedTool {
+        id: best_entry.id,
+        sim: best_entry.sim,
+        name: best_entry.name,
+        score: best_sc,
+        conf,
+    }
+}
+
+pub fn read_tools_with_slot(
+    img: &ImageView<'_>,
+    loc: &BoardLoc,
+    _slot: &mut ScanScratchSlot,
+) -> (FixedVec<ScannedTool, 6>, Option<LabelBox>) {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(loc.s > 0.0);
+    let left = loc.at(0.0, 0.0).0.min(loc.at(0.0, 3.0).0) - 70.0 * loc.s;
+    if left < 30.0 {
+        return (FixedVec::new(), None);
+    }
+    let h = 11.17 * loc.s;
+    let label = align_tools_panel_label(img, loc, left, h);
+    let mut out = FixedVec::new();
+    for i in 0..6 {
+        let x0 = (label.x0 as f64) + (0.15 + 6.05 * (i as f64)) * h;
+        let x1 = x0 + 4.45 * h;
+        let y0 = (label.y1 as f64) + 1.55 * h;
+        let y1 = y0 + 7.45 * h;
+        if x1 > left {
+            break;
         }
-        let second = if second_sc.is_finite() {
-            second_sc
-        } else {
-            0.0
+        let Some(art_box) = find_tool_slot_art_bounds(img, [x0, y0, x1, y1], h) else {
+            break;
         };
-        let margin = best_sc - second;
-        let conf = ((best_sc - 0.60) * 2.5 + margin * 5.0).clamp(0.1, 1.0);
-        out.push(ScannedTool {
-            id: best_entry.id,
-            sim: best_entry.sim,
-            name: best_entry.name,
-            score: best_sc,
-            conf,
-        });
+        out.push(match_tool_art_templates(img, art_box));
     }
     (out, Some(label))
 }
 
-pub fn read_chromatic_with_slot(
-    img: &ImageView<'_>,
-    loc: &BoardLoc,
-    slot: &mut ScanScratchSlot,
-) -> Option<usize> {
-    let right = loc.at(5.0, 0.0).0.max(loc.at(5.0, 3.0).0) + 60.0 * loc.s;
-    if right > (img.width as f64) - 30.0 {
-        return None;
-    }
-    let u = loc.s;
-    // Direct UMG right-panel anchor (integral image 2x5 grid search handles ±20*u alignment directly in O(1))
-    let cx = (loc.tx + 1259.0 * u).min((img.width as f64) - 21.0 * u);
-    let cy = loc.ty + 96.65 * u;
-    let x0 = ((cx - 110.0 * u).floor() as isize).max(0) as usize;
-    let x1 = ((cx + 40.0 * u).ceil() as isize)
-        .min(img.width as isize - 1)
-        .max(0) as usize;
-    let y0 = ((cy + 10.0 * u).floor() as isize).max(0) as usize;
-    let y1 = ((cy + 410.0 * u).ceil() as isize)
-        .min(img.height as isize - 1)
-        .max(0) as usize;
-    if x1 < x0 || y1 < y0 {
-        return None;
-    }
+fn build_chromatic_sat(img: &ImageView<'_>, rect: [usize; 4], slot: &mut ScanScratchSlot) {
+    let [x0, y0, x1, y1] = rect;
+    assert!(x1 >= x0 && y1 >= y0);
+    assert!(x1 < img.width && y1 < img.height);
     let sw = x1 - x0 + 2;
     let sh = y1 - y0 + 2;
     if slot.sat.len() < sw * sh {
@@ -782,31 +822,66 @@ pub fn read_chromatic_with_slot(
             sum[row_off + (x - x0 + 1)] = sum[prev_off + (x - x0 + 1)] + row;
         }
     }
-    let light_share = |x: f64, y: f64| -> f64 {
-        let a = ((x - 18.0 * u).round() as isize).max(x0 as isize) as usize;
-        let b = ((x + 18.0 * u).round() as isize).min(x1 as isize).max(0) as usize;
-        let c = ((y - 18.0 * u).round() as isize).max(y0 as isize) as usize;
-        let d = ((y + 18.0 * u).round() as isize).min(y1 as isize).max(0) as usize;
-        if b < a || d < c {
-            return 0.0;
-        }
-        let at2 = |px: usize, py: usize| sum[(py - y0) * sw + (px - x0)] as f64;
-        (at2(b + 1, d + 1) - at2(a, d + 1) - at2(b + 1, c) + at2(a, c))
-            / (((b - a + 1) * (d - c + 1)) as f64)
-    };
+}
+
+#[inline]
+fn chromatic_light_share(sat: &[u32], bounds: [usize; 5], x: f64, y: f64, u: f64) -> f64 {
+    let [x0, y0, x1, y1, sw] = bounds;
+    debug_assert!(sw == x1 - x0 + 2);
+    debug_assert!(u > 0.0);
+    let a = ((x - 18.0 * u).round() as isize).max(x0 as isize) as usize;
+    let b = ((x + 18.0 * u).round() as isize).min(x1 as isize).max(0) as usize;
+    let c = ((y - 18.0 * u).round() as isize).max(y0 as isize) as usize;
+    let d = ((y + 18.0 * u).round() as isize).min(y1 as isize).max(0) as usize;
+    if b < a || d < c {
+        return 0.0;
+    }
+    let at2 = |px: usize, py: usize| sat[(py - y0) * sw + (px - x0)] as f64;
+    (at2(b + 1, d + 1) - at2(a, d + 1) - at2(b + 1, c) + at2(a, c))
+        / (((b - a + 1) * (d - c + 1)) as f64)
+}
+
+pub fn read_chromatic_with_slot(
+    img: &ImageView<'_>,
+    loc: &BoardLoc,
+    slot: &mut ScanScratchSlot,
+) -> Option<usize> {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(loc.s > 0.0);
+    let right = loc.at(5.0, 0.0).0.max(loc.at(5.0, 3.0).0) + 60.0 * loc.s;
+    if right > (img.width as f64) - 30.0 {
+        return None;
+    }
+    let u = loc.s;
+    // Direct UMG right-panel anchor (integral image 2x5 grid search handles +-20*u in O(1)).
+    let cx = (loc.tx + 1259.0 * u).min((img.width as f64) - 21.0 * u);
+    let cy = loc.ty + 96.65 * u;
+    let x0 = ((cx - 110.0 * u).floor() as isize).max(0) as usize;
+    let x1 = ((cx + 40.0 * u).ceil() as isize)
+        .min(img.width as isize - 1)
+        .max(0) as usize;
+    let y0 = ((cy + 10.0 * u).floor() as isize).max(0) as usize;
+    let y1 = ((cy + 410.0 * u).ceil() as isize)
+        .min(img.height as isize - 1)
+        .max(0) as usize;
+    if x1 < x0 || y1 < y0 {
+        return None;
+    }
+    let sw = x1 - x0 + 2;
+    build_chromatic_sat(img, [x0, y0, x1, y1], slot);
+    let bounds = [x0, y0, x1, y1, sw];
     let grid_total = |ox: f64, oy: f64| -> f64 {
         let mut total = 0.0_f64;
         for r in 0..5 {
             for dx in [-66.0, -6.0] {
                 let x = cx + (dx + ox) * u;
                 let y = cy + (54.0 + 68.5 * (r as f64) + oy) * u;
-                total += light_share(x, y);
+                total += chromatic_light_share(&slot.sat, bounds, x, y, u);
             }
         }
         total
     };
-    let mut best_ox = 0.0_f64;
-    let mut best_oy = 0.0_f64;
+    let (mut best_ox, mut best_oy) = (0.0_f64, 0.0_f64);
     let mut best_total = grid_total(0.0, 0.0);
     for oy_i in (-20..=20).step_by(2) {
         let oy = oy_i as f64;
@@ -825,7 +900,7 @@ pub fn read_chromatic_with_slot(
         for dx in [-66.0, -6.0] {
             let x = cx + (dx + best_ox) * u;
             let y = cy + (54.0 + 68.5 * (r as f64) + best_oy) * u;
-            if light_share(x, y) > 0.35 {
+            if chromatic_light_share(&slot.sat, bounds, x, y, u) > 0.35 {
                 count += 1;
             } else {
                 break 'outer;
@@ -835,37 +910,110 @@ pub fn read_chromatic_with_slot(
     Some(count)
 }
 
+const HUD_OBJ_PATTERNS: &[(ObjectiveId, &[isize], bool)] = &[
+    (ObjectiveId::Consume, &[8, 2, 3, 7], false),
+    (ObjectiveId::Consume, &[8, 5, 7], false),
+    (ObjectiveId::Doors, &[6, 4, 5], false),
+    (ObjectiveId::Incident, &[13], true),
+    (ObjectiveId::King, &[4, 2, 3, 5], false),
+    (ObjectiveId::King, &[4, 5, 5], false),
+    (ObjectiveId::Walk, &[6, 4], true),
+    (ObjectiveId::Consume, &[8, 2, 3], true),
+    (ObjectiveId::King, &[4, 2, 3], true),
+    (ObjectiveId::King, &[2, 5, 1, 7, 6], false),
+    (ObjectiveId::King, &[7, 8], false),
+    (ObjectiveId::Consume, &[7, 1, 5, 3], false),
+    (ObjectiveId::Incident, &[7, 6, 8, 1, 5, 3], false),
+    (ObjectiveId::Incident, &[7, 6, 8], false),
+];
+
+fn match_hud_objective_piece(
+    img: &ImageView<'_>,
+    p: &Piece,
+    line_h: i32,
+    best_match: &mut Option<(ObjectiveId, isize)>,
+) {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(line_h > 0);
+    let words: Vec<isize> = p.words.iter().map(|w| w.glyphs.len() as isize).collect();
+    if words.is_empty() {
+        return;
+    }
+    let has_obj_prefix = words[0] >= 8 && words[0] <= 11 && words.len() > 1;
+    let name = if has_obj_prefix {
+        &words[1..]
+    } else {
+        &words[..]
+    };
+    for &(id, want, need_prefix) in HUD_OBJ_PATTERNS {
+        if (need_prefix && !has_obj_prefix) || want.len() != name.len() {
+            continue;
+        }
+        if want
+            .iter()
+            .zip(name.iter())
+            .any(|(&a, &b)| (a - b).abs() > 1)
+        {
+            continue;
+        }
+        let off: isize = want
+            .iter()
+            .zip(name.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        if off <= 1 && best_match.is_none_or(|(_, boff)| off < boff) {
+            *best_match = Some((id, off));
+        }
+    }
+    if !has_obj_prefix && words.len() >= 3 {
+        if (3..=5).contains(&words[0]) && (1..=3).contains(&words[1]) && (4..=6).contains(&words[2])
+        {
+            let nums = read_number(img, &p.words[1].glyphs, line_h, &[10, 18]);
+            if let Some(&(n, score)) = nums.first()
+                && score >= 0.30
+            {
+                let id = if n == 18 {
+                    ObjectiveId::Walk
+                } else {
+                    ObjectiveId::Doors
+                };
+                if best_match.is_none_or(|(_, boff)| boff > 0) {
+                    *best_match = Some((id, 0));
+                }
+            }
+        } else if (6..=8).contains(&words[0])
+            && (1..=2).contains(&words[1])
+            && (4..=6).contains(&words[2])
+            && best_match.is_none()
+        {
+            *best_match = Some((ObjectiveId::Consume, 1));
+        } else if (6..=8).contains(&words[0])
+            && (5..=7).contains(&words[1])
+            && (7..=9).contains(&words[2])
+            && best_match.is_none()
+        {
+            *best_match = Some((ObjectiveId::Incident, 1));
+        }
+    }
+}
+
 pub fn read_hud_objective_with_slot(
     img: &ImageView<'_>,
     loc: &BoardLoc,
     slot: &mut ScanScratchSlot,
 ) -> Option<ObjectiveId> {
-    let patterns: &[(ObjectiveId, &[isize], bool)] = &[
-        // Full single-line titles (with or without "Objective:")
-        (ObjectiveId::Consume, &[8, 2, 3, 7], false),
-        (ObjectiveId::Consume, &[8, 5, 7], false),
-        (ObjectiveId::Doors, &[6, 4, 5], false),
-        (ObjectiveId::Incident, &[13], true),
-        (ObjectiveId::King, &[4, 2, 3, 5], false),
-        (ObjectiveId::King, &[4, 5, 5], false),
-        (ObjectiveId::Walk, &[6, 4], true),
-        // Line-wrapped HUD titles ("Objective: Survival of the", "Objective: King of the")
-        (ObjectiveId::Consume, &[8, 2, 3], true),
-        (ObjectiveId::King, &[4, 2, 3], true),
-        // Distinct HUD requirement lines below title
-        (ObjectiveId::King, &[2, 5, 1, 7, 6], false),
-        (ObjectiveId::King, &[7, 8], false),
-        (ObjectiveId::Consume, &[7, 1, 5, 3], false),
-        (ObjectiveId::Incident, &[7, 6, 8, 1, 5, 3], false),
-        (ObjectiveId::Incident, &[7, 6, 8], false),
-    ];
+    assert!(img.width > 0 && img.height > 0);
+    assert!(loc.s > 0.0);
     let x1 =
         (loc.at(0.0, 0.0).0.min(loc.at(0.0, 3.0).0) - 40.0 * loc.s).min((img.width as f64) * 0.30);
     let mut y0 = (loc.ty + 15.0 * loc.s).max(0.0);
     let y1 = (loc.ty + 185.0 * loc.s).min((img.height as f64) * 0.30);
     let probe_x0 = (20.0 * loc.s).max(0.0);
     let probe_x1 = x1.min(160.0 * loc.s);
+    let mut iter_occ = 0usize;
     while y0 + 8.0 < y1 && is_overlay_occluded(img, probe_x0, y0, probe_x1, y0 + 8.0) {
+        iter_occ += 1;
+        assert!(iter_occ <= 512);
         y0 += 6.0;
     }
     if x1 < 40.0 || y1 <= y0 + 14.0 {
@@ -883,74 +1031,7 @@ pub fn read_hud_objective_with_slot(
     ) {
         for line in lines {
             for p in &line.pieces {
-                let words: Vec<isize> = p.words.iter().map(|w| w.glyphs.len() as isize).collect();
-                if words.is_empty() {
-                    continue;
-                }
-                let has_obj_prefix = words[0] >= 8 && words[0] <= 11 && words.len() > 1;
-                let name = if has_obj_prefix {
-                    &words[1..]
-                } else {
-                    &words[..]
-                };
-                for &(id, want, need_prefix) in patterns {
-                    if need_prefix && !has_obj_prefix {
-                        continue;
-                    }
-                    if want.len() != name.len() {
-                        continue;
-                    }
-                    if want
-                        .iter()
-                        .zip(name.iter())
-                        .any(|(&a, &b)| (a - b).abs() > 1)
-                    {
-                        continue;
-                    }
-                    let off: isize = want
-                        .iter()
-                        .zip(name.iter())
-                        .map(|(a, b)| (a - b).abs())
-                        .sum();
-                    if off <= 1 && best_match.is_none_or(|(_, boff)| off < boff) {
-                        best_match = Some((id, off));
-                    }
-                }
-                // Disambiguate HUD requirement lines ("Move 18 tiles ...", "Open 10 cells ...",
-                // "Consume 4 times ...", "Trigger Prison Incident ...") when title is covered
-                if !has_obj_prefix && words.len() >= 3 {
-                    if (3..=5).contains(&words[0])
-                        && (1..=3).contains(&words[1])
-                        && (4..=6).contains(&words[2])
-                    {
-                        let nums = read_number(img, &p.words[1].glyphs, line.h, &[10, 18]);
-                        if let Some(&(n, score)) = nums.first()
-                            && score >= 0.30
-                        {
-                            let id = if n == 18 {
-                                ObjectiveId::Walk
-                            } else {
-                                ObjectiveId::Doors
-                            };
-                            if best_match.is_none_or(|(_, boff)| boff > 0) {
-                                best_match = Some((id, 0));
-                            }
-                        }
-                    } else if (6..=8).contains(&words[0])
-                        && (1..=2).contains(&words[1])
-                        && (4..=6).contains(&words[2])
-                    {
-                        if best_match.is_none() {
-                            best_match = Some((ObjectiveId::Consume, 1));
-                        }
-                    } else if (6..=8).contains(&words[0])
-                        && (5..=7).contains(&words[1])
-                        && (7..=9).contains(&words[2])
-                        && best_match.is_none()
-                    {
-                        best_match = Some((ObjectiveId::Incident, 1));
-                    }
-                }
+                match_hud_objective_piece(img, p, line.h, &mut best_match);
             }
         }
     }
@@ -968,155 +1049,185 @@ pub struct DecisionRead {
     pub title: bool,
 }
 
-pub(crate) fn read_decision_from_lines(
-    img: &ImageView<'_>,
-    loc: &BoardLoc,
-    lines_by_r: &[Vec<Line>],
-) -> Option<DecisionRead> {
-    let bottom = loc.at(0.0, 3.0).1.max(loc.at(5.0, 3.0).1) + 30.0 * loc.s;
-    if bottom >= (img.height as f64) - 20.0 {
-        return None;
+#[derive(Default)]
+struct DecisionTokens {
+    title: bool,
+    pick_cell: bool,
+    end: bool,
+    labels: Vec<(i32, i32, f64, i32)>,
+    hunts: Vec<(i32, i32, f64, i32)>,
+    single: Vec<(isize, f64, i32, i32, f64, i32)>,
+    ends: Vec<(i32, f64, i32)>,
+    lefts: Vec<(i32, f64)>,
+}
+
+#[inline]
+fn decision_words_near(w: &[isize], want: &[isize]) -> bool {
+    debug_assert!(!want.is_empty());
+    if w.len() < want.len() {
+        return false;
     }
-    let x0 = (loc.at(0.0, 0.0).0.min(loc.at(0.0, 3.0).0) - 40.0 * loc.s).max(0.0);
-    let x1 =
-        (loc.at(5.0, 0.0).0.max(loc.at(5.0, 3.0).0) + 40.0 * loc.s).min((img.width - 1) as f64);
+    let tail = &w[w.len() - want.len()..];
+    debug_assert_eq!(tail.len(), want.len());
+    tail.iter()
+        .zip(want.iter())
+        .map(|(a, b)| (a - b).abs())
+        .sum::<isize>()
+        <= 2
+}
 
-    let mut title = false;
-    let mut pick_cell = false;
-    let mut replace = false;
-    let mut hunt = false;
-    let mut end = false;
-    let mut labels: Vec<(i32, i32, f64, i32)> = Vec::new();
-    let mut hunts: Vec<(i32, i32, f64, i32)> = Vec::new();
-    let mut single: Vec<(isize, f64, i32, i32, f64, i32)> = Vec::new();
-    let mut ends: Vec<(i32, f64, i32)> = Vec::new();
-    let mut lefts: Vec<(i32, f64)> = Vec::new();
-
-    let near = |w: &[isize], want: &[isize]| -> bool {
-        if w.len() < want.len() {
-            return false;
-        }
-        let tail = &w[w.len() - want.len()..];
-        tail.iter()
-            .zip(want.iter())
-            .map(|(a, b)| (a - b).abs())
-            .sum::<isize>()
-            <= 2
-    };
-
+fn collect_decision_tokens(lines_by_r: &[Vec<Line>]) -> DecisionTokens {
+    assert!(lines_by_r.len() <= 8);
+    let mut tok = DecisionTokens::default();
     for lines in lines_by_r {
         for line in lines {
             for p in &line.pieces {
                 let n: isize = p.words.iter().map(|w| w.glyphs.len() as isize).sum();
                 let span = ((p.x1 - p.x0) as f64) / (line.h.max(1) as f64);
                 if p.words.len() <= 2 && (5..=11).contains(&n) {
-                    single.push((n, span, p.x0, p.x1, line.mid, line.h));
+                    tok.single.push((n, span, p.x0, p.x1, line.mid, line.h));
                 }
                 if (14..=20).contains(&n) && span > 7.0 && span < 15.0 {
                     let words: Vec<isize> =
                         p.words.iter().map(|w| w.glyphs.len() as isize).collect();
-                    if near(&words, &[6, 2, 9]) && !near(&words, &[4, 4, 8]) {
-                        pick_cell = true;
-                    } else if near(&words, &[4, 4, 8]) {
-                        title = true;
+                    if decision_words_near(&words, &[6, 2, 9])
+                        && !decision_words_near(&words, &[4, 4, 8])
+                    {
+                        tok.pick_cell = true;
+                    } else if decision_words_near(&words, &[4, 4, 8]) {
+                        tok.title = true;
                     }
                 } else if p.words.len() <= 2 && (6..=8).contains(&n) && span > 2.8 && span < 6.8 {
-                    labels.push((p.x0, p.x1, line.mid, line.h));
+                    tok.labels.push((p.x0, p.x1, line.mid, line.h));
                 } else if p.words.len() == 1 && (4..=5).contains(&n) && span > 1.8 && span < 4.2 {
-                    hunts.push((p.x0, p.x1, line.mid, line.h));
+                    tok.hunts.push((p.x0, p.x1, line.mid, line.h));
                 } else if n == 3 && span > 1.5 && span < 3.2 {
-                    end = true;
+                    tok.end = true;
                     if p.words.len() == 1 {
-                        ends.push((p.x0, line.mid, line.h));
+                        tok.ends.push((p.x0, line.mid, line.h));
                     }
                 }
                 if (6..=13).contains(&n) && span > 3.0 && span < 8.0 {
-                    lefts.push((p.x1, line.mid));
+                    tok.lefts.push((p.x1, line.mid));
                 }
             }
         }
     }
+    assert!(!tok.end || !tok.ends.is_empty() || tok.end);
+    tok
+}
 
-    let red_ratio = |rx0: usize, ry0: usize, rx1: usize, ry1: usize| -> f32 {
-        let mut n = 0usize;
-        let mut hit = 0usize;
-        let mut y = ry0;
-        while y < ry1 {
-            let mut x = rx0;
-            while x < rx1 {
-                let (r, g, b) = img.rgb_at(x as isize, y as isize);
-                n += 1;
-                if r >= 76 && r > g && r > b {
-                    let (h, s, v) = hsv(r as f32, g as f32, b as f32);
-                    if (h < 12.0 || h > 348.0) && s > 0.55 && v > 0.30 {
-                        hit += 1;
-                    }
+fn decision_red_ratio(img: &ImageView<'_>, rect: [usize; 4]) -> f32 {
+    assert!(img.width > 0 && img.height > 0);
+    let [rx0, ry0, rx1, ry1] = rect;
+    assert!(rx1 <= img.width && ry1 <= img.height);
+    let mut n = 0usize;
+    let mut hit = 0usize;
+    for y in (ry0..ry1).step_by(2) {
+        for x in (rx0..rx1).step_by(2) {
+            let (r, g, b) = img.rgb_at(x as isize, y as isize);
+            n += 1;
+            if r >= 76 && r > g && r > b {
+                let (h, s, v) = hsv(r as f32, g as f32, b as f32);
+                if (h < 12.0 || h > 348.0) && s > 0.55 && v > 0.30 {
+                    hit += 1;
                 }
-                x += 2;
             }
-            y += 2;
-        }
-        if n > 0 {
-            (hit as f32) / (n as f32)
-        } else {
-            0.0
-        }
-    };
-
-    let strip = ((100.0 * loc.s).round() as usize).max(8);
-    let mut red = 0.0_f32;
-    let mut sx = x0.round() as usize;
-    let sx_end = x1 as usize;
-    let by_start = bottom.round() as usize;
-    let by_end = img.height.min(by_start + (260.0 * loc.s) as usize);
-    while sx + strip <= sx_end {
-        red = red.max(red_ratio(sx, by_start, sx + strip, by_end));
-        sx += strip;
-    }
-    let consume = red > 0.01;
-
-    let red_by = |lx0: i32, lx1: i32, lmid: f64, lh: i32| -> f32 {
-        let w = lx1 - lx0;
-        let y0 = ((lmid - 5.0 * (lh as f64)).round() as isize).max(0) as usize;
-        let y1 = ((lmid + (lh as f64)) as usize).min(img.height);
-        let rx0 = (lx0 - w / 2).max(0) as usize;
-        let rx1 = ((lx1 + w / 2) as usize).min(img.width);
-        red_ratio(rx0, y0, rx1, y1)
-    };
-
-    for &(lx0, lx1, lmid, lh) in &labels {
-        if red_by(lx0, lx1, lmid, lh) < 0.01 {
-            replace = true;
         }
     }
-    for &(hx0, hx1, hmid, hh) in &hunts {
-        let same_row = ends
-            .iter()
-            .any(|&(ex0, emid, eh)| hx1 < ex0 && (hmid - emid).abs() < (eh as f64) * 0.6)
-            || labels.iter().any(|&(lx0, _, lmid, lh)| {
-                (hx0 - lx0).abs() > 2 * lh && (hmid - lmid).abs() < (lh as f64) * 0.6
-            });
-        if same_row && red_by(hx0, hx1, hmid, hh) < 0.01 {
-            hunt = true;
-        }
+    if n > 0 {
+        (hit as f32) / (n as f32)
+    } else {
+        0.0
     }
+}
 
-    let office = single.iter().any(|&(an, aspan, ax0, ax1, amid, ah)| {
+#[inline]
+fn decision_red_by_label(img: &ImageView<'_>, lx0: i32, lx1: i32, lmid: f64, lh: i32) -> f32 {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(lh > 0);
+    let w = lx1 - lx0;
+    let y0 = ((lmid - 5.0 * (lh as f64)).round() as isize).max(0) as usize;
+    let y1 = ((lmid + (lh as f64)) as usize).min(img.height);
+    let rx0 = (lx0 - w / 2).max(0) as usize;
+    let rx1 = ((lx1 + w / 2) as usize).min(img.width);
+    decision_red_ratio(img, [rx0, y0, rx1, y1])
+}
+
+#[inline]
+fn detect_office_decision(
+    img: &ImageView<'_>,
+    single: &[(isize, f64, i32, i32, f64, i32)],
+) -> bool {
+    assert!(img.width > 0);
+    assert!(img.height > 0);
+    single.iter().any(|&(an, aspan, ax0, ax1, amid, ah)| {
         (7..=11).contains(&an)
             && aspan > 3.8
             && aspan < 7.0
-            && red_by(ax0, ax1, amid, ah) < 0.01
+            && decision_red_by_label(img, ax0, ax1, amid, ah) < 0.01
             && single.iter().any(|&(bn, bspan, bx0, bx1, bmid, bh)| {
                 (5..=7).contains(&bn)
                     && bspan > 3.0
                     && bspan < 5.8
                     && bx0 > ax1
                     && (bmid - amid).abs() < (ah as f64) * 0.6
-                    && red_by(bx0, bx1, bmid, bh) < 0.01
+                    && decision_red_by_label(img, bx0, bx1, bmid, bh) < 0.01
             })
-    });
+    })
+}
 
-    if pick_cell && !title {
+fn has_consume_red_strip(img: &ImageView<'_>, loc: &BoardLoc, bottom: f64) -> bool {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(loc.s > 0.0);
+    let x0 = (loc.at(0.0, 0.0).0.min(loc.at(0.0, 3.0).0) - 40.0 * loc.s).max(0.0);
+    let x1 =
+        (loc.at(5.0, 0.0).0.max(loc.at(5.0, 3.0).0) + 40.0 * loc.s).min((img.width - 1) as f64);
+    let strip = ((100.0 * loc.s).round() as usize).max(8);
+    let mut red = 0.0_f32;
+    let mut sx = x0.round() as usize;
+    let sx_end = (x1 as usize).min(img.width);
+    let by_start = bottom.round() as usize;
+    let by_end = img.height.min(by_start + (260.0 * loc.s) as usize);
+    let mut iter_s = 0usize;
+    while sx + strip <= sx_end {
+        iter_s += 1;
+        assert!(iter_s <= 512);
+        red = red.max(decision_red_ratio(img, [sx, by_start, sx + strip, by_end]));
+        sx += strip;
+    }
+    red > 0.01
+}
+
+pub(crate) fn read_decision_from_lines(
+    img: &ImageView<'_>,
+    loc: &BoardLoc,
+    lines_by_r: &[Vec<Line>],
+) -> Option<DecisionRead> {
+    assert!(img.width > 0 && img.height > 0);
+    assert!(loc.s > 0.0);
+    let bottom = loc.at(0.0, 3.0).1.max(loc.at(5.0, 3.0).1) + 30.0 * loc.s;
+    if bottom >= (img.height as f64) - 20.0 {
+        return None;
+    }
+    let tok = collect_decision_tokens(lines_by_r);
+    let consume = has_consume_red_strip(img, loc, bottom);
+    let replace = tok
+        .labels
+        .iter()
+        .any(|&(lx0, lx1, lmid, lh)| decision_red_by_label(img, lx0, lx1, lmid, lh) < 0.01);
+    let hunt = tok.hunts.iter().any(|&(hx0, hx1, hmid, hh)| {
+        let same_row = tok
+            .ends
+            .iter()
+            .any(|&(ex0, emid, eh)| hx1 < ex0 && (hmid - emid).abs() < (eh as f64) * 0.6)
+            || tok.labels.iter().any(|&(lx0, _, lmid, lh)| {
+                (hx0 - lx0).abs() > 2 * lh && (hmid - lmid).abs() < (lh as f64) * 0.6
+            });
+        same_row && decision_red_by_label(img, hx0, hx1, hmid, hh) < 0.01
+    });
+    let office = detect_office_decision(img, &tok.single);
+    if tok.pick_cell && !tok.title {
         return Some(DecisionRead {
             ratway: true,
             office: false,
@@ -1127,35 +1238,23 @@ pub(crate) fn read_decision_from_lines(
             title: false,
         });
     }
-    let row = ends.iter().any(|&(ex0, emid, eh)| {
-        lefts.iter().any(|&(lx1, lmid)| {
+    let row = tok.ends.iter().any(|&(ex0, emid, eh)| {
+        tok.lefts.iter().any(|&(lx1, lmid)| {
             (lmid - emid).abs() < (eh as f64) * 0.5 && lx1 < ex0 && (ex0 - lx1) < 30 * eh
         })
     });
-    if !title && !(row && (consume || replace)) {
-        return None;
-    }
-    if office {
-        return Some(DecisionRead {
-            ratway: false,
-            office: true,
-            replace: false,
-            consume: false,
-            hunt: false,
-            end: false,
-            title,
-        });
-    }
-    if !replace && !consume && !end {
+    if (!tok.title && !(row && (consume || replace)))
+        || (!office && !replace && !consume && !tok.end)
+    {
         return None;
     }
     Some(DecisionRead {
         ratway: false,
-        office: false,
-        replace,
-        consume,
-        hunt,
-        end,
-        title,
+        office,
+        replace: !office && replace,
+        consume: !office && consume,
+        hunt: !office && hunt,
+        end: !office && tok.end,
+        title: tok.title,
     })
 }

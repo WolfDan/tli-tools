@@ -121,7 +121,8 @@ fn test_guillotine_solver_and_chain_odds() {
         beast: Beast::Wolf,
         tier: 2,
     });
-    // Lower-tier Rat in cell 2 (eaten via Guillotine), +1 tier Rat in cell 3 (chained after Wolf rises to tier 3)
+    // Lower-tier Rat in cell 2 (eaten via Guillotine), +1 tier Rat in cell 3
+    // (chained after Wolf rises to tier 3)
     st.cells[2].sealed = false;
     st.cells[2].inmate = Some(Inmate {
         id: 2,
@@ -136,7 +137,7 @@ fn test_guillotine_solver_and_chain_odds() {
     });
     let ctx = Context::new(&st, &DEFAULT_SOLVER_PARAMS);
     assert!(ctx.guillotine);
-    assert_eq!(ctx.min_meal(2, Beast::Wolf.idx() as u8), 0);
+    assert_eq!(ctx.meal_min(2, Beast::Wolf.idx() as u8), 0);
     assert_eq!(
         ctx.meals_at(2, Beast::Wolf.idx() as u8, 0).slice(),
         &[Beast::Rat as u8]
@@ -159,7 +160,7 @@ fn test_guillotine_solver_and_chain_odds() {
 fn test_horizon_link_value_and_early_stopping() {
     let mut st = SimState::new_blank(GameMode::Drill, false, 20);
     st.day = 20;
-    st.max_days = 20;
+    st.days_max = 20;
     st.cells[1].sealed = false;
     st.cells[1].inmate = Some(Inmate {
         id: 1,
@@ -186,8 +187,9 @@ fn test_horizon_link_value_and_early_stopping() {
         "PreyLink on Day 20 has 0 remaining mornings"
     );
 
-    // Test early stopping when 2 top candidates are tied (cells 6 and 12 both have Supreme Wolves eating Legendary Rats)
-    // and 1 candidate is clearly worse (cell 10 is empty) on Day 20
+    // Test early stopping when 2 top candidates are tied (cells 6 and 12 both have
+    // Supreme Wolves eating Legendary Rats) and 1 candidate is clearly worse (cell 10
+    // is empty) on Day 20
     let mut m = BoardModel::blank();
     m.day = 20;
     m.warden = 4;
@@ -215,7 +217,8 @@ fn test_horizon_link_value_and_early_stopping() {
     assert!(summary.done);
     assert!(
         summary.rounds <= 256,
-        "Expected early stop in <= 256 rollouts on tied-top + inferior-third board, got {} rounds in {:.2}ms",
+        "Expected early stop in <= 256 rollouts on tied-top + inferior-third board, \
+         got {} rounds in {:.2}ms",
         summary.rounds,
         elapsed_ms
     );
@@ -225,7 +228,7 @@ fn test_horizon_link_value_and_early_stopping() {
 fn test_s16_drill_rainbow_ev_and_solver_speed() {
     let runs = 400usize;
     let t0 = std::time::Instant::now();
-    let total_rainbows: u64 = (0..runs)
+    let rainbows_total: u64 = (0..runs)
         .into_par_iter()
         .map(|r| {
             let seed = 1000u32.wrapping_add((r as u32).wrapping_mul(0x9e3779b1));
@@ -237,7 +240,7 @@ fn test_s16_drill_rainbow_ev_and_solver_speed() {
         })
         .sum();
     let dt_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let ev = (total_rainbows as f64) / (runs as f64);
+    let ev = (rainbows_total as f64) / (runs as f64);
     println!(
         "S16 Drill 400 runs EV (Crown+Rope): {:.3} Rainbows/run in {:.2}ms ({:.0} runs/sec)",
         ev,
@@ -279,7 +282,8 @@ fn test_transfer_event_accepts_on_developed_board_and_foodchain_alias() {
     assert_eq!(
         act,
         Some(SimAction::Event { accept: true }),
-        "Transfer of Convicts replicates the current inmate into a sealed cell and must always be accepted"
+        "Transfer of Convicts replicates the current inmate into a sealed cell \
+         and must always be accepted"
     );
     assert!(apply_action(&mut st, &SimAction::Event { accept: true }));
     let open_count = st.cells.iter().filter(|c| !c.sealed).count();
@@ -293,7 +297,7 @@ fn test_transfer_event_accepts_on_developed_board_and_foodchain_alias() {
 fn test_s16_random_run_rainbow_ev_and_solve_parallel_benchmark() {
     let runs = 1000usize;
     let t0 = std::time::Instant::now();
-    let total_rainbows: u64 = (0..runs)
+    let rainbows_total: u64 = (0..runs)
         .into_par_iter()
         .map(|r| {
             let seed = 7777u32.wrapping_add((r as u32).wrapping_mul(0x9e3779b1));
@@ -304,9 +308,10 @@ fn test_s16_random_run_rainbow_ev_and_solve_parallel_benchmark() {
         })
         .sum();
     let dt_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let ev = (total_rainbows as f64) / (runs as f64);
+    let ev = (rainbows_total as f64) / (runs as f64);
     println!(
-        "S16 Random Run (SimState::new_random_run) 1000 runs EV: {:.3} Rainbows/run in {:.2}ms ({:.0} runs/sec)",
+        "S16 Random Run (SimState::new_random_run) 1000 runs EV: \
+         {:.3} Rainbows/run in {:.2}ms ({:.0} runs/sec)",
         ev,
         dt_ms,
         (runs as f64) / (dt_ms / 1000.0)
@@ -321,14 +326,15 @@ fn test_s16_random_run_rainbow_ev_and_solve_parallel_benchmark() {
     let t_solve = std::time::Instant::now();
     let summary = solve_parallel(&st_ex, 2400, 500, 12345, true);
     let solve_ms = t_solve.elapsed().as_secs_f64() * 1000.0;
-    let total_playouts = summary.rounds * summary.options.len().max(1);
+    let playouts_total = summary.rounds * summary.options.len().max(1);
     println!(
-        "solve_parallel benchmark: {} rounds ({} total playouts across {} candidates) in {:.2}ms ({:.0} playouts/sec), best = {}",
+        "solve_parallel benchmark: {} rounds ({} total playouts across {} candidates) \
+         in {:.2}ms ({:.0} playouts/sec), best = {}",
         summary.rounds,
-        total_playouts,
+        playouts_total,
         summary.options.len(),
         solve_ms,
-        (total_playouts as f64) / (solve_ms / 1000.0),
+        (playouts_total as f64) / (solve_ms / 1000.0),
         summary
             .options
             .first()

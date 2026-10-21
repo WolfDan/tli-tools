@@ -1,13 +1,22 @@
 use super::rng::{next_rand, pick_one, refit_seed, shuffle_slice};
 use super::state::SimState;
 use super::types::{
-    BEASTS, Beast, CELL_COUNT, CHALLENGE_DAYS, ChoiceId, Contract, ContractId, DeliveryRecord,
-    DevourOption, EscortKind, GiftId, Inmate, ObjectiveId, PRESSURE, PendingChoice, PendingKind,
-    Phase, PreyLink, RAINBOW, SUPREME, ToolId, ToolMask,
+    ALL_GIFTS, BEASTS, Beast, CELL_COUNT, CHALLENGE_DAYS, ChoiceId, Contract, ContractId,
+    DeliveryRecord, DevourOption, EscortKind, GiftId, Inmate, ObjectiveId, PRESSURE, PendingChoice,
+    PendingKind, Phase, PreyLink, RAINBOW, SUPREME, ToolId, ToolMask,
+};
+
+const CHAIN_STEPS_MAX: usize = 64;
+
+const _: () = {
+    assert!(CHAIN_STEPS_MAX >= CELL_COUNT);
+    assert!(PRESSURE.len() == 6);
 };
 
 impl SimState {
     pub fn gain_for(&self, from: u8, option: DevourOption) -> u8 {
+        assert!((from as usize) < CELL_COUNT);
+        assert!((option.cell as usize) < CELL_COUNT);
         let eater = self.cells[from as usize].inmate.unwrap();
         let target = &self.cells[option.cell as usize];
         let meal = if target.sealed {
@@ -42,10 +51,13 @@ impl SimState {
         if self.has_tool(ToolId::Crown) && eater.beast == Beast::Lion {
             gain += 2;
         }
+        assert!(gain >= 1);
         gain
     }
 
     pub fn do_devour(&mut self, from: u8, option: DevourOption, chained: bool) {
+        assert!((from as usize) < CELL_COUNT);
+        assert!((option.cell as usize) < CELL_COUNT);
         let eater = self.cells[from as usize].inmate.unwrap();
         let mut gain = self.gain_for(from, option);
         let meal_cell_idx = option.cell as usize;
@@ -87,8 +99,12 @@ impl SimState {
     }
 
     pub fn go_on_chain(&mut self) {
+        assert!((self.position as usize) < CELL_COUNT);
         let stoppable = self.can_stop_chain();
+        let mut chain_steps = 0usize;
         while let Some(eater_id) = self.chaining_eater {
+            assert!(chain_steps < CHAIN_STEPS_MAX);
+            chain_steps += 1;
             let Some(cn) = self.board_cell_of(eater_id) else {
                 break;
             };
@@ -103,9 +119,12 @@ impl SimState {
             self.stats.chains += 1;
         }
         self.chaining_eater = None;
+        assert!(self.chaining_eater.is_none());
     }
 
     pub fn devour(&mut self, from: u8, to: u8) -> bool {
+        assert!((from as usize) < CELL_COUNT);
+        assert!((to as usize) < CELL_COUNT);
         if !self.guard(false) || !self.can_devour_now() || from != self.position {
             return false;
         }
@@ -122,6 +141,8 @@ impl SimState {
     }
 
     pub fn chain_bite(&mut self, to: u8) -> bool {
+        assert!((to as usize) < CELL_COUNT);
+        assert!((self.pending_len as usize) <= self.pending.len());
         if self.pending_len > 0 {
             return false;
         }
@@ -142,6 +163,8 @@ impl SimState {
     }
 
     pub fn stop_chain(&mut self) -> bool {
+        assert!((self.position as usize) < CELL_COUNT);
+        assert!((self.pending_len as usize) <= self.pending.len());
         if self.chaining_eater.is_none() || !self.can_stop_chain() || self.pending_len > 0 {
             return false;
         }
@@ -150,6 +173,8 @@ impl SimState {
     }
 
     pub fn hunt(&mut self, to: u8) -> bool {
+        assert!((to as usize) < CELL_COUNT);
+        assert!((self.position as usize) < CELL_COUNT);
         if !self.guard(false) || !self.can_hunt_now() {
             return false;
         }
@@ -178,6 +203,7 @@ impl SimState {
     }
 
     pub fn scout(&mut self) {
+        assert!((self.position as usize) < CELL_COUNT);
         let mut doors = [0usize; 16];
         let mut dlen = 0;
         for idx in 0..CELL_COUNT {
@@ -205,49 +231,39 @@ impl SimState {
                 tlen += 1;
             }
         }
+        assert!(tlen > 0);
+        assert!(tlen <= CELL_COUNT);
         let target = pick_one(&mut self.rng, &tops[..tlen]);
         self.cells[target].known = 2;
     }
 
-    pub fn swap(&mut self, n: u8) -> bool {
-        if !self.guard(false) || n != self.position || !self.can_swap_now() {
+    fn trigger_scapegoat(&mut self) -> bool {
+        assert!((self.position as usize) < CELL_COUNT);
+        if !self.has_tool(ToolId::Scapegoat) {
             return false;
         }
-        let cell_idx = n as usize;
-        if self.cells[cell_idx].sealed || self.cells[cell_idx].inmate.is_none() {
+        let mut others = [0usize; 16];
+        let mut olen = 0;
+        for c in &self.cells {
+            if !c.sealed && c.inmate.is_some() {
+                others[olen] = c.n as usize;
+                olen += 1;
+            }
+        }
+        assert!(olen <= CELL_COUNT);
+        if olen < 2 {
             return false;
         }
-        let mut weights = self.params.swap_weights;
-        if self.has_tool(ToolId::Rope) {
-            weights[0] = 0.0;
-            weights[1] = 0.0;
+        shuffle_slice(&mut self.rng, &mut others[..olen]);
+        for &v in &others[..2] {
+            self.empty_cell(v);
         }
-        if !weights.iter().any(|&w| w > 0.0) {
-            return false;
-        }
-        let old = self.cells[cell_idx].inmate.take().unwrap();
         self.check_prey();
+        true
+    }
 
-        let mut above = false;
-        if self.has_tool(ToolId::Scapegoat) {
-            let mut others = [0usize; 16];
-            let mut olen = 0;
-            for c in &self.cells {
-                if !c.sealed && c.inmate.is_some() {
-                    others[olen] = c.n as usize;
-                    olen += 1;
-                }
-            }
-            if olen >= 2 {
-                shuffle_slice(&mut self.rng, &mut others[..olen]);
-                for &v in &others[..2] {
-                    self.empty_cell(v);
-                }
-                self.check_prey();
-                above = true;
-            }
-        }
-
+    fn roll_swap_inmate(&mut self, old: Inmate, weights: &[f64; 5], above: bool) -> Inmate {
+        assert!(old.tier <= RAINBOW);
         let mut higher = [0.0; 5];
         let mut has_higher = false;
         for (t, &w) in weights.iter().enumerate() {
@@ -261,7 +277,7 @@ impl SimState {
         let mut fresh = if above && has_higher {
             self.roll_inmate(&higher)
         } else {
-            self.roll_inmate(&weights)
+            self.roll_inmate(weights)
         };
         if above && fresh.tier <= old.tier {
             fresh.tier = (old.tier + 1).min(RAINBOW);
@@ -276,11 +292,13 @@ impl SimState {
         if self.has_tool(ToolId::Pestle) {
             fresh.beast = old.beast;
         }
+        assert!(fresh.tier <= RAINBOW);
+        fresh
+    }
 
-        self.cells[cell_idx].inmate = Some(fresh);
-        self.used.swap += 1;
-        self.stats.swaps += 1;
-
+    fn finish_swap_effects(&mut self, cell_idx: usize, old: Inmate, fresh: Inmate) {
+        assert!(cell_idx < CELL_COUNT);
+        assert!(fresh.tier <= RAINBOW);
         if self.has_tool(ToolId::Maiden) {
             let mut above_cnt = 0;
             let mut below_cnt = 0;
@@ -335,10 +353,155 @@ impl SimState {
                 }
             }
         }
+    }
+
+    pub fn swap(&mut self, n: u8) -> bool {
+        assert!((n as usize) < CELL_COUNT);
+        assert!((self.position as usize) < CELL_COUNT);
+        if !self.guard(false) || n != self.position || !self.can_swap_now() {
+            return false;
+        }
+        let cell_idx = n as usize;
+        if self.cells[cell_idx].sealed || self.cells[cell_idx].inmate.is_none() {
+            return false;
+        }
+        let mut weights = self.params.swap_weights;
+        if self.has_tool(ToolId::Rope) {
+            weights[0] = 0.0;
+            weights[1] = 0.0;
+        }
+        if !weights.iter().any(|&w| w > 0.0) {
+            return false;
+        }
+        let old = self.cells[cell_idx].inmate.take().unwrap();
+        self.check_prey();
+
+        let above = self.trigger_scapegoat();
+        let fresh = self.roll_swap_inmate(old, &weights, above);
+
+        self.cells[cell_idx].inmate = Some(fresh);
+        self.used.swap += 1;
+        self.stats.swaps += 1;
+
+        self.finish_swap_effects(cell_idx, old, fresh);
         true
     }
 
+    fn apply_gift_horn(&mut self) {
+        assert!((self.position as usize) < CELL_COUNT);
+        let mut ids = [0u16; 16];
+        let mut ilen = 0;
+        for c in &self.cells {
+            if !c.sealed
+                && let Some(i) = c.inmate
+            {
+                let (_, olen) = self.devour_options(c.n);
+                if olen > 0 {
+                    ids[ilen] = i.id;
+                    ilen += 1;
+                }
+            }
+        }
+        assert!(ilen <= CELL_COUNT);
+        for &inmate_id in &ids[..ilen] {
+            let Some(cn) = self.board_cell_of(inmate_id) else {
+                continue;
+            };
+            let (opts, olen) = self.devour_options(cn);
+            let mut valid = [DevourOption {
+                cell: 0,
+                scratch: false,
+            }; 16];
+            let mut vlen = 0;
+            for &o in &opts[..olen] {
+                if !o.scratch {
+                    valid[vlen] = o;
+                    vlen += 1;
+                }
+            }
+            if vlen == 0 {
+                continue;
+            }
+            let chosen = pick_one(&mut self.rng, &valid[..vlen]);
+            self.do_devour(cn, chosen, false);
+        }
+    }
+
+    fn apply_gift_wine(&mut self) {
+        assert!((self.position as usize) < CELL_COUNT);
+        let mut low = [0u16; 16];
+        let mut llen = 0;
+        for c in &self.cells {
+            if !c.sealed
+                && let Some(i) = c.inmate
+                && i.tier < 3
+            {
+                low[llen] = i.id;
+                llen += 1;
+            }
+        }
+        assert!(llen <= CELL_COUNT);
+        for &id in &low[..llen] {
+            if self.board_cell_of(id).is_some() {
+                self.promote(id, 1, false);
+            }
+        }
+    }
+
+    fn apply_gift_brand(&mut self) {
+        assert!((self.position as usize) < CELL_COUNT);
+        let mut hungry = [0u16; 16];
+        let mut hlen = 0;
+        for c in &self.cells {
+            if !c.sealed
+                && let Some(i) = c.inmate
+            {
+                let (_, olen) = self.devour_options(c.n);
+                if olen == 0 {
+                    hungry[hlen] = i.id;
+                    hlen += 1;
+                }
+            }
+        }
+        assert!(hlen <= CELL_COUNT);
+        shuffle_slice(&mut self.rng, &mut hungry[..hlen]);
+        for &id in &hungry[..hlen.min(4)] {
+            let Some(cn) = self.board_cell_of(id) else {
+                continue;
+            };
+            let (_, olen) = self.devour_options(cn);
+            if olen > 0 {
+                continue;
+            }
+            let inmate = self.cells[cn as usize].inmate.unwrap();
+            let mut possible = [Beast::Mammoth; 4];
+            let mut plen = 0;
+            for b in BEASTS {
+                let cand = Inmate {
+                    id: inmate.id,
+                    beast: b,
+                    tier: inmate.tier,
+                };
+                let has_meal = self
+                    .cells
+                    .iter()
+                    .any(|c| !c.sealed && c.inmate.is_some_and(|o| self.can_eat(cand, o)));
+                if has_meal {
+                    possible[plen] = b;
+                    plen += 1;
+                }
+            }
+            if plen > 0 {
+                let new_b = pick_one(&mut self.rng, &possible[..plen]);
+                self.cells[cn as usize].inmate.as_mut().unwrap().beast = new_b;
+            }
+        }
+        self.check_prey();
+    }
+
     pub fn apply_gift(&mut self, gift: GiftId) {
+        assert!((gift as usize) < ALL_GIFTS.len());
+        assert!((self.position as usize) < CELL_COUNT);
         match gift {
             GiftId::Ring => {
                 let (mut sealed, slen) = self.sealed_cells();
@@ -347,113 +510,15 @@ impl SimState {
                     self.open_cell(cn, false, None);
                 }
             }
-            GiftId::Horn => {
-                let mut ids = [0u16; 16];
-                let mut ilen = 0;
-                for c in &self.cells {
-                    if !c.sealed
-                        && let Some(i) = c.inmate
-                    {
-                        let (_, olen) = self.devour_options(c.n);
-                        if olen > 0 {
-                            ids[ilen] = i.id;
-                            ilen += 1;
-                        }
-                    }
-                }
-                for &inmate_id in &ids[..ilen] {
-                    let Some(cn) = self.board_cell_of(inmate_id) else {
-                        continue;
-                    };
-                    let (opts, olen) = self.devour_options(cn);
-                    let mut valid = [DevourOption {
-                        cell: 0,
-                        scratch: false,
-                    }; 16];
-                    let mut vlen = 0;
-                    for &o in &opts[..olen] {
-                        if !o.scratch {
-                            valid[vlen] = o;
-                            vlen += 1;
-                        }
-                    }
-                    if vlen == 0 {
-                        continue;
-                    }
-                    let chosen = pick_one(&mut self.rng, &valid[..vlen]);
-                    self.do_devour(cn, chosen, false);
-                }
-            }
-            GiftId::Wine => {
-                let mut low = [0u16; 16];
-                let mut llen = 0;
-                for c in &self.cells {
-                    if !c.sealed
-                        && let Some(i) = c.inmate
-                        && i.tier < 3
-                    {
-                        low[llen] = i.id;
-                        llen += 1;
-                    }
-                }
-                for &id in &low[..llen] {
-                    if self.board_cell_of(id).is_some() {
-                        self.promote(id, 1, false);
-                    }
-                }
-            }
-            GiftId::Brand => {
-                let mut hungry = [0u16; 16];
-                let mut hlen = 0;
-                for c in &self.cells {
-                    if !c.sealed
-                        && let Some(i) = c.inmate
-                    {
-                        let (_, olen) = self.devour_options(c.n);
-                        if olen == 0 {
-                            hungry[hlen] = i.id;
-                            hlen += 1;
-                        }
-                    }
-                }
-                shuffle_slice(&mut self.rng, &mut hungry[..hlen]);
-                for &id in &hungry[..hlen.min(4)] {
-                    let Some(cn) = self.board_cell_of(id) else {
-                        continue;
-                    };
-                    let (_, olen) = self.devour_options(cn);
-                    if olen > 0 {
-                        continue;
-                    }
-                    let inmate = self.cells[cn as usize].inmate.unwrap();
-                    let mut possible = [Beast::Mammoth; 4];
-                    let mut plen = 0;
-                    for b in BEASTS {
-                        let cand = Inmate {
-                            id: inmate.id,
-                            beast: b,
-                            tier: inmate.tier,
-                        };
-                        let has_meal = self
-                            .cells
-                            .iter()
-                            .any(|c| !c.sealed && c.inmate.is_some_and(|o| self.can_eat(cand, o)));
-                        if has_meal {
-                            possible[plen] = b;
-                            plen += 1;
-                        }
-                    }
-                    if plen > 0 {
-                        let new_b = pick_one(&mut self.rng, &possible[..plen]);
-                        self.cells[cn as usize].inmate.as_mut().unwrap().beast = new_b;
-                    }
-                }
-                self.check_prey();
-            }
+            GiftId::Horn => self.apply_gift_horn(),
+            GiftId::Wine => self.apply_gift_wine(),
+            GiftId::Brand => self.apply_gift_brand(),
         }
     }
 
     pub fn choose(&mut self, id: ChoiceId) -> bool {
+        assert!((self.pending_len as usize) <= self.pending.len());
+        assert!(!id.as_str().is_empty());
         if self.pending_len == 0 {
             return false;
         }
@@ -484,6 +549,7 @@ impl SimState {
     }
 
     pub fn reroll_offer(&mut self) -> bool {
+        assert!((self.pending_len as usize) <= self.pending.len());
         if !self.can_reroll() {
             return false;
         }
@@ -507,12 +573,15 @@ impl SimState {
         }
         self.pending[0].options_len = take as u8;
         self.pending[0].rerolls -= 1;
+        assert!((self.pending[0].options_len as usize) <= self.pending[0].options.len());
         true
     }
 
     #[inline]
     pub fn current_contract(&self) -> Option<Contract> {
+        assert!((self.position as usize) < CELL_COUNT);
         let ch = self.challenge.as_ref()?;
+        assert!((ch.deliveries_len as usize) <= ch.contracts.len());
         if (ch.deliveries_len as usize) < 3 {
             Some(ch.contracts[ch.deliveries_len as usize])
         } else {
@@ -522,6 +591,8 @@ impl SimState {
 
     #[inline]
     pub fn can_open_early(&self) -> bool {
+        assert!((self.position as usize) < CELL_COUNT);
+        assert!((self.pending_len as usize) <= self.pending.len());
         let Some(ch) = self.challenge.as_ref() else {
             return false;
         };
@@ -537,6 +608,7 @@ impl SimState {
     }
 
     pub fn open_early_delivery(&mut self) -> bool {
+        assert!((self.position as usize) < CELL_COUNT);
         if !self.can_open_early() {
             return false;
         }
@@ -544,10 +616,12 @@ impl SimState {
             ch.window_open = true;
             ch.window_early = true;
         }
+        assert!(self.challenge.as_ref().is_some_and(|c| c.window_open));
         true
     }
 
     pub fn cancel_early_delivery(&mut self) -> bool {
+        assert!((self.position as usize) < CELL_COUNT);
         let Some(ch) = self.challenge.as_mut() else {
             return false;
         };
@@ -556,10 +630,12 @@ impl SimState {
         }
         ch.window_open = false;
         ch.window_early = false;
+        assert!(!ch.window_open);
         true
     }
 
     pub fn finish(&mut self) {
+        assert!((self.position as usize) < CELL_COUNT);
         self.phase = Phase::Ended;
         self.destinations = [0; 16];
         self.dest_len = 0;
@@ -588,18 +664,24 @@ impl SimState {
             ch.settled = true;
             ch.passed = completed >= 2 && heavy;
         }
+        assert_eq!(self.phase, Phase::Ended);
     }
 
     pub fn advance_day(&mut self) {
-        if self.day >= self.max_days {
+        assert!(self.days_max >= 1);
+        if self.day >= self.days_max {
             self.finish();
+            assert_eq!(self.phase, Phase::Ended);
             return;
         }
         self.day += 1;
+        assert!(self.day <= self.days_max);
         self.begin_day();
     }
 
     pub fn end_day(&mut self) -> bool {
+        assert!((self.position as usize) < CELL_COUNT);
+        assert!(self.days_max >= 1);
         if !self.guard(false) {
             return false;
         }
@@ -617,6 +699,7 @@ impl SimState {
     }
 
     pub fn queue_refit(&mut self, slot: u8) {
+        assert!((self.pending_len as usize) <= self.pending.len());
         let mut s = refit_seed(slot);
         let (mut pool, plen) = self.unheld_tools(ToolMask(0));
         shuffle_slice(&mut s, &mut pool[..plen]);
@@ -643,9 +726,11 @@ impl SimState {
             self.pending[0] = item;
             self.pending_len += 1;
         }
+        assert!((self.pending_len as usize) <= self.pending.len());
     }
 
     pub fn after_delivery(&mut self) {
+        assert!((self.position as usize) < CELL_COUNT);
         let early = self.challenge.as_ref().is_some_and(|c| c.window_early);
         if let Some(ch) = self.challenge.as_mut() {
             ch.window_open = false;
@@ -656,9 +741,11 @@ impl SimState {
         } else {
             self.advance_day();
         }
+        assert!(!self.challenge.as_ref().is_some_and(|c| c.window_open));
     }
 
     pub fn skip_delivery(&mut self) -> bool {
+        assert!((self.position as usize) < CELL_COUNT);
         let Some(ch) = self.challenge.as_ref() else {
             return false;
         };
@@ -685,10 +772,13 @@ impl SimState {
             }
         }
         self.after_delivery();
+        assert!(!self.challenge.as_ref().is_some_and(|c| c.window_open));
         true
     }
 
     pub fn deliver(&mut self, cells: &[u8], vault_ids: &[u16], escort: EscortKind) -> bool {
+        assert!((escort as u8) <= (EscortKind::Heavy as u8));
+        assert!((self.position as usize) < CELL_COUNT);
         let mut cell_mask = 0u16;
         for &cn in cells {
             if (cn as usize) >= CELL_COUNT {
@@ -703,36 +793,36 @@ impl SimState {
         self.deliver_mask(cell_mask, vault_ids, escort)
     }
 
-    pub fn deliver_mask(&mut self, cell_mask: u16, vault_ids: &[u16], escort: EscortKind) -> bool {
-        let Some(ch) = self.challenge.as_ref() else {
-            return false;
-        };
-        if !ch.window_open || ch.vouchers < escort.cost() {
-            return false;
-        }
-        let Some(contract) = self.current_contract() else {
-            return false;
-        };
+    fn collect_delivery_cargo(
+        &self,
+        contract: Contract,
+        cell_mask: u16,
+        vault_ids: &[u16],
+    ) -> Option<([Inmate; 24], usize)> {
+        assert!((contract.slot as usize) < 3);
         let mut cargo = [Inmate::default(); 24];
         let mut clen = 0;
         let mut rem = cell_mask;
-        while rem != 0 {
+        let mut steps = 0usize;
+        while rem != 0 && steps < CELL_COUNT {
+            steps += 1;
             let cn = rem.trailing_zeros() as usize;
             rem &= rem - 1;
             let c = &self.cells[cn];
             if c.sealed || c.inmate.is_none() {
-                return false;
+                return None;
             }
             cargo[clen] = c.inmate.unwrap();
             clen += 1;
         }
         if !vault_ids.is_empty() && !contract.heavy {
-            return false;
+            return None;
         }
         for &vid in vault_ids {
-            let Some(v) = self.vault_slice().iter().find(|v| v.id == vid) else {
-                return false;
-            };
+            let v = self.vault_slice().iter().find(|v| v.id == vid)?;
+            if clen >= cargo.len() {
+                return None;
+            }
             cargo[clen] = Inmate {
                 id: v.id,
                 beast: v.beast,
@@ -740,34 +830,21 @@ impl SimState {
             };
             clen += 1;
         }
-        if clen == 0 || !qualifies(contract, &cargo[..clen]) {
-            return false;
-        }
-        let pressure: u16 = cargo[..clen]
-            .iter()
-            .map(|p| PRESSURE[p.tier as usize])
-            .sum();
-        if pressure > escort.cap() {
-            return false;
-        }
-        let base_pts: u16 = cargo[..clen].iter().map(|p| 1u16 << p.tier).sum();
-        let bonus_pts: u16 = if let Some(b) = contract.bounty {
-            cargo[..clen]
-                .iter()
-                .filter(|p| p.tier >= SUPREME && p.beast == b)
-                .count() as u16
-                * 8
-        } else {
-            0
-        };
-        let points = base_pts + bonus_pts;
+        assert!(clen <= cargo.len());
+        Some((cargo, clen))
+    }
 
+    fn empty_delivered_cargo(&mut self, cell_mask: u16, vault_ids: &[u16]) {
+        assert!((self.vault_len as usize) <= self.vault.len());
         let mut rem_empty = cell_mask;
-        while rem_empty != 0 {
+        let mut steps = 0usize;
+        while rem_empty != 0 && steps < CELL_COUNT {
+            steps += 1;
             let cn = rem_empty.trailing_zeros() as usize;
             rem_empty &= rem_empty - 1;
             self.empty_cell(cn);
         }
+        assert_eq!(rem_empty, 0);
         if !vault_ids.is_empty() {
             let mut write = 0;
             for read in 0..(self.vault_len as usize) {
@@ -779,6 +856,33 @@ impl SimState {
             self.vault_len = write as u8;
         }
         self.check_prey();
+    }
+
+    pub fn deliver_mask(&mut self, cell_mask: u16, vault_ids: &[u16], escort: EscortKind) -> bool {
+        assert!((escort as u8) <= (EscortKind::Heavy as u8));
+        assert!((self.position as usize) < CELL_COUNT);
+        let Some(ch) = self.challenge.as_ref() else {
+            return false;
+        };
+        if !ch.window_open || ch.vouchers < escort.cost() {
+            return false;
+        }
+        let Some(contract) = self.current_contract() else {
+            return false;
+        };
+        let Some((cargo, clen)) = self.collect_delivery_cargo(contract, cell_mask, vault_ids)
+        else {
+            return false;
+        };
+        if clen == 0 || !qualifies(contract, &cargo[..clen]) {
+            return false;
+        }
+        let (points, pressure) = score_delivery_cargo(contract, &cargo[..clen]);
+        if pressure > escort.cap() {
+            return false;
+        }
+
+        self.empty_delivered_cargo(cell_mask, vault_ids);
 
         let early = self.challenge.as_ref().unwrap().window_early;
         let deliveries_after = {
@@ -809,7 +913,26 @@ impl SimState {
     }
 }
 
+fn score_delivery_cargo(contract: Contract, cargo: &[Inmate]) -> (u16, u16) {
+    assert!(!cargo.is_empty());
+    assert!(cargo.len() <= 24);
+    let pressure: u16 = cargo.iter().map(|p| PRESSURE[p.tier as usize]).sum();
+    let base_pts: u16 = cargo.iter().map(|p| 1u16 << p.tier).sum();
+    let bonus_pts: u16 = if let Some(b) = contract.bounty {
+        cargo
+            .iter()
+            .filter(|p| p.tier >= SUPREME && p.beast == b)
+            .count() as u16
+            * 8
+    } else {
+        0
+    };
+    (base_pts + bonus_pts, pressure)
+}
+
 pub fn qualifies(contract: Contract, cargo: &[Inmate]) -> bool {
+    assert!((contract.id as u8) <= (ContractId::Bounty as u8));
+    assert!(cargo.len() <= 24);
     let mut mask = 0u8;
     let mut elite = 0usize;
     let mut low = 0usize;

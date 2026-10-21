@@ -1,4 +1,5 @@
-//! Heuristic policy, zero-allocation chain DP (`FeedMemo`), convoy planner, and parallel Monte Carlo playout solver.
+//! Heuristic policy, zero-allocation chain DP (`FeedMemo`), convoy planner, and parallel
+//! Monte Carlo playout solver.
 
 pub mod chain_dp;
 pub mod convoy;

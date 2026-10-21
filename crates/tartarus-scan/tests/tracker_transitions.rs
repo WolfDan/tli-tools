@@ -66,9 +66,9 @@ fn test_tracker_log_lifecycle_and_day_check() {
     tracker.load_example();
     assert!(tracker.phase.is_active());
 
-    // Ground-truth day check updates model day and max_days
+    // Ground-truth day check updates model day and days_max
     assert!(tracker.on_log_day_check(5, 20));
-    assert_eq!(tracker.model.max_days, 20);
+    assert_eq!(tracker.model.days_max, 20);
     assert_eq!(tracker.model.day, 5);
 
     // Settled run ends the run
@@ -114,7 +114,7 @@ fn test_tracker_pick_and_treasure_transitions() {
     assert_eq!(tracker.model.stage, BoardRunStage::Opening);
     assert_eq!(tracker.model.step, BoardStep::Choice);
     assert_eq!(tracker.model.choice.kind, PendingKind::Tool);
-    assert_eq!(tracker.model.max_days, 30);
+    assert_eq!(tracker.model.days_max, 30);
     assert_eq!(tracker.model.objective, ObjectiveId::Consume);
 
     // Open treasure after Consume
@@ -129,12 +129,7 @@ fn test_tracker_pick_and_treasure_transitions() {
     assert_eq!(tracker.model.treasure, TreasurePhase::ReadyToChoose);
 }
 
-#[test]
-fn test_tracker_scan_to_model_reconciliation() {
-    let mut tracker = RunTracker::new();
-    tracker.model.mode = GameMode::Drill;
-    tracker.model.max_days = 20;
-
+fn mock_scan_cells() -> [ScannedCell; 16] {
     let mut cells = [ScannedCell::default(); 16];
     for (i, cell) in cells.iter_mut().enumerate() {
         cell.n = i as u8;
@@ -145,7 +140,6 @@ fn test_tracker_scan_to_model_reconciliation() {
         };
         cell.conf = 0.95;
     }
-    // Place a tier-2 Lion in cell 1 and a tier-2 Wolf in cell 2 (with jaws on Lion)
     cells[1].kind = ScannedCellKind::Inmate;
     cells[1].beast = Beast::Lion;
     cells[1].tier = 2;
@@ -155,6 +149,16 @@ fn test_tracker_scan_to_model_reconciliation() {
     cells[2].beast = Beast::Wolf;
     cells[2].tier = 2;
     cells[2].jaws = false;
+    assert_eq!(cells[0].kind, ScannedCellKind::Office);
+    assert_eq!(cells[1].beast, Beast::Lion);
+    cells
+}
+
+#[test]
+fn test_tracker_scan_to_model_reconciliation() {
+    let mut tracker = RunTracker::new();
+    tracker.model.mode = GameMode::Drill;
+    tracker.model.days_max = 20;
 
     let mut door_cells = FixedVec::new();
     door_cells.push(2);
@@ -173,7 +177,7 @@ fn test_tracker_scan_to_model_reconciliation() {
             by_labels: false,
             cells_matched: 15,
         }),
-        cells: Some(cells),
+        cells: Some(mock_scan_cells()),
         warden: Some(WardenRead {
             cell: 1,
             conf: 0.95,
@@ -182,7 +186,7 @@ fn test_tracker_scan_to_model_reconciliation() {
         doors: Some(DoorsRead {
             cells: door_cells,
             conf: 0.92,
-            candidates: Vec::new(),
+            candidates: FixedVec::new(),
             office_card: false,
         }),
         days: Some((15, 0.90)),

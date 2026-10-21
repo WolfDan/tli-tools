@@ -1,4 +1,5 @@
-//! Cooked Unreal Engine 4.27 `.uasset` / `.uexp` / `.ubulk` parser for `UTexture2D` and `UPaperSprite`.
+//! Cooked Unreal Engine 4.27 `.uasset` / `.uexp` / `.ubulk` parser for `UTexture2D`
+//! and `UPaperSprite`.
 
 use std::io::Cursor;
 
@@ -9,6 +10,11 @@ use crate::bc::{PixelFormat, decode_mip_to_rgba8, encode_png_rgba8};
 use crate::error::ExtractError;
 
 pub const PACKAGE_FILE_TAG: u32 = 0x9E2A_83C1;
+
+const _: () = {
+    assert!(PACKAGE_FILE_TAG == 0x9E2A_83C1);
+    assert!(std::mem::size_of::<PaperSpriteInfo>() >= 16);
+};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct PaperSpriteInfo {
@@ -32,6 +38,8 @@ pub struct DecodedTexture {
 
 impl DecodedTexture {
     pub fn to_png_bytes(&self) -> Vec<u8> {
+        assert!(self.width <= 65536);
+        assert!(self.height <= 65536);
         encode_png_rgba8(self.width as u32, self.height as u32, &self.rgba8).unwrap_or_default()
     }
 }
@@ -39,6 +47,8 @@ impl DecodedTexture {
 /// Parses a cooked Paper2D `UPaperSprite` (`.uasset` + `.uexp`) to extract its parent atlas path
 /// and pixel crop rectangle (`BakedSourceUV`, `BakedSourceDimension`).
 pub fn parse_paper_sprite(uasset: &[u8], uexp: &[u8]) -> Option<PaperSpriteInfo> {
+    assert!(uasset.len() <= 256 * 1024 * 1024);
+    assert!(uexp.len() <= 256 * 1024 * 1024);
     let names = parse_uasset_names(uasset);
     let uv_idx = names.iter().position(|n| n == "BakedSourceUV")? as i32;
     let dim_idx = names.iter().position(|n| n == "BakedSourceDimension")? as i32;
@@ -83,6 +93,7 @@ pub fn parse_paper_sprite(uasset: &[u8], uexp: &[u8]) -> Option<PaperSpriteInfo>
 }
 
 fn read_fstring(cur: &mut Cursor<&[u8]>) -> Option<String> {
+    assert!((cur.position() as usize) <= cur.get_ref().len());
     let len = cur.read_i32::<LittleEndian>().ok()?;
     if len == 0 {
         return Some(String::new());
@@ -99,6 +110,7 @@ fn read_fstring(cur: &mut Cursor<&[u8]>) -> Option<String> {
         cur.set_position((start + byte_len) as u64);
         let mut u16s = vec![0u16; chars];
         LittleEndian::read_u16_into(slice, &mut u16s);
+        assert!((cur.position() as usize) <= buf.len());
         Some(
             String::from_utf16_lossy(&u16s)
                 .trim_end_matches('\0')
@@ -111,6 +123,7 @@ fn read_fstring(cur: &mut Cursor<&[u8]>) -> Option<String> {
         }
         let slice = buf.get(start..start + byte_len)?;
         cur.set_position((start + byte_len) as u64);
+        assert!((cur.position() as usize) <= buf.len());
         Some(
             String::from_utf8_lossy(slice)
                 .trim_end_matches('\0')
@@ -119,29 +132,23 @@ fn read_fstring(cur: &mut Cursor<&[u8]>) -> Option<String> {
     }
 }
 
-/// Parses the `FName` string table out of a cooked UE 4.27 `.uasset` header.
-pub fn parse_uasset_names(uasset: &[u8]) -> Vec<String> {
-    if uasset.len() < 8 || LittleEndian::read_u32(uasset) != PACKAGE_FILE_TAG {
-        return Vec::new();
-    }
-
-    // Try standard UE4 FPackageFileSummary layout and fallback scan for (name_count, name_offset)
+fn collect_name_table_candidates(uasset: &[u8]) -> Vec<(usize, usize)> {
+    assert!(uasset.len() >= 8);
     let mut candidates = Vec::new();
     let legacy_ver = LittleEndian::read_i32(&uasset[4..]);
     let mut off = 8usize;
     if legacy_ver != -4 {
-        off += 4; // LegacyUE3Version
+        off += 4;
     }
-    off += 4 + 4 + 4; // FileVersionUE4, FileVersionLicenseeUE4, CustomVersionCount
+    off += 4 + 4 + 4;
     if let Some(cc_slice) = uasset.get(off - 4..off) {
         let custom_count = LittleEndian::read_i32(cc_slice);
         if (0..=256).contains(&custom_count) {
-            off += (custom_count as usize) * 20; // FCustomVersion = GUID(16) + ver(4)
-            off += 4; // TotalHeaderSize
+            off += (custom_count as usize) * 20 + 4;
             let mut cur = Cursor::new(uasset);
             cur.set_position(off as u64);
             if read_fstring(&mut cur).is_some() {
-                cur.set_position(cur.position() + 4); // PackageFlags
+                cur.set_position(cur.position() + 4);
                 if let (Ok(nc), Ok(no)) = (
                     cur.read_i32::<LittleEndian>(),
                     cur.read_i32::<LittleEndian>(),
@@ -163,7 +170,18 @@ pub fn parse_uasset_names(uasset: &[u8]) -> Vec<String> {
             }
         }
     }
+    assert!(candidates.len() <= 128);
+    candidates
+}
 
+/// Parses the `FName` string table out of a cooked UE 4.27 `.uasset` header.
+pub fn parse_uasset_names(uasset: &[u8]) -> Vec<String> {
+    assert!(uasset.len() <= 256 * 1024 * 1024);
+    if uasset.len() < 8 || LittleEndian::read_u32(uasset) != PACKAGE_FILE_TAG {
+        return Vec::new();
+    }
+
+    let candidates = collect_name_table_candidates(uasset);
     for (name_count, name_offset) in candidates {
         let mut names = Vec::with_capacity(name_count);
         let mut cur = Cursor::new(uasset);
@@ -175,13 +193,15 @@ pub fn parse_uasset_names(uasset: &[u8]) -> Vec<String> {
                 && (cur.position() as usize) + 4 <= uasset.len()
             {
                 names.push(s);
-                cur.set_position(cur.position() + 4); // NonCasePreservingHash(u16) + CasePreservingHash(u16)
+                // NonCasePreservingHash(u16) + CasePreservingHash(u16)
+                cur.set_position(cur.position() + 4);
             } else {
                 ok = false;
                 break;
             }
         }
         if ok && !names.is_empty() {
+            assert_eq!(names.len(), name_count);
             return names;
         }
     }
@@ -189,20 +209,25 @@ pub fn parse_uasset_names(uasset: &[u8]) -> Vec<String> {
     Vec::new()
 }
 
-/// Decodes a cooked UE 4.27 `UTexture2D` from its `.uasset`, `.uexp`, and optional `.ubulk` buffers.
+/// Decodes a cooked UE 4.27 `UTexture2D` from its `.uasset`, `.uexp`, and optional
+/// `.ubulk` buffers.
 pub fn decode_texture2d(
     uasset: &[u8],
     uexp: &[u8],
     ubulk: Option<&[u8]>,
 ) -> Result<DecodedTexture, ExtractError> {
+    assert!(uasset.len() <= 256 * 1024 * 1024);
+    assert!(uexp.len() <= 256 * 1024 * 1024);
     let names = parse_uasset_names(uasset);
 
-    // 1. Primary path: locate `FTexturePlatformData`'s `PixelFormatString` (`"PF_..."` FString) inside `.uexp`.
+    // 1. Primary path: locate `FTexturePlatformData`'s `PixelFormatString` (`"PF_..."` FString)
+    // inside `.uexp`.
     if let Some(tex) = try_parse_platform_data(uexp, ubulk, &names) {
         return Ok(tex);
     }
 
-    // 2. Fallback path: determine PixelFormat from `.uasset` FNames (or ASCII scan) and scan `.uexp` for FByteBulkData mip headers.
+    // 2. Fallback path: determine PixelFormat from `.uasset` FNames (or ASCII scan) and scan
+    // `.uexp` for FByteBulkData mip headers.
     let format = names
         .iter()
         .find_map(|n| PixelFormat::from_name(n))
@@ -218,12 +243,14 @@ pub fn decode_texture2d(
 }
 
 fn find_ascii_pixel_format(buf: &[u8]) -> Option<PixelFormat> {
+    assert!(buf.len() <= 256 * 1024 * 1024);
     for i in memchr::memmem::find_iter(buf, b"PF_") {
         let end = buf[i..(i + 24).min(buf.len())]
             .iter()
             .position(|&b| b == 0 || !b.is_ascii_graphic())
             .unwrap_or(0);
         if end > 3 {
+            assert!(i + end <= buf.len());
             let s = std::str::from_utf8(&buf[i..i + end]).ok()?;
             if let Some(pf) = PixelFormat::from_name(s) {
                 return Some(pf);
@@ -238,6 +265,7 @@ fn try_parse_platform_data(
     ubulk: Option<&[u8]>,
     names: &[String],
 ) -> Option<DecodedTexture> {
+    assert!(uexp.len() <= 256 * 1024 * 1024);
     for i in memchr::memmem::find_iter(uexp, b"PF_") {
         if i < 16 || i + 16 > uexp.len() {
             continue;
@@ -259,9 +287,8 @@ fn try_parse_platform_data(
             continue;
         }
 
-        // After PixelFormatString:
-        // FirstMipToSerialize (i32), NumMips (i32)
-        // Note: Some UE4 builds have an extra SkipOffset (i64 or i32) before FirstMipToSerialize; check both offsets!
+        // After PixelFormatString: FirstMipToSerialize (i32), NumMips (i32).
+        // Some UE4 builds have an extra SkipOffset (i64 or i32) before FirstMipToSerialize.
         for header_skip in [0usize, 4usize, 8usize] {
             let mip_table_off = str_end + header_skip;
             let Some(hdr_slice) = uexp.get(mip_table_off..mip_table_off + 8) else {
@@ -282,6 +309,7 @@ fn try_parse_platform_data(
                 plat_size_y as usize,
             ) && let Ok(rgba8) = decode_mip_to_rgba8(mip_bytes, width, height, format)
             {
+                assert_eq!(rgba8.len(), width * height * 4);
                 return Some(DecodedTexture {
                     width,
                     height,
@@ -304,6 +332,7 @@ fn parse_single_mip<'a>(
     expected_w: usize,
     expected_h: usize,
 ) -> Option<(usize, usize, &'a [u8])> {
+    assert!(expected_w <= 65536 && expected_h <= 65536);
     let mut cur = Cursor::new(uexp.get(mip_off..)?);
     let b_cooked = cur.read_i32::<LittleEndian>().ok()?;
     if b_cooked != 1 {
@@ -338,7 +367,7 @@ fn parse_single_mip<'a>(
         }
     }
 
-    // External `.ubulk` payload: SizeX, SizeY, SizeZ immediately follow the BulkData header in `.uexp`
+    // External `.ubulk` payload: SizeX, SizeY, SizeZ immediately follow the BulkData header.
     if let Some(ubulk_bytes) = ubulk
         && let Some(dim_slice) = uexp.get(after_bulk_hdr..after_bulk_hdr + 12)
     {
@@ -348,6 +377,7 @@ fn parse_single_mip<'a>(
         let height = if sy > 0 { sy } else { expected_h };
         let needed = format.mip_byte_size(width, height).max(size_on_disk);
         if ubulk_bytes.len() >= needed && needed > 0 {
+            assert!(width > 0 && height > 0);
             return Some((width, height, &ubulk_bytes[..needed]));
         }
     }
@@ -361,11 +391,13 @@ fn try_scan_mip_in_uexp(
     format: PixelFormat,
     names: &[String],
 ) -> Result<DecodedTexture, ExtractError> {
+    assert!(uexp.len() <= 256 * 1024 * 1024);
     for off in 0..uexp.len().saturating_sub(36) {
         if LittleEndian::read_i32(&uexp[off..off + 4]) == 1
             && let Some((w, h, mip_bytes)) = parse_single_mip(uexp, ubulk, off, format, 0, 0)
             && let Ok(rgba8) = decode_mip_to_rgba8(mip_bytes, w, h, format)
         {
+            assert_eq!(rgba8.len(), w * h * 4);
             return Ok(DecodedTexture {
                 width: w,
                 height: h,

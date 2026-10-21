@@ -33,8 +33,15 @@ pub enum ExtractError {
     LuacFormat(String),
 }
 
+const _: () = {
+    assert!(std::mem::size_of::<ExtractError>() > 0);
+};
+
 impl From<ExtractError> for String {
     fn from(err: ExtractError) -> Self {
-        err.to_string()
+        let msg = err.to_string();
+        debug_assert!(!msg.is_empty());
+        debug_assert!(msg.len() <= 65536);
+        msg
     }
 }

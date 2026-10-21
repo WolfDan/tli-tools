@@ -9,8 +9,10 @@ fn test_s16_log_triggers() {
     lw.process_line("[2026.10.17] S16BoardTaskPop Run", &mut evs);
     assert!(evs.contains(&LogEvent::ObjectivePopup));
     assert!(evs.contains(&LogEvent::RunNew));
+    assert!(evs.contains(&LogEvent::Riot(false)));
 
     evs.clear();
+    assert!(evs.is_empty());
     lw.process_line("[2026.10.17] [S16LastDay] check cur=0 max=12", &mut evs);
     assert!(evs.contains(&LogEvent::DayCheck { cur: 0, max: 12 }));
     lw.process_line("[2026.10.17] S16BoardRelicPop Run", &mut evs);
@@ -19,7 +21,8 @@ fn test_s16_log_triggers() {
 
     evs.clear();
     lw.process_line(
-        "[2026.10.17] [S16BGM] board Begin runId=425a86a4-c923-11f1-8fcd-00000000005b IsSettled=false Result=-1",
+        "[2026.10.17] [S16BGM] board Begin \
+         runId=425a86a4-c923-11f1-8fcd-00000000005b IsSettled=false Result=-1",
         &mut evs,
     );
     assert!(evs.iter().any(|e| matches!(
@@ -53,6 +56,7 @@ fn test_s16_log_triggers() {
 #[test]
 fn test_bgra_to_rgba_in_place() {
     let mut pixels = vec![0u8; 40];
+    assert_eq!(pixels.len(), 40);
     for (i, px) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         px[0] = (i as u8) * 10 + 1; // B
         px[1] = (i as u8) * 10 + 2; // G
@@ -60,6 +64,7 @@ fn test_bgra_to_rgba_in_place() {
         px[3] = 0; // A (should become 255)
     }
     bgra_to_rgba_in_place(&mut pixels);
+    assert_eq!(pixels.len(), 40);
     for (i, px) in pixels.as_chunks::<4>().0.iter().enumerate() {
         assert_eq!(px[0], (i as u8) * 10 + 3); // R
         assert_eq!(px[1], (i as u8) * 10 + 2); // G
@@ -73,6 +78,8 @@ fn test_stillness_tracker_convergence() {
     let mut tracker = StillnessTracker::new();
     let frame_a_buf = vec![20u8; 64 * 36 * 4];
     let frame_b_buf = vec![200u8; 64 * 36 * 4];
+    assert_eq!(frame_a_buf.len(), 64 * 36 * 4);
+    assert_eq!(frame_b_buf.len(), 64 * 36 * 4);
     let frame_a = CapturedFrame {
         width: 64,
         height: 36,

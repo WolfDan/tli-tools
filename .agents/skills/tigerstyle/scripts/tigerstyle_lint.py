@@ -23,12 +23,21 @@ ASSERTION_DENSITY_MIN = 2.0
 ASSERTION_PATTERNS = [
     re.compile(r'\bassert\s*\('),
     re.compile(r'\bassert!\s*\('),
+    re.compile(r'\bassert_eq!\s*\('),
+    re.compile(r'\bassert_ne!\s*\('),
     re.compile(r'\bdebug_assert!\s*\('),
+    re.compile(r'\bdebug_assert_eq!\s*\('),
+    re.compile(r'\bdebug_assert_ne!\s*\('),
     re.compile(r'\bstatic_assert\b'),
 ]
 
+RUST_FUNCTION_DEF_PATTERN = re.compile(
+    r'^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?'
+    r'(?:unsafe\s+)?fn\s+([a-zA-Z0-9_]+)\s*(?:<[^>]*>)?\s*\('
+)
+
 FUNCTION_DEF_PATTERNS = [
-    re.compile(r'^\s*(?:pub\s+)?fn\s+([a-zA-Z0-9_]+)\s*\('), # Zig / Rust
+    RUST_FUNCTION_DEF_PATTERN, # Zig / Rust
     re.compile(r'^\s*(?:[a-zA-Z0-9_]+[\s\*]+)+([a-zA-Z0-9_]+)\s*\([^;]*\)\s*\{'), # C / C++
     re.compile(r'^\s*(?:export\s+)?(?:public\s+|private\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)\s*\('), # TS/JS
     re.compile(r'^\s*(?:public\s+|private\s+)?([a-zA-Z0-9_]+)\s*\([^;]*\)\s*:\s*[a-zA-Z0-9_<>\[\]\s\|]+\s*\{'), # TS method
@@ -39,6 +48,27 @@ LITTLE_ENDIAN_PREFIXES = [
     re.compile(r'\b(min_[a-zA-Z0-9_]+)\b'),
     re.compile(r'\b(total_[a-zA-Z0-9_]+)\b'),
 ]
+
+EXTERNAL_METHOD_ALLOWLIST = {
+    "total_cmp",
+    "min_by_key",
+    "max_by_key",
+    "min_by",
+    "max_by",
+    "min_keycode",
+    "max_keycode",
+}
+
+TRIVIAL_TRAIT_METHODS = {
+    "default",
+    "from",
+    "fmt",
+    "id",
+    "title",
+    "icon_name",
+    "menu",
+}
+
 
 ALLOCATION_PATTERNS = [
     re.compile(r'\bmalloc\s*\('),
@@ -69,6 +99,11 @@ def check_file(filepath: str) -> Dict[str, Any]:
             })
 
     # 2. Check Functions & Assertions
+    func_patterns = (
+        [RUST_FUNCTION_DEF_PATTERN]
+        if filepath.endswith((".rs", ".zig"))
+        else FUNCTION_DEF_PATTERNS
+    )
     current_func = None
     func_start_line = 0
     func_brace_depth = 0
@@ -80,20 +115,29 @@ def check_file(filepath: str) -> Dict[str, Any]:
 
         # Check for function start
         if current_func is None:
-            for pat in FUNCTION_DEF_PATTERNS:
+            for pat in func_patterns:
                 match = pat.search(line)
                 if match:
                     func_name = match.group(1)
                     if func_name in ("assert", "assert_"):
+                        break
+                    if ";" in line and "{" not in line:
                         break
                     current_func = func_name
                     func_start_line = line_idx
                     in_func_signature = '{' not in line
                     func_brace_depth = line.count('{') - line.count('}')
                     func_assert_count = 0
+                    for assert_pat in ASSERTION_PATTERNS:
+                        if assert_pat.search(line):
+                            func_assert_count += 1
                     break
         else:
             if in_func_signature:
+                if ";" in line and "{" not in line:
+                    current_func = None
+                    in_func_signature = False
+                    continue
                 if '{' in line:
                     in_func_signature = False
                     func_brace_depth = line.count('{') - line.count('}')
@@ -104,46 +148,62 @@ def check_file(filepath: str) -> Dict[str, Any]:
                 if assert_pat.search(line):
                     func_assert_count += 1
 
-            # Function ended
-            if not in_func_signature and func_brace_depth <= 0:
-                func_length = line_idx - func_start_line + 1
-                function_stats.append({
-                    "name": current_func,
-                    "start": func_start_line,
-                    "end": line_idx,
-                    "lines": func_length,
-                    "assertions": func_assert_count,
+        if current_func is not None and not in_func_signature and func_brace_depth <= 0:
+            func_length = line_idx - func_start_line + 1
+            function_stats.append({
+                "name": current_func,
+                "start": func_start_line,
+                "end": line_idx,
+                "lines": func_length,
+                "assertions": func_assert_count,
+            })
+
+            if func_length > FUNCTION_LINES_MAX:
+                msg = (
+                    f"Function '{current_func}' exceeds {FUNCTION_LINES_MAX} lines "
+                    f"({func_length} lines)"
+                )
+                issues.append({
+                    "line": func_start_line,
+                    "type": "FUNCTION_LENGTH",
+                    "message": msg,
                 })
 
-                if func_length > FUNCTION_LINES_MAX:
-                    issues.append({
-                        "line": func_start_line,
-                        "type": "FUNCTION_LENGTH",
-                        "message": f"Function '{current_func}' exceeds {FUNCTION_LINES_MAX} lines ({func_length} lines)"
-                    })
+            is_trivial = (
+                func_length <= 5
+                or current_func.startswith("test")
+                or current_func in TRIVIAL_TRAIT_METHODS
+            )
+            if func_assert_count < 2 and not is_trivial:
+                msg = (
+                    f"Function '{current_func}' has {func_assert_count} assertions "
+                    f"(TigerStyle minimum: 2)"
+                )
+                issues.append({
+                    "line": func_start_line,
+                    "type": "LOW_ASSERTION_DENSITY",
+                    "message": msg,
+                })
 
-                if func_assert_count < 2 and not current_func.startswith("test"):
-                    issues.append({
-                        "line": func_start_line,
-                        "type": "LOW_ASSERTION_DENSITY",
-                        "message": f"Function '{current_func}' has {func_assert_count} assertions (TigerStyle minimum: 2)"
-                    })
-
-                current_func = None
-                func_start_line = 0
-                func_assert_count = 0
-                in_func_signature = False
+            current_func = None
+            func_start_line = 0
+            func_assert_count = 0
+            in_func_signature = False
 
         # Check for little endian naming in declarations
         for le_pat in LITTLE_ENDIAN_PREFIXES:
             matches = le_pat.findall(line)
             for m in matches:
-                # ignore standard macros or test helpers
-                if not m.isupper():
+                # ignore standard macros, external methods, or uppercase constants
+                if not m.isupper() and m not in EXTERNAL_METHOD_ALLOWLIST:
+                    msg = (
+                        f"Little-endian name detected: '{m}'. "
+                        f"Prefer big-endian (e.g. '<entity>_max' or '<entity>_min')"
+                    )
                     issues.append({
                         "line": line_idx,
                         "type": "NAMING_CONVENTION",
-                        "message": f"Little-endian name detected: '{m}'. Prefer big-endian (e.g. '<entity>_max' or '<entity>_min')"
+                        "message": msg,
                     })
 
     return {

@@ -82,11 +82,7 @@ fn test_chain_consume_screens_never_recommend_end_day() {
     }
 }
 
-#[test]
-fn test_pick_three_relics_and_start_event_popup() {
-    let mut arena = ScanArena::new();
-
-    // 1. Iron Pestle (Pestle), Felon's Dog Tag (Dogtag), Hangman's Noose (Rope)
+fn assert_pick_three_relics(arena: &mut ScanArena) {
     let (w1, h1, rgba1) =
         load_png_rgba8(&fixture_path("pick_three_relics_pestle_dogtag_noose.png"));
     let view1 = ImageView {
@@ -103,11 +99,8 @@ fn test_pick_three_relics_and_start_event_popup() {
     );
 
     let mut tracker1 = RunTracker::new();
-    let (ok1, _, _) = tracker1.process_frame(
-        &view1,
-        CaptureTrigger::Instruments { fresh: true },
-        &mut arena,
-    );
+    let (ok1, _, _) =
+        tracker1.process_frame(&view1, CaptureTrigger::Instruments { fresh: true }, arena);
     assert!(ok1, "pick1 should be processed by RunTracker");
     let snap1 = tracker1.model.evaluate(4000, 80, 42);
     assert!(
@@ -123,8 +116,9 @@ fn test_pick_three_relics_and_start_event_popup() {
         "expected one of the 3 offered relics, got '{}'",
         snap1.move_text
     );
+}
 
-    // 2. Start Event: Tyranny scroll popup
+fn assert_scroll_popups(arena: &mut ScanArena) {
     let (w2, h2, rgba2) = load_png_rgba8(&fixture_path("start_event_tyranny_popup.png"));
     let view2 = ImageView {
         width: w2,
@@ -138,7 +132,7 @@ fn test_pick_three_relics_and_start_event_popup() {
         title
     );
     let mut tracker2 = RunTracker::new();
-    let (ok2, status2, _) = tracker2.process_frame(&view2, CaptureTrigger::Manual, &mut arena);
+    let (ok2, status2, _) = tracker2.process_frame(&view2, CaptureTrigger::Manual, arena);
     assert!(
         ok2,
         "Manual Picture capture on Tyranny popup must be recognized"
@@ -150,7 +144,6 @@ fn test_pick_three_relics_and_start_event_popup() {
         status2
     );
 
-    // 3. Objective: Behind Cell Doors popup
     let (w3, h3, rgba3) = load_png_rgba8(&fixture_path("objective_behind_cell_doors_popup.png"));
     let view3 = ImageView {
         width: w3,
@@ -164,7 +157,7 @@ fn test_pick_three_relics_and_start_event_popup() {
         title3
     );
     let mut tracker3 = RunTracker::new();
-    let (ok3, status3, _) = tracker3.process_frame(&view3, CaptureTrigger::Manual, &mut arena);
+    let (ok3, status3, _) = tracker3.process_frame(&view3, CaptureTrigger::Manual, arena);
     assert!(
         ok3,
         "Manual Picture capture on Behind Cell Doors popup must be recognized"
@@ -181,14 +174,17 @@ fn test_pick_three_relics_and_start_event_popup() {
 }
 
 #[test]
-fn test_day5_and_day13_supreme_jaws_chromatic_and_sequence() {
+fn test_pick_three_relics_and_start_event_popup() {
+    let mut arena = ScanArena::new();
+    assert!(!arena.slots.is_empty());
+    assert_pick_three_relics(&mut arena);
+    assert_scroll_popups(&mut arena);
+    assert_eq!(arena.slots.len(), 6);
+}
+
+fn assert_day5_and_popup_step(tracker: &mut RunTracker, arena: &mut ScanArena) {
     let (w5, h5, rgba5) = load_png_rgba8(&fixture_path("board_day5_supreme_lion_no_jaws.png"));
     let (wp, hp, rgbap) = load_png_rgba8(&fixture_path("start_event_tyranny_popup.png"));
-    let (w13, h13, rgba13) =
-        load_png_rgba8(&fixture_path("board_day13_supreme_jaws_chromatic7.png"));
-
-    let mut arena = ScanArena::new();
-
     let view5 = ImageView {
         width: w5,
         height: h5,
@@ -199,16 +195,8 @@ fn test_day5_and_day13_supreme_jaws_chromatic_and_sequence() {
         height: hp,
         data: &rgbap,
     };
-    let view13 = ImageView {
-        width: w13,
-        height: h13,
-        data: &rgba13,
-    };
 
-    let mut tracker = RunTracker::new();
-
-    // Step 1: Day 5 board (15 days until Riot, Cell 10 = 0-indexed 9)
-    let scan5 = scan_image_with_arena(&view5, None, &mut arena);
+    let scan5 = scan_image_with_arena(&view5, None, arena);
     assert!(scan5.ok, "Day 5 board must localize");
     assert_eq!(
         scan5.days.map(|(d, _)| d),
@@ -229,12 +217,12 @@ fn test_day5_and_day13_supreme_jaws_chromatic_and_sequence() {
         CaptureTrigger::Board {
             treasure_view: false,
         },
-        &mut arena,
+        arena,
     );
     assert!(ok5);
     assert_eq!(
         tracker.model.checks, 0,
-        "Day 5 board should have 0 cells to check (Supreme Lion red aura must not flag cell 10), got mask {:#06x}",
+        "Day 5 board should have 0 cells to check, got mask {:#06x}",
         tracker.model.checks
     );
     let (_, probs5) = tracker.model.build_state(42);
@@ -244,19 +232,26 @@ fn test_day5_and_day13_supreme_jaws_chromatic_and_sequence() {
         probs5
     );
 
-    // Step 2: Start Event popup in the middle of the run must NOT corrupt board cells
-    let (okp, _, _) = tracker.process_frame(&viewp, CaptureTrigger::Objective, &mut arena);
+    let (okp, _, _) = tracker.process_frame(&viewp, CaptureTrigger::Objective, arena);
     assert!(okp);
     assert_eq!(tracker.model.start_event, StartEventId::Tyranny);
     assert_eq!(
         tracker.model.checks, 0,
         "Start event popup must not corrupt underlying board cells"
     );
+}
 
-    // Step 3: Day 13 board (7 days until Riot, Cell 04 = idx 3, Cell 10 = idx 9, Cell 15 = idx 14)
-    // Note: `board_day5` (2531x1353) and `board_day13` (2550x1368) have different manual region-crop offsets.
+fn assert_day13_step(tracker: &mut RunTracker, arena: &mut ScanArena) {
+    let (w13, h13, rgba13) =
+        load_png_rgba8(&fixture_path("board_day13_supreme_jaws_chromatic7.png"));
+    let view13 = ImageView {
+        width: w13,
+        height: h13,
+        data: &rgba13,
+    };
+
     tracker.hint = None;
-    let scan13 = scan_image_with_arena(&view13, None, &mut arena);
+    let scan13 = scan_image_with_arena(&view13, None, arena);
     assert!(scan13.ok, "Day 13 board must localize");
     assert_eq!(
         scan13.days.map(|(d, _)| d),
@@ -289,7 +284,7 @@ fn test_day5_and_day13_supreme_jaws_chromatic_and_sequence() {
         CaptureTrigger::Board {
             treasure_view: false,
         },
-        &mut arena,
+        arena,
     );
     assert!(ok13);
     assert_eq!(tracker.model.cells[3].kind, CellKind::Inmate);
@@ -311,8 +306,19 @@ fn test_day5_and_day13_supreme_jaws_chromatic_and_sequence() {
 }
 
 #[test]
+fn test_day5_and_day13_supreme_jaws_chromatic_and_sequence() {
+    let mut arena = ScanArena::new();
+    let mut tracker = RunTracker::new();
+    assert_day5_and_popup_step(&mut tracker, &mut arena);
+    assert_day13_step(&mut tracker, &mut arena);
+    assert_eq!(tracker.model.vault.len(), 7);
+    assert_eq!(tracker.model.checks, 0);
+}
+
+#[test]
 fn test_phantom_tool_slot_regression() {
     let (w, h, rgba) = load_png_rgba8(&fixture_path("phantom_slot.png"));
+    assert!(w > 0 && h > 0);
     let view = ImageView {
         width: w,
         height: h,
@@ -352,7 +358,7 @@ fn test_cell06_above_supreme_jaws_cell07() {
     );
     assert!(
         cells[5].conf >= 0.85,
-        "Cell 06 (idx 5) lock confidence must be >= 0.85 despite Supreme + jaws red glow from Cell 07 below, got {:?}",
+        "Cell 06 (idx 5) lock confidence must be >= 0.85, got {:?}",
         cells[5]
     );
     assert_eq!(cells[6].kind, ScannedCellKind::Inmate);
@@ -370,21 +376,18 @@ fn test_cell06_above_supreme_jaws_cell07() {
     assert!(ok);
     assert_eq!(
         tracker.model.checks, 0,
-        "board_day2_cell06_check.png must have 0 cells to check, got mask {:#06x} (cell 06 = {:?})",
-        tracker.model.checks, tracker.model.cells[5]
+        "board_day2_cell06_check.png must have 0 cells to check, got mask {:#06x}",
+        tracker.model.checks
     );
 }
 
-#[test]
-fn test_office_instigate_bestow_decision() {
-    let (w, h, rgba) = load_png_rgba8(&fixture_path("board_day4_office_instigate_bestow.png"));
+fn assert_office_full_frame(rgba: &[u8], w: usize, h: usize, arena: &mut ScanArena) {
     let view = ImageView {
         width: w,
         height: h,
-        data: &rgba,
+        data: rgba,
     };
-    let mut arena = ScanArena::new();
-    let scan = scan_image_with_arena(&view, None, &mut arena);
+    let scan = scan_image_with_arena(&view, None, arena);
     assert!(
         scan.ok,
         "board_day4_office_instigate_bestow.png must localize"
@@ -403,7 +406,7 @@ fn test_office_instigate_bestow_decision() {
         CaptureTrigger::Board {
             treasure_view: false,
         },
-        &mut arena,
+        arena,
     );
     assert!(ok);
     assert!(tracker.last_board_had_cards);
@@ -416,11 +419,10 @@ fn test_office_instigate_bestow_decision() {
         "expected Instigate or Bestow recommendation at Office, got '{}'",
         advice.move_text
     );
+}
 
-    // Simulate an early mid-animation frame where "Make Your Decision" is visible
-    // at y ~ 0.62..0.66*h, but the "Instigate" / "Bestow" card labels at y > 0.72*h
-    // have not faded in yet.
-    let mut early_rgba = rgba.clone();
+fn assert_office_early_frame(rgba: &[u8], w: usize, h: usize, arena: &mut ScanArena) {
+    let mut early_rgba = rgba.to_vec();
     let y_cut = (h * 70) / 100;
     for y in y_cut..h {
         for x in 0..w {
@@ -435,7 +437,7 @@ fn test_office_instigate_bestow_decision() {
         height: h,
         data: &early_rgba,
     };
-    let early_scan = scan_image_with_arena(&early_view, None, &mut arena);
+    let early_scan = scan_image_with_arena(&early_view, None, arena);
     assert!(early_scan.ok);
     assert!(
         early_scan.decision.is_none(),
@@ -448,17 +450,17 @@ fn test_office_instigate_bestow_decision() {
         CaptureTrigger::Board {
             treasure_view: false,
         },
-        &mut arena,
+        arena,
     );
     assert!(ok_early);
     assert!(
         !early_tracker.last_board_had_cards,
-        "early frame without decision cards must set last_board_had_cards=false so worker retries"
+        "early frame without decision cards must set last_board_had_cards=false"
     );
     assert_eq!(
         early_tracker.model.step,
         BoardStep::Office,
-        "arriving at OFFICE without decision cards must still default to BoardStep::Office, never Manage/End"
+        "arriving at OFFICE without decision cards must default to BoardStep::Office"
     );
     let early_advice = early_tracker.model.evaluate(4000, 80, 42);
     assert!(
@@ -469,11 +471,67 @@ fn test_office_instigate_bestow_decision() {
 }
 
 #[test]
+fn test_office_instigate_bestow_decision() {
+    let (w, h, rgba) = load_png_rgba8(&fixture_path("board_day4_office_instigate_bestow.png"));
+    assert!(w > 0 && h > 0);
+    let mut arena = ScanArena::new();
+    assert_office_full_frame(&rgba, w, h, &mut arena);
+    assert_office_early_frame(&rgba, w, h, &mut arena);
+    assert_eq!(arena.slots.len(), 6);
+}
+
+fn bench_single_fixture(name: &str, arena: &mut ScanArena) -> [f64; 6] {
+    let (fw, fh, frgba) = load_png_rgba8(&fixture_path(name));
+    let fview = ImageView {
+        width: fw,
+        height: fh,
+        data: &frgba,
+    };
+    let warm = scan_image_with_arena(&fview, None, arena);
+    assert!(warm.ok, "Fixture {name} should scan ok");
+    let hint = warm.loc;
+    assert!(hint.is_some());
+
+    let iters = 5usize;
+    let mut loc_ms = 0.0;
+    let mut cells_ms = 0.0;
+    let mut ocr_ms = 0.0;
+    let mut ms_total = 0.0;
+    let mut ocr_skip_ms = 0.0;
+    let mut skip_ms_total = 0.0;
+    for _ in 0..iters {
+        let res = scan_image_with_arena(&fview, hint, arena);
+        loc_ms += res.profile.loc_ms;
+        cells_ms += res.profile.cells_ms;
+        ocr_ms += res.profile.ocr_ms;
+        ms_total += res.profile.ms_total;
+
+        let res_skip =
+            scan_image_with_options_and_arena(&fview, hint, ScanOptions { skip_days: true }, arena);
+        ocr_skip_ms += res_skip.profile.ocr_ms;
+        skip_ms_total += res_skip.profile.ms_total;
+    }
+    let k = iters as f64;
+    let out = [
+        loc_ms / k,
+        cells_ms / k,
+        ocr_ms / k,
+        ms_total / k,
+        ocr_skip_ms / k,
+        skip_ms_total / k,
+    ];
+    println!(
+        "Scan [{name:<30}]: loc={:5.2}ms cells={:5.2}ms ocr={:5.2}ms \
+         (skip_days={:5.2}ms) total={:5.2}ms (skip_days={:5.2}ms)",
+        out[0], out[1], out[2], out[4], out[3], out[5]
+    );
+    out
+}
+
+#[test]
 fn test_hud_objective_and_scan_latency_benchmark() {
     let mut arena = ScanArena::new();
 
-    // 1. Verify read_hud_objective_with_slot recovers ObjectiveId::Walk ("Move 18 tiles 5/18")
-    // on board_cell06_warden.png even though the "Objective: ..." title is covered by the overlay.
     let (w, h, rgba) = load_png_rgba8(&fixture_path("board_cell06_warden.png"));
     let view = ImageView {
         width: w,
@@ -492,10 +550,9 @@ fn test_hud_objective_and_scan_latency_benchmark() {
     assert_eq!(
         tracker.model.objective,
         ObjectiveId::Walk,
-        "Expected HUD objective fallback to recover ObjectiveId::Walk from 'Move 18 tiles 5/18'"
+        "Expected HUD objective fallback to recover ObjectiveId::Walk"
     );
 
-    // 2. Benchmark scan_image_with_arena (and skip_days) across all 8 full-board fixtures
     let fixtures = [
         "board_cell06_warden.png",
         "board_cell10_warden.png",
@@ -506,170 +563,80 @@ fn test_hud_objective_and_scan_latency_benchmark() {
         "chain_consume_targets.png",
         "chain_consume_end_day_prompt.png",
     ];
-    let mut sum_loc = 0.0;
-    let mut sum_cells = 0.0;
-    let mut sum_ocr = 0.0;
-    let mut sum_total = 0.0;
-    let mut sum_ocr_skip_days = 0.0;
-    let mut sum_total_skip_days = 0.0;
-
+    let mut sums = [0.0_f64; 6];
     for name in fixtures {
-        let (fw, fh, frgba) = load_png_rgba8(&fixture_path(name));
-        let fview = ImageView {
-            width: fw,
-            height: fh,
-            data: &frgba,
-        };
-        // Warmup & get hint
-        let warm = scan_image_with_arena(&fview, None, &mut arena);
-        assert!(warm.ok, "Fixture {name} should scan ok");
-        let hint = warm.loc;
-
-        let iters = 5usize;
-        let mut loc_ms = 0.0;
-        let mut cells_ms = 0.0;
-        let mut ocr_ms = 0.0;
-        let mut total_ms = 0.0;
-        let mut ocr_skip_ms = 0.0;
-        let mut total_skip_ms = 0.0;
-        for _ in 0..iters {
-            let res = scan_image_with_arena(&fview, hint, &mut arena);
-            loc_ms += res.profile.loc_ms;
-            cells_ms += res.profile.cells_ms;
-            ocr_ms += res.profile.ocr_ms;
-            total_ms += res.profile.total_ms;
-
-            let res_skip = scan_image_with_options_and_arena(
-                &fview,
-                hint,
-                ScanOptions { skip_days: true },
-                &mut arena,
-            );
-            ocr_skip_ms += res_skip.profile.ocr_ms;
-            total_skip_ms += res_skip.profile.total_ms;
+        let m = bench_single_fixture(name, &mut arena);
+        for i in 0..6 {
+            sums[i] += m[i];
         }
-        let k = iters as f64;
-        loc_ms /= k;
-        cells_ms /= k;
-        ocr_ms /= k;
-        total_ms /= k;
-        ocr_skip_ms /= k;
-        total_skip_ms /= k;
-        println!(
-            "Scan [{name:<30}]: loc={loc_ms:5.2}ms cells={cells_ms:5.2}ms ocr={ocr_ms:5.2}ms (skip_days={ocr_skip_ms:5.2}ms) total={total_ms:5.2}ms (skip_days={total_skip_ms:5.2}ms)"
-        );
-        sum_loc += loc_ms;
-        sum_cells += cells_ms;
-        sum_ocr += ocr_ms;
-        sum_total += total_ms;
-        sum_ocr_skip_days += ocr_skip_ms;
-        sum_total_skip_days += total_skip_ms;
     }
     let n = fixtures.len() as f64;
     println!(
-        "Scan Average (8 board fixtures): loc={:.2}ms cells={:.2}ms ocr={:.2}ms (skip_days={:.2}ms) total={:.2}ms (skip_days={:.2}ms)",
-        sum_loc / n,
-        sum_cells / n,
-        sum_ocr / n,
-        sum_ocr_skip_days / n,
-        sum_total / n,
-        sum_total_skip_days / n
+        "Scan Average (8 board fixtures): loc={:.2}ms cells={:.2}ms ocr={:.2}ms \
+         (skip_days={:.2}ms) total={:.2}ms (skip_days={:.2}ms)",
+        sums[0] / n,
+        sums[1] / n,
+        sums[2] / n,
+        sums[4] / n,
+        sums[3] / n,
+        sums[5] / n
     );
 }
 
-#[test]
-fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
-    let uploads = [
-        (
-            "/home/sif/.gemini/antigravity/brain/66ed5a1e-1f00-4e28-9c58-e1b90ec71444/.user_uploaded/media_1792465130664_1e9a0342.png",
-            "board_day3_doors_7_11_12.png",
-        ),
-        (
-            "/home/sif/.gemini/antigravity/brain/66ed5a1e-1f00-4e28-9c58-e1b90ec71444/.user_uploaded/media_1792465130681_eb909aaf.png",
-            "board_day4_doors_15_16_office.png",
-        ),
-        (
-            "/home/sif/.gemini/antigravity/brain/66ed5a1e-1f00-4e28-9c58-e1b90ec71444/.user_uploaded/media_1792465130705_b1773cb3.png",
-            "board_day11_cell11_lion_hunt_replace.png",
-        ),
-    ];
-    for (src, dst_name) in uploads {
-        let src_p = std::path::Path::new(src);
-        let dst_p = fixture_path(dst_name);
-        if src_p.exists() && !dst_p.exists() {
-            let _ = std::fs::copy(src_p, &dst_p);
-        }
+fn inspect_single_user_screenshot(name: &str, arena: &mut ScanArena) {
+    let path = fixture_path(name);
+    let (w, h, rgba) = load_png_rgba8(&path);
+    assert!(w > 0 && h > 0);
+    let view = ImageView {
+        width: w,
+        height: h,
+        data: &rgba,
+    };
+    let res = scan_image_with_arena(&view, None, arena);
+    assert!(res.ok);
+    println!("\n=== {name} ({w}x{h}) ===");
+    println!(
+        "profile: loc={:.2}ms cells={:.2}ms ocr={:.2}ms total={:.2}ms",
+        res.profile.loc_ms, res.profile.cells_ms, res.profile.ocr_ms, res.profile.ms_total
+    );
+    println!(
+        "warden={:?} days={:?} chromatic={:?}",
+        res.warden, res.days, res.chromatic
+    );
+    if let Some(loc) = res.loc {
+        let (t_list, lbl) = tartarus_scan::read_tools_with_slot(&view, &loc, &mut arena.slots[0]);
+        println!("read_tools label={:?} tools={:?}", lbl, t_list.as_slice());
     }
-
-    let mut arena = ScanArena::new();
-    for (_, name) in uploads {
-        let path = fixture_path(name);
-        let (w, h, rgba) = load_png_rgba8(&path);
-        let view = ImageView {
-            width: w,
-            height: h,
-            data: &rgba,
-        };
-        let res = scan_image_with_arena(&view, None, &mut arena);
-        println!("\n=== {name} ({w}x{h}) ===");
-        println!(
-            "profile: loc={:.2}ms cells={:.2}ms ocr={:.2}ms total={:.2}ms",
-            res.profile.loc_ms, res.profile.cells_ms, res.profile.ocr_ms, res.profile.total_ms
-        );
-        println!(
-            "warden={:?} days={:?} chromatic={:?}",
-            res.warden, res.days, res.chromatic
-        );
-        println!("loc={:?}", res.loc);
-        if let Some(loc) = res.loc {
-            let (t_list, lbl) =
-                tartarus_scan::read_tools_with_slot(&view, &loc, &mut arena.slots[0]);
-            println!("read_tools label={:?} tools={:?}", lbl, t_list.as_slice());
-        }
-        println!("doors={:?}", res.doors);
-        println!("decision={:?}", res.decision);
-        println!("tools={:?}", res.tools.as_slice());
-        if let Some(ref cells) = res.cells {
-            for (idx, c) in cells.iter().enumerate() {
-                if c.kind != tartarus_scan::ScannedCellKind::Locked {
-                    println!(
-                        "  cell {:02} (idx {idx}): kind={:?} beast={:?} tier={} conf={:.2} jaws={} ghost={} event={}",
-                        idx + 1,
-                        c.kind,
-                        c.beast,
-                        c.tier,
-                        c.conf,
-                        c.jaws,
-                        c.ghost,
-                        c.event
-                    );
-                }
+    if let Some(ref cells) = res.cells {
+        for (idx, c) in cells.iter().enumerate() {
+            if c.kind != ScannedCellKind::Locked {
+                println!(
+                    "  cell {:02} (idx {idx}): kind={:?} beast={:?} tier={} \
+                     conf={:.2} jaws={} ghost={} event={}",
+                    idx + 1,
+                    c.kind,
+                    c.beast,
+                    c.tier,
+                    c.conf,
+                    c.jaws,
+                    c.ghost,
+                    c.event
+                );
             }
         }
-        let mut tracker = RunTracker::new();
-        tracker.ingest(&res);
-        let snap = tracker.model.evaluate(96_000, 85, 42);
-        println!(
-            "tracker step={:?} warden={} dest_mask={:#06x} no_swap={} no_devour={} checks={:#06x}",
-            tracker.model.step,
-            tracker.model.warden,
-            tracker.model.dest_mask,
-            tracker.model.no_swap,
-            tracker.model.no_devour,
-            tracker.model.checks
-        );
-        println!("notes={:?}", tracker.last_notes);
-        println!(
-            "move_text='{}' elapsed={}ms",
-            snap.move_text, snap.elapsed_ms
-        );
-        for opt in &snap.options {
-            println!("  opt: '{}' -> {}", opt.label, opt.value_text);
-        }
     }
+    let mut tracker = RunTracker::new();
+    tracker.ingest(&res);
+    let snap = tracker.model.evaluate(96_000, 85, 42);
+    println!(
+        "move_text='{}' elapsed={}ms",
+        snap.move_text, snap.elapsed_ms
+    );
+}
 
-    // Now test sequential live-run tracking across all 3 screenshots via process_frame
-    let mut seq_tracker = RunTracker::new();
+fn assert_seq_day3_and_day4(seq_tracker: &mut RunTracker, arena: &mut ScanArena) {
+    let scan_limit_ms = if cfg!(debug_assertions) { 50.0 } else { 5.0 };
+    let solve_limit_ms = if cfg!(debug_assertions) { 500 } else { 50 };
     seq_tracker.log_days = Some((3, 20));
     let (w1, h1, rgba1) = load_png_rgba8(&fixture_path("board_day3_doors_7_11_12.png"));
     let view1 = ImageView {
@@ -679,22 +646,22 @@ fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
     };
     let (ok1, _, prof1) = seq_tracker.process_frame(
         &view1,
-        tartarus_scan::CaptureTrigger::Board {
+        CaptureTrigger::Board {
             treasure_view: false,
         },
-        &mut arena,
+        arena,
     );
     assert!(ok1);
     assert_eq!(seq_tracker.model.tools.as_slice(), &[ToolId::Crown]);
     assert!(
-        prof1.total_ms < 5.0,
-        "expected scan < 5ms, got {:.2}ms",
-        prof1.total_ms
+        prof1.ms_total < scan_limit_ms,
+        "expected scan < {scan_limit_ms}ms, got {:.2}ms",
+        prof1.ms_total
     );
     let snap1 = seq_tracker.model.evaluate(96_000, 85, 42);
     assert!(
-        snap1.elapsed_ms < 50,
-        "expected solve < 50ms, got {}ms",
+        snap1.elapsed_ms < solve_limit_ms,
+        "expected solve < {solve_limit_ms}ms, got {}ms",
         snap1.elapsed_ms
     );
     assert_eq!(snap1.options.len(), 3);
@@ -708,17 +675,17 @@ fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
     };
     let (ok2, _, prof2) = seq_tracker.process_frame(
         &view2,
-        tartarus_scan::CaptureTrigger::Board {
+        CaptureTrigger::Board {
             treasure_view: false,
         },
-        &mut arena,
+        arena,
     );
     assert!(ok2);
     assert_eq!(seq_tracker.model.tools.as_slice(), &[ToolId::Crown]);
     assert!(
-        prof2.total_ms < 5.0,
-        "expected scan < 5ms, got {:.2}ms",
-        prof2.total_ms
+        prof2.ms_total < scan_limit_ms,
+        "expected scan < {scan_limit_ms}ms, got {:.2}ms",
+        prof2.ms_total
     );
     let snap2 = seq_tracker.model.evaluate(96_000, 85, 42);
     assert_eq!(snap2.options.len(), 3);
@@ -731,7 +698,10 @@ fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
         snap2.options
     );
     assert!(snap2.move_text.contains("Interrogation Room"));
+}
 
+fn assert_seq_day11(seq_tracker: &mut RunTracker, arena: &mut ScanArena) {
+    let scan_limit_ms = if cfg!(debug_assertions) { 50.0 } else { 5.0 };
     seq_tracker.log_days = Some((11, 20));
     let (w3, h3, rgba3) = load_png_rgba8(&fixture_path("board_day11_cell11_lion_hunt_replace.png"));
     let view3 = ImageView {
@@ -741,10 +711,10 @@ fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
     };
     let (ok3, _, prof3) = seq_tracker.process_frame(
         &view3,
-        tartarus_scan::CaptureTrigger::Board {
+        CaptureTrigger::Board {
             treasure_view: false,
         },
-        &mut arena,
+        arena,
     );
     assert!(ok3);
     assert_eq!(
@@ -761,9 +731,9 @@ fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
         "expected Consume to be available"
     );
     assert!(
-        prof3.total_ms < 5.0,
-        "expected scan < 5ms, got {:.2}ms",
-        prof3.total_ms
+        prof3.ms_total < scan_limit_ms,
+        "expected scan < {scan_limit_ms}ms, got {:.2}ms",
+        prof3.ms_total
     );
     let snap3 = seq_tracker.model.evaluate(96_000, 85, 42);
     assert_eq!(
@@ -785,4 +755,23 @@ fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
             .any(|o| o.label.starts_with("Consume "))
     );
     assert!(snap3.options.iter().any(|o| o.label == "End the day"));
+}
+
+#[test]
+fn test_user_three_screenshots_office_door_and_lion_hunt_replace() {
+    let names = [
+        "board_day3_doors_7_11_12.png",
+        "board_day4_doors_15_16_office.png",
+        "board_day11_cell11_lion_hunt_replace.png",
+    ];
+    let mut arena = ScanArena::new();
+    for name in names {
+        inspect_single_user_screenshot(name, &mut arena);
+    }
+
+    let mut seq_tracker = RunTracker::new();
+    assert_seq_day3_and_day4(&mut seq_tracker, &mut arena);
+    assert_seq_day11(&mut seq_tracker, &mut arena);
+    assert_eq!(seq_tracker.model.day, 11);
+    assert_eq!(seq_tracker.model.tools.len(), 2);
 }

@@ -4,11 +4,14 @@ use std::path::{Path, PathBuf};
 
 pub(crate) fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
+    assert!(!manifest_dir.as_os_str().is_empty());
+    let root = manifest_dir
         .parent()
         .and_then(|p| p.parent())
         .expect("workspace root")
-        .to_path_buf()
+        .to_path_buf();
+    assert!(!root.as_os_str().is_empty());
+    root
 }
 
 pub(crate) fn fixture_path(name: &str) -> PathBuf {

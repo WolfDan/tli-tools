@@ -1,5 +1,6 @@
 //! Pure-Rust decoders for Unreal Engine 4 texture formats (`PF_BC7`, `PF_DXT5`/`BC3`,
-//! `PF_DXT1`/`BC1`, `PF_BC4`, `PF_BC5`, `PF_B8G8R8A8`, `PF_R8G8B8A8`, `PF_G8`) and RGBA8 PNG encoder.
+//! `PF_DXT1`/`BC1`, `PF_BC4`, `PF_BC5`, `PF_B8G8R8A8`, `PF_R8G8B8A8`, `PF_G8`) and
+//! RGBA8 PNG encoder.
 
 use serde::Serialize;
 
@@ -17,9 +18,14 @@ pub enum PixelFormat {
     G8,
 }
 
+const _: () = {
+    assert!(std::mem::size_of::<PixelFormat>() == 1);
+};
+
 impl PixelFormat {
     pub fn from_ue_name(s: &str) -> Option<Self> {
-        match s {
+        debug_assert!(s.len() <= 4096);
+        let res = match s {
             "PF_BC7" => Some(Self::BC7),
             "PF_DXT5" => Some(Self::BC3),
             "PF_DXT1" => Some(Self::BC1),
@@ -29,14 +35,21 @@ impl PixelFormat {
             "PF_R8G8B8A8" => Some(Self::R8G8B8A8),
             "PF_G8" => Some(Self::G8),
             _ => None,
-        }
+        };
+        debug_assert!(res.is_none() || s.starts_with("PF_"));
+        res
     }
 
     pub fn from_name(s: &str) -> Option<Self> {
-        Self::from_ue_name(s)
+        debug_assert!(s.len() <= 4096);
+        let res = Self::from_ue_name(s);
+        debug_assert!(res.is_none() || s.starts_with("PF_"));
+        res
     }
 
     pub fn byte_size_for_dimensions(self, width: usize, height: usize) -> usize {
+        assert!(width <= 65536);
+        assert!(height <= 65536);
         let bx = width.div_ceil(4);
         let by = height.div_ceil(4);
         match self {
@@ -48,6 +61,8 @@ impl PixelFormat {
     }
 
     pub fn mip_byte_size(self, width: usize, height: usize) -> usize {
+        assert!(width <= 65536);
+        assert!(height <= 65536);
         self.byte_size_for_dimensions(width, height)
     }
 }
@@ -58,7 +73,43 @@ pub fn decode_mip_to_rgba8(
     height: usize,
     fmt: PixelFormat,
 ) -> Result<Vec<u8>, ExtractError> {
+    assert!(width <= 65536);
+    assert!(height <= 65536);
     decode_texture_to_rgba8(fmt, width, height, src)
+}
+
+fn decode_bc_blocks_to_rgba8(
+    fmt: PixelFormat,
+    width: usize,
+    height: usize,
+    src: &[u8],
+    out: &mut [u8],
+) -> Result<(), ExtractError> {
+    assert_eq!(out.len(), width * height * 4);
+    assert!(!src.is_empty() || width == 0 || height == 0);
+    let mut bgra = vec![0u32; width * height];
+    if fmt == PixelFormat::BC4 {
+        texture2ddecoder::decode_bc4(src, width, height, &mut bgra)
+            .map_err(|e| ExtractError::TextureDecode(e.to_string()))?;
+        for (dst, &px) in out.as_chunks_mut::<4>().0.iter_mut().zip(bgra.iter()) {
+            let [_, _, r, _] = px.to_le_bytes();
+            *dst = [r, r, r, 255];
+        }
+        return Ok(());
+    }
+    let res = match fmt {
+        PixelFormat::BC1 => texture2ddecoder::decode_bc1a(src, width, height, &mut bgra),
+        PixelFormat::BC3 => texture2ddecoder::decode_bc3(src, width, height, &mut bgra),
+        PixelFormat::BC5 => texture2ddecoder::decode_bc5(src, width, height, &mut bgra),
+        PixelFormat::BC7 => texture2ddecoder::decode_bc7(src, width, height, &mut bgra),
+        _ => unreachable!(),
+    };
+    res.map_err(|e| ExtractError::TextureDecode(e.to_string()))?;
+    for (dst, &px) in out.as_chunks_mut::<4>().0.iter_mut().zip(bgra.iter()) {
+        let [b, g, r, a] = px.to_le_bytes();
+        *dst = [r, g, b, a];
+    }
+    Ok(())
 }
 
 pub fn decode_texture_to_rgba8(
@@ -67,6 +118,8 @@ pub fn decode_texture_to_rgba8(
     height: usize,
     src: &[u8],
 ) -> Result<Vec<u8>, ExtractError> {
+    assert!(width <= 65536);
+    assert!(height <= 65536);
     let expected = fmt.byte_size_for_dimensions(width, height);
     if src.len() < expected {
         return Err(ExtractError::TextureDecode(format!(
@@ -83,10 +136,7 @@ pub fn decode_texture_to_rgba8(
                 .iter_mut()
                 .zip(src.as_chunks::<4>().0)
             {
-                dst[0] = px[2];
-                dst[1] = px[1];
-                dst[2] = px[0];
-                dst[3] = px[3];
+                *dst = [px[2], px[1], px[0], px[3]];
             }
         }
         PixelFormat::R8G8B8A8 => {
@@ -99,37 +149,18 @@ pub fn decode_texture_to_rgba8(
                 .iter_mut()
                 .zip(src.iter().take(width * height))
             {
-                dst[0] = g;
-                dst[1] = g;
-                dst[2] = g;
-                dst[3] = 255;
+                *dst = [g, g, g, 255];
             }
         }
-        PixelFormat::BC1 | PixelFormat::BC3 | PixelFormat::BC5 | PixelFormat::BC7 => {
-            let mut bgra = vec![0u32; width * height];
-            let res = match fmt {
-                PixelFormat::BC1 => texture2ddecoder::decode_bc1a(src, width, height, &mut bgra),
-                PixelFormat::BC3 => texture2ddecoder::decode_bc3(src, width, height, &mut bgra),
-                PixelFormat::BC5 => texture2ddecoder::decode_bc5(src, width, height, &mut bgra),
-                PixelFormat::BC7 => texture2ddecoder::decode_bc7(src, width, height, &mut bgra),
-                _ => unreachable!(),
-            };
-            res.map_err(|e| ExtractError::TextureDecode(e.to_string()))?;
-            for (dst, &px) in out.as_chunks_mut::<4>().0.iter_mut().zip(bgra.iter()) {
-                let [b, g, r, a] = px.to_le_bytes();
-                *dst = [r, g, b, a];
-            }
-        }
-        PixelFormat::BC4 => {
-            let mut bgra = vec![0u32; width * height];
-            texture2ddecoder::decode_bc4(src, width, height, &mut bgra)
-                .map_err(|e| ExtractError::TextureDecode(e.to_string()))?;
-            for (dst, &px) in out.as_chunks_mut::<4>().0.iter_mut().zip(bgra.iter()) {
-                let [_, _, r, _] = px.to_le_bytes();
-                *dst = [r, r, r, 255];
-            }
+        PixelFormat::BC1
+        | PixelFormat::BC3
+        | PixelFormat::BC4
+        | PixelFormat::BC5
+        | PixelFormat::BC7 => {
+            decode_bc_blocks_to_rgba8(fmt, width, height, src, &mut out)?;
         }
     }
+    assert_eq!(out.len(), width * height * 4);
     Ok(out)
 }
 
@@ -143,6 +174,7 @@ pub fn crop_rgba8(
     w: usize,
     h: usize,
 ) -> Vec<u8> {
+    assert!(src.len() >= src_w * src_h * 4);
     let cw = w.min(src_w.saturating_sub(x));
     let ch = h.min(src_h.saturating_sub(y));
     let mut out = vec![0u8; cw * ch * 4];
@@ -151,11 +183,13 @@ pub fn crop_rgba8(
         let d_off = row * cw * 4;
         out[d_off..d_off + cw * 4].copy_from_slice(&src[s_off..s_off + cw * 4]);
     }
+    assert_eq!(out.len(), cw * ch * 4);
     out
 }
 
 /// Encodes an RGBA8 buffer (`width * height * 4` bytes) into a standard lossless `.png` file.
 pub fn encode_png_rgba8(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, ExtractError> {
+    assert!(width <= 65536 && height <= 65536);
     let expected = (width as usize) * (height as usize) * 4;
     if rgba.len() < expected {
         return Err(ExtractError::PngCodec(
@@ -174,11 +208,13 @@ pub fn encode_png_rgba8(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>,
             .write_image_data(&rgba[..expected])
             .map_err(|e| ExtractError::PngCodec(e.to_string()))?;
     }
+    assert!(!png.is_empty());
     Ok(png)
 }
 
 /// Decodes a standard 8-bit RGB or RGBA `.png` file into `(width, height, rgba8)`.
 pub fn decode_png_rgba8(png: &[u8]) -> Result<(usize, usize, Vec<u8>), ExtractError> {
+    assert!(!png.is_empty());
     let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder
@@ -227,5 +263,6 @@ pub fn decode_png_rgba8(png: &[u8]) -> Result<(usize, usize, Vec<u8>), ExtractEr
             )));
         }
     };
+    assert_eq!(rgba.len(), w * h * 4);
     Ok((w, h, rgba))
 }

@@ -7,6 +7,12 @@ use serde::{Deserialize, Serialize};
 pub const LIVE_MIN: usize = 150;
 pub const TOOL_SURE: f64 = 0.9;
 
+const _: () = {
+    assert!(LIVE_MIN > 0);
+    assert!(CELL_COUNT == 16);
+    assert!(OFFICE == 0);
+};
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum BoardStep {
     Patrol,
@@ -21,7 +27,7 @@ pub enum BoardStep {
 
 impl BoardStep {
     pub const fn as_str(self) -> &'static str {
-        match self {
+        let s = match self {
             BoardStep::Patrol => "patrol",
             BoardStep::Manage => "manage",
             BoardStep::Office => "office",
@@ -30,11 +36,14 @@ impl BoardStep {
             BoardStep::Ratway => "ratway",
             BoardStep::Choice => "choice",
             BoardStep::Window => "window",
-        }
+        };
+        assert!(!s.is_empty());
+        assert!(s.len() <= 16);
+        s
     }
 
     pub const fn label(self) -> &'static str {
-        match self {
+        let s = match self {
             BoardStep::Patrol => "Select a Destination",
             BoardStep::Manage => "Make Your Decision",
             BoardStep::Office => "Instigate or Bestow",
@@ -43,7 +52,10 @@ impl BoardStep {
             BoardStep::Ratway => "Sewer Ratway: any cell",
             BoardStep::Choice => "Instrument or gift",
             BoardStep::Window => "Delivery",
-        }
+        };
+        assert!(!s.is_empty());
+        assert!(s.len() <= 32);
+        s
     }
 }
 
@@ -61,7 +73,7 @@ pub enum CellKind {
 
 impl CellKind {
     pub const fn as_str(self) -> &'static str {
-        match self {
+        let s = match self {
             CellKind::Office => "office",
             CellKind::Sealed => "sealed",
             CellKind::Empty => "empty",
@@ -70,7 +82,10 @@ impl CellKind {
             CellKind::Revealed => "revealed",
             CellKind::Scouted => "scouted",
             CellKind::Nest => "nest",
-        }
+        };
+        assert!(!s.is_empty());
+        assert!(s.len() <= 16);
+        s
     }
 }
 
@@ -108,7 +123,7 @@ pub struct CellModel {
 
 impl CellModel {
     pub const fn office() -> Self {
-        Self {
+        let cell = Self {
             kind: CellKind::Office,
             beast: Beast::Mammoth,
             tier: 0,
@@ -117,11 +132,14 @@ impl CellModel {
             event: CellEvent::None,
             due: 0,
             at_least: 0,
-        }
+        };
+        assert!(cell.tier == 0);
+        assert!(cell.due == 0);
+        cell
     }
 
     pub const fn sealed() -> Self {
-        Self {
+        let cell = Self {
             kind: CellKind::Sealed,
             beast: Beast::Mammoth,
             tier: 0,
@@ -130,11 +148,15 @@ impl CellModel {
             event: CellEvent::None,
             due: 0,
             at_least: 0,
-        }
+        };
+        assert!(cell.tier == 0);
+        assert!(cell.at_least == 0);
+        cell
     }
 
     pub fn short_label(&self) -> String {
-        match self.kind {
+        assert!(tier_name(self.tier).len() >= 3);
+        let out = match self.kind {
             CellKind::Office => "Office".to_string(),
             CellKind::Empty => "Empty".to_string(),
             CellKind::Nest => format!("Nest d{}", self.due),
@@ -158,7 +180,9 @@ impl CellModel {
                     "Locked".to_string()
                 }
             }
-        }
+        };
+        assert!(!out.is_empty());
+        out
     }
 }
 
@@ -191,12 +215,14 @@ impl ToolsPrompt {
     }
 
     pub fn format_for(&self, tools: &[ToolId]) -> String {
-        match *self {
+        assert!(tools.len() <= 32);
+        let out = match *self {
             Self::None => String::new(),
             Self::CountMismatch { panel_slots } => {
                 let held_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
                 format!(
-                    "Your panel shows {} instrument{}, and the analyzer has {}: {}. Confirm your instruments, then press These are right.",
+                    "Your panel shows {} instrument{}, and the analyzer has {}: {}. \
+                     Confirm your instruments, then press These are right.",
                     panel_slots,
                     if panel_slots == 1 { "" } else { "s" },
                     tools.len(),
@@ -211,7 +237,8 @@ impl ToolsPrompt {
                 let off_names: Vec<&str> = off.iter().map(|t| t.name()).collect();
                 let held_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
                 format!(
-                    "An icon on your panel looks like {}, which isn't one the analyzer has for this run ({}). Check your instruments, then press These are right.",
+                    "An icon on your panel looks like {}, which isn't one the analyzer \
+                     has for this run ({}). Check your instruments, then press These are right.",
                     off_names.join(" and "),
                     held_names.join(", ")
                 )
@@ -219,7 +246,8 @@ impl ToolsPrompt {
             Self::UnknownRun { panel_slots } => {
                 let sure_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
                 format!(
-                    "The analyzer doesn't know this run's instruments yet. It read {} from your panel of {}. Confirm your instruments, then press These are right.",
+                    "The analyzer doesn't know this run's instruments yet. It read {} \
+                     from your panel of {}. Confirm your instruments, then press These are right.",
                     if sure_names.is_empty() {
                         "none for sure".to_string()
                     } else {
@@ -228,7 +256,9 @@ impl ToolsPrompt {
                     panel_slots
                 )
             }
-        }
+        };
+        assert_eq!(self.is_none(), out.is_empty());
+        out
     }
 }
 
@@ -330,18 +360,24 @@ impl ChoiceModel {
     pub fn from_tools(kind: PendingKind, tools: &[ToolId], rerolls: u8) -> Self {
         let mut options = [ToolId::Revenge; 4];
         let len = tools.len().min(4);
+        assert!(len <= options.len());
         options[..len].copy_from_slice(&tools[..len]);
-        Self {
+        let choice = Self {
             kind,
             options,
             options_len: len as u8,
             rerolls,
-        }
+        };
+        assert!(choice.options_len <= 4);
+        choice
     }
 
     #[inline]
     pub fn slice(&self) -> &[ToolId] {
-        &self.options[..(self.options_len as usize).min(4)]
+        let len = (self.options_len as usize).min(4);
+        assert!(len <= self.options.len());
+        debug_assert_eq!(self.options.len(), 4);
+        &self.options[..len]
     }
 }
 
@@ -350,7 +386,7 @@ pub struct BoardModel {
     pub mode: GameMode,
     pub rewards: bool,
     pub day: u8,
-    pub max_days: u8,
+    pub days_max: u8,
     pub step: BoardStep,
     pub warden: u8,
     /// Bitmask of cells (0..16) marked as today's patrol doors.
@@ -392,13 +428,15 @@ impl Default for BoardModel {
 
 impl BoardModel {
     pub fn blank() -> Self {
+        assert_eq!(CELL_COUNT, 16);
         let mut cells = [CellModel::sealed(); CELL_COUNT];
         cells[OFFICE as usize] = CellModel::office();
+        assert_eq!(cells[OFFICE as usize].kind, CellKind::Office);
         Self {
             mode: GameMode::Drill,
             rewards: true,
             day: 1,
-            max_days: 20,
+            days_max: 20,
             step: BoardStep::Patrol,
             warden: OFFICE,
             dest_mask: 0,
@@ -439,6 +477,7 @@ impl BoardModel {
         m.milestone = false;
 
         let put = |cells: &mut [CellModel; 16], n: usize, beast: Beast, tier: u8| {
+            assert!(n < CELL_COUNT);
             cells[n] = CellModel {
                 kind: CellKind::Inmate,
                 beast,
@@ -474,16 +513,22 @@ impl BoardModel {
             ..CellModel::sealed()
         };
         m.tools = FixedVec::from_iter([ToolId::Rope]);
+        assert_eq!(m.warden, 4);
+        assert_eq!(m.tools.len(), 1);
         m
     }
 
     #[inline]
     pub fn has_dest(&self, cell: u8) -> bool {
-        cell < 16 && (self.dest_mask & (1u16 << cell)) != 0
+        debug_assert_eq!(CELL_COUNT, 16);
+        let res = cell < 16 && (self.dest_mask & (1u16 << cell)) != 0;
+        debug_assert!(!res || cell < 16);
+        res
     }
 
     #[inline]
     pub fn set_dest(&mut self, cell: u8, on: bool) {
+        assert_eq!(CELL_COUNT, 16);
         if cell < 16 {
             if on {
                 self.dest_mask |= 1u16 << cell;
@@ -491,43 +536,59 @@ impl BoardModel {
                 self.dest_mask &= !(1u16 << cell);
             }
         }
+        assert_eq!(self.has_dest(cell), cell < 16 && on);
     }
 
     #[inline]
     pub fn toggle_dest(&mut self, cell: u8) {
+        assert_eq!(CELL_COUNT, 16);
+        let prev = self.has_dest(cell);
         if cell < 16 {
             self.dest_mask ^= 1u16 << cell;
         }
+        assert_eq!(self.has_dest(cell), if cell < 16 { !prev } else { prev });
     }
 
     #[inline]
     pub fn clear_dest(&mut self) {
         self.dest_mask = 0;
+        assert_eq!(self.dest_mask, 0);
+        debug_assert!(!self.has_dest(0));
     }
 
     #[inline]
     pub fn is_checked(&self, cell: u8) -> bool {
-        (self.checks & (1u16 << cell)) != 0
+        assert!(cell < CELL_COUNT as u8);
+        let res = (self.checks & (1u16 << cell)) != 0;
+        debug_assert!(!res || self.checks != 0);
+        res
     }
 
     #[inline]
     pub fn set_checked(&mut self, cell: u8, on: bool) {
+        assert!(cell < CELL_COUNT as u8);
         if on {
             self.checks |= 1u16 << cell;
         } else {
             self.checks &= !(1u16 << cell);
         }
+        assert_eq!(self.is_checked(cell), on);
     }
 
     #[inline]
     pub fn checked_count(&self) -> usize {
-        self.checks.count_ones() as usize
+        let count = self.checks.count_ones() as usize;
+        assert!(count <= CELL_COUNT);
+        debug_assert_eq!(count == 0, self.checks == 0);
+        count
     }
 
     pub fn clean_prey(&mut self) {
+        assert_eq!(self.cells.len(), CELL_COUNT);
         let mut copy = *self;
         copy.step = BoardStep::Manage;
         let (st, _) = copy.build_state(1);
+        assert_eq!(st.cells.len(), CELL_COUNT);
         for n in 0..CELL_COUNT {
             if let Some(prey) = self.cells[n].prey {
                 let lion_cell = &st.cells[n];
