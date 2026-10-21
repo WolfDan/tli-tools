@@ -7,7 +7,6 @@ use gpui::{
 use tartarus_core::{
     ALL_TOOLS, BEASTS, BoardStep, CellEvent, CellKind, CellModel, OFFICE, tier_name,
 };
-use tartarus_scan::RING;
 
 use crate::state::UiToWorker;
 
@@ -15,6 +14,24 @@ use super::OverlayView;
 
 const GRID_ROWS: u8 = 4;
 const GRID_COLS: u8 = 6;
+const RING: [(u8, u8); 16] = [
+    (0, 0),
+    (1, 0),
+    (2, 0),
+    (3, 0),
+    (4, 0),
+    (5, 0),
+    (5, 1),
+    (5, 2),
+    (5, 3),
+    (4, 3),
+    (3, 3),
+    (2, 3),
+    (1, 3),
+    (0, 3),
+    (0, 2),
+    (0, 1),
+];
 
 const GRID_TO_RING: [[Option<u8>; 6]; 4] = {
     let mut g = [[None; 6]; 4];

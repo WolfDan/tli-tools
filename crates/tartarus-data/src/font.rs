@@ -19,7 +19,7 @@ pub struct RasterizedGlyph {
 
 pub type BoardPoint = (i32, i32, f32);
 pub type RoomBox = (u16, u16, u16, u16);
-pub type DigitTemplates = [Vec<[f32; 140]>; 10];
+pub type DigitTemplates = [Vec<[f32; 160]>; 10];
 pub type PrefixTemplates = Vec<[f32; 400]>;
 
 const _: () = {

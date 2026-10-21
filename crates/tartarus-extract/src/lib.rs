@@ -10,6 +10,7 @@ pub mod error;
 pub mod luac;
 pub mod pak;
 pub mod uasset;
+pub mod umg;
 
 use std::collections::BTreeMap;
 
@@ -28,6 +29,7 @@ pub use pak::{
 pub use uasset::{
     DecodedTexture, PaperSpriteInfo, decode_texture2d, parse_paper_sprite, parse_uasset_names,
 };
+pub use umg::{UmgAnchorData, UmgBlueprint, parse_umg_blueprint};
 
 impl PakVfs {
     /// Reads `.uasset`, `.uexp`, and optional `.ubulk` for a virtual asset path
@@ -102,5 +104,19 @@ impl PakVfs {
         assert!(vpath.ends_with(".bin"));
         let raw = self.read_path(&vpath)?;
         Ok(parse_multi_language_bin(&raw, prefix_filter))
+    }
+
+    /// Reads `.uasset` and `.uexp` for a cooked UMG Widget Blueprint and extracts its
+    /// widget names, referenced asset paths, and `UCanvasPanelSlot` anchor/offset layout.
+    pub fn read_umg_blueprint(&self, asset_path: &str) -> Result<UmgBlueprint, ExtractError> {
+        assert!(!asset_path.is_empty());
+        let base = asset_path
+            .trim_start_matches('/')
+            .trim_end_matches(".uasset")
+            .trim_end_matches(".uexp");
+        assert!(!base.is_empty());
+        let uasset = self.read_path(&format!("{base}.uasset"))?;
+        let uexp = self.read_path(&format!("{base}.uexp"))?;
+        parse_umg_blueprint(&uasset, &uexp)
     }
 }

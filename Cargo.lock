@@ -5845,12 +5845,14 @@ dependencies = [
 name = "tartarus-scan"
 version = "0.3.0"
 dependencies = [
+ "fnv",
  "glam",
  "palette",
  "png",
  "rayon",
  "serde",
  "serde_json",
+ "steamlocate",
  "tartarus-core",
  "workspace-hack",
 ]

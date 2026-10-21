@@ -545,23 +545,23 @@ impl OverlayView {
         let solve_ms = self.snap.solve_ms;
         assert!(cap_ms >= 0.0 && scan_ms >= 0.0 && solve_ms >= 0.0);
 
-        let line = if p.cells_ms > 0.0 || p.ocr_ms > 0.0 {
+        let line = if p.board_ms > 0.0 || p.hud_ms > 0.0 {
             Some(SharedString::from(format!(
-                "cap {cap_ms:.1}ms · scan {scan_ms:.2}ms \
-                 [loc {:.2} · cells {:.2} · ocr {:.2}] · solve {solve_ms:.1}ms",
-                p.loc_ms, p.cells_ms, p.ocr_ms
+                "cap {cap_ms:.1}ms · read {scan_ms:.2}ms \
+                 [vp {:.2} · board {:.2} · hud {:.2}] · solve {solve_ms:.1}ms",
+                p.viewport_ms, p.board_ms, p.hud_ms
             )))
         } else if scan_ms > 0.0 {
             if solve_ms > 0.0 {
                 Some(SharedString::from(format!(
-                    "cap {cap_ms:.1}ms · scan {scan_ms:.2}ms \
-                     [loc {:.2} · pick {:.2}] · solve {solve_ms:.1}ms",
-                    p.loc_ms, p.pick_ms
+                    "cap {cap_ms:.1}ms · read {scan_ms:.2}ms \
+                     [vp {:.2} · modal {:.2}] · solve {solve_ms:.1}ms",
+                    p.viewport_ms, p.modal_ms
                 )))
             } else {
                 Some(SharedString::from(format!(
-                    "cap {cap_ms:.1}ms · scan {scan_ms:.2}ms [loc {:.2} · pick {:.2}]",
-                    p.loc_ms, p.pick_ms
+                    "cap {cap_ms:.1}ms · read {scan_ms:.2}ms [vp {:.2} · modal {:.2}]",
+                    p.viewport_ms, p.modal_ms
                 )))
             }
         } else if solve_ms > 0.0 {

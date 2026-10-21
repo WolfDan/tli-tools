@@ -8,12 +8,12 @@ use std::path::Path;
 use tartarus_extract::{PakVfs, encode_png_rgba8};
 
 use crate::assets::DecodedAssetImage;
-use crate::codegen::{
-    OX_1344_TO_BG, OY_1344_TO_BG, S_1344_TO_BG, synthesize_board_points_and_rooms,
-};
 use crate::db::{S16BeastEntry, S16GameDatabase, S16RelicEntry};
 use crate::error::DataError;
 use crate::font::{RasterizedGlyph, TtfFont};
+use crate::ui_codegen::{
+    OX_1344_TO_BG, OY_1344_TO_BG, S_1344_TO_BG, synthesize_board_points_and_rooms,
+};
 
 struct CatalogCanvas {
     buf: Vec<u8>,

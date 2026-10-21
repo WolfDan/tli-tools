@@ -12,6 +12,8 @@ serde.workspace = true
 serde_json.workspace = true
 glam.workspace = true
 palette.workspace = true
+fnv.workspace = true
+steamlocate.workspace = true
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]

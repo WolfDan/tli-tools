@@ -2,7 +2,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use tartarus_core::AdviceSnapshot;
-use tartarus_scan::{CaptureTrigger, ImageView, RunTracker, ScanArena, ScanProfile};
+use tartarus_scan::{CaptureTrigger, FrameView, RunTracker, UiReadProfile, UiReader};
 
 use crate::capture::{GameWindowPlacement, StillnessTracker, WindowCapturer};
 use crate::log_watcher::{LogEvent, LogWatcher};
@@ -88,7 +88,7 @@ struct SnapshotMetrics {
     log_connected: bool,
     cap_ms: f64,
     scan_ms: f64,
-    scan_profile: ScanProfile,
+    scan_profile: UiReadProfile,
     solve_ms: f64,
 }
 
@@ -128,7 +128,7 @@ struct StepFlags {
 struct WorkerRuntime {
     worker_tx: Sender<WorkerToUi>,
     capturer: WindowCapturer,
-    arena: ScanArena,
+    reader: UiReader,
     log_watcher: LogWatcher,
     tracker: RunTracker,
     stillness: StillnessTracker,
@@ -153,7 +153,7 @@ struct SettledScanOutcome {
 impl WorkerRuntime {
     fn new(worker_tx: Sender<WorkerToUi>) -> Self {
         let capturer = WindowCapturer::new_with_buffer();
-        let arena = ScanArena::new();
+        let reader = UiReader::new();
         let mut log_watcher = LogWatcher::new();
         let mut tracker = RunTracker::new();
         let mut riot = false;
@@ -182,11 +182,12 @@ impl WorkerRuntime {
                 _ => {}
             }
         }
+        tracker.log_active_view = log_watcher.active_view();
 
         let rt = Self {
             worker_tx,
             capturer,
-            arena,
+            reader,
             log_watcher,
             tracker,
             stillness: StillnessTracker::new(),
@@ -342,6 +343,7 @@ impl WorkerRuntime {
         let pace = if self.speed_on { 0.45 } else { 1.0 };
         assert!(pace > 0.0);
         let events: Vec<LogEvent> = self.log_watcher.poll().to_vec();
+        self.tracker.log_active_view = self.log_watcher.active_view();
         for ev in events {
             self.handle_single_log_event(ev, pace, step);
         }
@@ -565,15 +567,11 @@ impl WorkerRuntime {
         }
 
         let t_scan = Instant::now();
-        let view = ImageView {
-            width: frame.width,
-            height: frame.height,
-            data: frame.rgba,
-        };
+        let view = FrameView::new(frame.rgba, frame.width as u32, frame.height as u32);
         let saved_tracker = self.tracker.clone();
         let (recognized, custom_status, scan_profile) =
             self.tracker
-                .process_frame(&view, burst.kind, &mut self.arena);
+                .process_frame(&view, burst.kind, &mut self.reader);
         let scan_ms = t_scan.elapsed().as_secs_f64() * 1000.0;
         let metrics = SnapshotMetrics {
             riot: self.riot,

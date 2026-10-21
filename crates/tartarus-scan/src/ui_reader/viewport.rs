@@ -1,11 +1,96 @@
-//! Multi-scale board template localization (`locate_board`) and cell-number
-//! RANSAC (`locate_by_labels_with_slot`).
+//! Resolution-agnostic UMG viewport projection (`UmgViewport`) and `std::simd::f32x16`
+//! board localization (`resolve_viewport`, `locate_board`, `locate_by_labels_with_slot`).
 
-use super::arena::ScanScratchSlot;
-use super::data::{REF_BOARD_POINTS, RING};
-use super::image::{ImageView, half, half_gray_of, sample};
-use super::math::{BoardLoc, ncc_score_slice};
-use super::ocr::{ALLOWED_CELLS, read_number, text_lines_radii_with_slot};
+use super::data::{
+    H0, PITCH0, REF_BOARD_POINTS, RING, UMG_BOARD_CELL_SLOTS, UmgSlotSpec, invert_3x3, project_3x3,
+};
+use super::glyphs::{ALLOWED_CELLS, UiScratchSlot, read_number, text_lines_radii_with_slot};
+use super::simd::{
+    FrameView, half_gray_from_frame, half_gray_level, ncc_score_simd, sample_bilinear,
+};
+
+const _: () = {
+    assert!(REF_BOARD_POINTS.len() == 1008);
+    assert!(REF_BOARD_POINTS.len().is_multiple_of(16));
+    assert!(UMG_BOARD_CELL_SLOTS.len() == 16);
+};
+
+/// Resolution-independent UMG viewport mapping `1344x756` board space and UMG anchor slots
+/// to physical frame pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UmgViewport {
+    pub s: f64,
+    pub tx: f64,
+    pub ty: f64,
+    pub score: f64,
+    pub w: usize,
+    pub h: usize,
+    pub by_labels: bool,
+    pub cells_matched: usize,
+}
+
+impl UmgViewport {
+    /// Analytical UE4 UMG DPI-scaled viewport from window dimensions (`16:9` / `21:9` / `4:3`).
+    #[inline]
+    pub fn from_window_size(w: usize, h: usize) -> Self {
+        assert!(w > 0 && h > 0);
+        let wf = w as f64;
+        let hf = h as f64;
+        let dpi_s = (wf / 1920.0).min(hf / 1080.0);
+        let s = dpi_s * (1080.0 / 755.0);
+        let tx = wf * 0.5 - s * 377.5;
+        let ty = hf * 0.5624 - s * 194.88;
+        assert!(s > 0.0);
+        Self {
+            s,
+            tx,
+            ty,
+            score: 1.0,
+            w,
+            h,
+            by_labels: false,
+            cells_matched: 0,
+        }
+    }
+
+    #[inline]
+    pub fn at(&self, u: f64, v: f64) -> (f64, f64) {
+        debug_assert!(self.s > 0.0);
+        debug_assert!(u.is_finite() && v.is_finite());
+        let (x, y) = project_3x3(&H0, u, v);
+        (self.s * x + self.tx, self.s * y + self.ty)
+    }
+
+    #[inline]
+    pub fn grid_of(&self, x: f64, y: f64) -> (f64, f64) {
+        debug_assert!(self.s > 0.0);
+        debug_assert!(x.is_finite() && y.is_finite());
+        let h_inv = invert_3x3(&H0);
+        project_3x3(&h_inv, (x - self.tx) / self.s, (y - self.ty) / self.s)
+    }
+
+    #[inline]
+    pub fn scale_at(&self, u: f64, v: f64) -> f64 {
+        debug_assert!(self.s > 0.0);
+        debug_assert!(u.is_finite() && v.is_finite());
+        let (x0, y0) = project_3x3(&H0, u - 0.5, v);
+        let (x1, y1) = project_3x3(&H0, u + 0.5, v);
+        (self.s * (x1 - x0).hypot(y1 - y0)) / PITCH0
+    }
+
+    #[inline]
+    pub fn project_slot(&self, slot: &UmgSlotSpec) -> [f64; 4] {
+        debug_assert!(self.w > 0 && self.h > 0);
+        debug_assert!(self.s > 0.0);
+        let wf = self.w as f64;
+        let hf = self.h as f64;
+        let x0 = (slot.anchor_min_x as f64) * wf + (slot.offset_left as f64) * self.s;
+        let y0 = (slot.anchor_min_y as f64) * hf + (slot.offset_top as f64) * self.s;
+        let x1 = x0 + (slot.offset_right as f64) * self.s;
+        let y1 = y0 + (slot.offset_bottom as f64) * self.s;
+        [x0, y0, x1, y1]
+    }
+}
 
 struct PyrLevel {
     g: Vec<f32>,
@@ -58,8 +143,7 @@ pub(crate) fn board_template_refs() -> &'static BoardTemplateRefs {
     static REFS: std::sync::OnceLock<BoardTemplateRefs> = std::sync::OnceLock::new();
     let refs = REFS.get_or_init(|| {
         let pts = &REF_BOARD_POINTS;
-        let (pts_all, tv) = build_subsampled_template(pts, 1);
-        let _ = pts_all;
+        let (_pts_all, tv) = build_subsampled_template(pts, 1);
         let mut x_min = f64::INFINITY;
         let mut x_max = f64::NEG_INFINITY;
         let mut y_min = f64::INFINITY;
@@ -93,7 +177,7 @@ pub(crate) fn board_template_refs() -> &'static BoardTemplateRefs {
 }
 
 fn score_direct_gray(
-    img: &ImageView<'_>,
+    frame: &FrameView<'_>,
     sub_pts: &[(i32, i32, f32)],
     sub_tv: &[f32],
     s: f64,
@@ -102,20 +186,20 @@ fn score_direct_gray(
 ) -> f64 {
     let m = sub_pts.len();
     assert_eq!(m, sub_tv.len());
-    assert!(m <= 450);
-    let wi = img.width as isize;
-    let hi = img.height as isize;
-    let mut buf = [0.0_f32; 450];
+    assert!(m <= 300);
+    let wi = frame.width() as isize;
+    let hi = frame.height() as isize;
+    let mut buf = [0.0_f32; 300];
     for i in 0..m {
         let xi = (ox + (sub_pts[i].0 as f64) * s) as isize;
         let yi = (oy + (sub_pts[i].1 as f64) * s) as isize;
-        buf[i] = img.gray_px(xi.clamp(0, wi - 1), yi.clamp(0, hi - 1));
+        buf[i] = frame.gray_px(xi.clamp(0, wi - 1), yi.clamp(0, hi - 1));
     }
-    ncc_score_slice(&buf[..m], sub_tv)
+    ncc_score_simd(&buf[..m], sub_tv)
 }
 
 fn score_direct_sharp_sub(
-    img: &ImageView<'_>,
+    frame: &FrameView<'_>,
     sub_pts: &[(i32, i32, f32)],
     sub_tv: &[f32],
     s: f64,
@@ -124,21 +208,21 @@ fn score_direct_sharp_sub(
 ) -> f64 {
     let m = sub_pts.len();
     assert_eq!(m, sub_tv.len());
-    assert!(m <= 1800);
-    let mut buf = [0.0_f32; 1800];
+    assert!(m <= 1024);
+    let mut buf = [0.0_f32; 1024];
     for i in 0..m {
-        buf[i] = img.sample_sharp(
+        buf[i] = frame.sample_sharp(
             ox + (sub_pts[i].0 as f64) * s,
             oy + (sub_pts[i].1 as f64) * s,
         );
     }
-    ncc_score_slice(&buf[..m], sub_tv)
+    ncc_score_simd(&buf[..m], sub_tv)
 }
 
-fn make_loc(s: f64, tx: f64, ty: f64, score: f64, w: usize, h: usize) -> BoardLoc {
+fn make_viewport(s: f64, tx: f64, ty: f64, score: f64, w: usize, h: usize) -> UmgViewport {
     assert!(s > 0.0);
     assert!(w > 0 && h > 0);
-    BoardLoc {
+    UmgViewport {
         s,
         tx,
         ty,
@@ -150,36 +234,17 @@ fn make_loc(s: f64, tx: f64, ty: f64, score: f64, w: usize, h: usize) -> BoardLo
     }
 }
 
-// Zero-allocation refinement around a candidate (s, tx, ty):
-// 1. 225-point gate via img.gray_px (~0.4us)
-// 2. Fast exact-center check when stationary (~4us)
-// 3. 3-scale 1.0px integer grid search with 450 points + 0.5px peak refinement on winning scale
-fn refine_near_direct(
-    img: &ImageView<'_>,
+fn refine_1px_neighborhood(
+    frame: &FrameView<'_>,
     t_refs: &BoardTemplateRefs,
     cand_s: f64,
     cand_tx: f64,
     cand_ty: f64,
-    accept_min: f64,
-) -> Option<BoardLoc> {
+) -> (f64, f64, f64, f64) {
     assert!(cand_s > 0.0);
-    assert!(img.width > 0 && img.height > 0);
-    let pts = &REF_BOARD_POINTS;
+    assert!(frame.width() > 0 && frame.height() > 0);
     let cx = (t_refs.x_min + t_refs.x_max) * 0.5;
     let cy = (t_refs.y_min + t_refs.y_max) * 0.5;
-    let coarse_check =
-        score_direct_gray(img, &t_refs.c8_pts, &t_refs.c8_tv, cand_s, cand_tx, cand_ty);
-    if coarse_check < (accept_min - 0.16).max(0.46) {
-        return None;
-    }
-    if coarse_check >= (accept_min - 0.08).max(0.68) {
-        let exact = score_direct_sharp_sub(img, pts, &t_refs.tv, cand_s, cand_tx, cand_ty);
-        if exact >= accept_min.max(0.78) {
-            return Some(make_loc(
-                cand_s, cand_tx, cand_ty, exact, img.width, img.height,
-            ));
-        }
-    }
     let mut best_1px = (cand_s, cand_tx, cand_ty, -2.0_f64);
     for i in -1isize..=1 {
         let sc = cand_s * (1.0 + (i as f64) * 0.0025);
@@ -189,13 +254,52 @@ fn refine_near_direct(
             for dx in -2isize..=2 {
                 let tx = bx + (dx as f64);
                 let ty = by + (dy as f64);
-                let v = score_direct_gray(img, &t_refs.c4_pts, &t_refs.c4_tv, sc, tx, ty);
+                let v = score_direct_gray(frame, &t_refs.c4_pts, &t_refs.c4_tv, sc, tx, ty);
                 if v > best_1px.3 {
                     best_1px = (sc, tx, ty, v);
                 }
             }
         }
     }
+    best_1px
+}
+
+fn refine_near_direct(
+    frame: &FrameView<'_>,
+    t_refs: &BoardTemplateRefs,
+    cand_s: f64,
+    cand_tx: f64,
+    cand_ty: f64,
+    accept_min: f64,
+) -> Option<UmgViewport> {
+    assert!(cand_s > 0.0);
+    assert!(frame.width() > 0 && frame.height() > 0);
+    let pts = &REF_BOARD_POINTS;
+    let coarse_check = score_direct_gray(
+        frame,
+        &t_refs.c8_pts,
+        &t_refs.c8_tv,
+        cand_s,
+        cand_tx,
+        cand_ty,
+    );
+    if coarse_check < (accept_min - 0.16).max(0.46) {
+        return None;
+    }
+    if coarse_check >= (accept_min - 0.08).max(0.68) {
+        let exact = score_direct_sharp_sub(frame, pts, &t_refs.tv, cand_s, cand_tx, cand_ty);
+        if exact >= accept_min.max(0.78) {
+            return Some(make_viewport(
+                cand_s,
+                cand_tx,
+                cand_ty,
+                exact,
+                frame.width(),
+                frame.height(),
+            ));
+        }
+    }
+    let best_1px = refine_1px_neighborhood(frame, t_refs, cand_s, cand_tx, cand_ty);
     if best_1px.3 < (accept_min - 0.08).max(0.50) {
         return None;
     }
@@ -205,26 +309,26 @@ fn refine_near_direct(
         let ty = cy_ty + (hdy as f64) * 0.5;
         for hdx in -1isize..=1 {
             let tx = cx_tx + (hdx as f64) * 0.5;
-            let v = score_direct_sharp_sub(img, pts, &t_refs.tv, sc, tx, ty);
+            let v = score_direct_sharp_sub(frame, pts, &t_refs.tv, sc, tx, ty);
             if v > best_fine.3 {
                 best_fine = (sc, tx, ty, v);
             }
         }
     }
     (best_fine.3 >= accept_min).then(|| {
-        make_loc(
+        make_viewport(
             best_fine.0,
             best_fine.1,
             best_fine.2,
             best_fine.3,
-            img.width,
-            img.height,
+            frame.width(),
+            frame.height(),
         )
     })
 }
 
 fn scan_coarse_32_grid(
-    img: &ImageView<'_>,
+    frame: &FrameView<'_>,
     t_refs: &BoardTemplateRefs,
     s_win: f64,
     tx_win: f64,
@@ -233,8 +337,8 @@ fn scan_coarse_32_grid(
     let cn32 = t_refs.c32_pts.len();
     assert!(s_win > 0.0);
     assert!(cn32 <= 64);
-    let wi = img.width as isize;
-    let hi = img.height as isize;
+    let wi = frame.width() as isize;
+    let hi = frame.height() as isize;
     let cx = (t_refs.x_min + t_refs.x_max) * 0.5;
     let cy = (t_refs.y_min + t_refs.y_max) * 0.5;
     let mut best_coarse: Option<(f64, isize, isize, f64)> = None;
@@ -243,7 +347,6 @@ fn scan_coarse_32_grid(
     let mut row_bases32 = [0usize; 64];
     let mut vals32 = [0.0_f32; 64];
     let dt = 3.5 * s_win;
-
     for i in -4isize..=4 {
         let s = s_win * (1.0 + (i as f64) * 0.015);
         let bx = tx_win - (s - s_win) * cx;
@@ -256,18 +359,18 @@ fn scan_coarse_32_grid(
             let oy = (by + (dy_i as f64) * dt).round() as isize;
             for j in 0..cn32 {
                 let yi = (oy + dys32[j]).clamp(0, hi - 1) as usize;
-                row_bases32[j] = yi * img.width * 4;
+                row_bases32[j] = frame.row_offset(yi);
             }
             for dx_i in (-6isize..=6).step_by(2) {
                 let ox = (bx + (dx_i as f64) * dt).round() as isize;
                 for j in 0..cn32 {
                     let xi = (ox + dxs32[j]).clamp(0, wi - 1) as usize;
                     let o = row_bases32[j] + xi * 4;
-                    vals32[j] = 0.299 * (img.data[o] as f32)
-                        + 0.587 * (img.data[o + 1] as f32)
-                        + 0.114 * (img.data[o + 2] as f32);
+                    vals32[j] = 0.299 * (frame.pixels_rgba8[o] as f32)
+                        + 0.587 * (frame.pixels_rgba8[o + 1] as f32)
+                        + 0.114 * (frame.pixels_rgba8[o + 2] as f32);
                 }
-                let sc32 = ncc_score_slice(&vals32[..cn32], &t_refs.c32_tv);
+                let sc32 = ncc_score_simd(&vals32[..cn32], &t_refs.c32_tv);
                 if best_coarse.is_none_or(|b| sc32 > b.3) {
                     best_coarse = Some((s, dx_i, dy_i, sc32));
                 }
@@ -278,13 +381,13 @@ fn scan_coarse_32_grid(
 }
 
 fn refine_window_candidate(
-    img: &ImageView<'_>,
+    frame: &FrameView<'_>,
     t_refs: &BoardTemplateRefs,
     s_win: f64,
     tx_win: f64,
     ty_win: f64,
     coarse: (f64, isize, isize, f64),
-) -> Option<BoardLoc> {
+) -> Option<UmgViewport> {
     use rayon::prelude::*;
     assert!(s_win > 0.0);
     assert!(coarse.0 > 0.0);
@@ -301,7 +404,7 @@ fn refine_window_candidate(
             for fdx in (cdx - 1).max(-8)..=(cdx + 1).min(8) {
                 let ftx = bx0 + (fdx as f64) * dt;
                 let fty = by0 + (fdy as f64) * dt;
-                let sc8 = score_direct_gray(img, &t_refs.c8_pts, &t_refs.c8_tv, cs, ftx, fty);
+                let sc8 = score_direct_gray(frame, &t_refs.c8_pts, &t_refs.c8_tv, cs, ftx, fty);
                 if sc8 > best_win.3 {
                     best_win = (cs, ftx, fty, sc8);
                 }
@@ -322,7 +425,7 @@ fn refine_window_candidate(
                     for dx in -3isize..=3 {
                         let tx = bx + (dx as f64) * dt_mid;
                         let ty = by + (dy as f64) * dt_mid;
-                        let sc = score_direct_gray(img, &t_refs.c4_pts, &t_refs.c4_tv, s, tx, ty);
+                        let sc = score_direct_gray(frame, &t_refs.c4_pts, &t_refs.c4_tv, s, tx, ty);
                         if sc > best.3 {
                             best = (s, tx, ty, sc);
                         }
@@ -332,15 +435,15 @@ fn refine_window_candidate(
             })
             .reduce_with(|a, b| if b.3 > a.3 { b } else { a })
             && msc >= 0.52
-            && let Some(near) = refine_near_direct(img, t_refs, ms, mtx, mty, 0.65)
+            && let Some(near) = refine_near_direct(frame, t_refs, ms, mtx, mty, 0.65)
         {
             return Some(near);
         }
     }
-    let aspect = (img.width as f64) / (img.height as f64);
+    let aspect = (frame.width() as f64) / (frame.height() as f64);
     (1.45..=2.5)
         .contains(&aspect)
-        .then(|| make_loc(ws, wtx, wty, wsc.min(0.60), img.width, img.height))
+        .then(|| make_viewport(ws, wtx, wty, wsc.min(0.60), frame.width(), frame.height()))
 }
 
 fn score_slice(lv: &PyrLevel, pxs: &[f64], pys: &[f64], tv: &[f32], ox: f64, oy: f64) -> f64 {
@@ -363,7 +466,7 @@ fn score_slice(lv: &PyrLevel, pxs: &[f64], pys: &[f64], tv: &[f32], ox: f64, oy:
         }
     } else {
         for i in 0..n {
-            let v = sample(&lv.g, lv.w, lv.h, ox + pxs[i], oy + pys[i]);
+            let v = sample_bilinear(&lv.g, lv.w, lv.h, ox + pxs[i], oy + pys[i]);
             sx += v;
             sxx += v * v;
             sxt += v * tv[i];
@@ -378,10 +481,10 @@ fn score_slice(lv: &PyrLevel, pxs: &[f64], pys: &[f64], tv: &[f32], ox: f64, oy:
     }
 }
 
-fn build_gray_pyramid(img: &ImageView<'_>, bw: f64, bh: f64) -> (Vec<PyrLevel>, Vec<f64>) {
-    assert!(img.width >= 64 && img.height >= 64);
+fn build_gray_pyramid(frame: &FrameView<'_>, bw: f64, bh: f64) -> (Vec<PyrLevel>, Vec<f64>) {
+    assert!(frame.width() >= 64 && frame.height() >= 64);
     assert!(bw > 0.0 && bh > 0.0);
-    let (g2, w2, h2) = half_gray_of(img);
+    let (g2, w2, h2) = half_gray_from_frame(frame);
     let mut levels = vec![PyrLevel {
         g: g2,
         w: w2,
@@ -394,7 +497,7 @@ fn build_gray_pyramid(img: &ImageView<'_>, bw: f64, bh: f64) -> (Vec<PyrLevel>, 
         && levels.last().unwrap().h > 60
     {
         let last = levels.last().unwrap();
-        let (dg, dw, dh) = half(&last.g, last.w, last.h);
+        let (dg, dw, dh) = half_gray_level(&last.g, last.w, last.h);
         let nf = last.f * 2.0;
         levels.push(PyrLevel {
             g: dg,
@@ -403,8 +506,8 @@ fn build_gray_pyramid(img: &ImageView<'_>, bw: f64, bh: f64) -> (Vec<PyrLevel>, 
             f: nf,
         });
     }
-    let s_min = 0.12_f64.max((0.3 * (img.width as f64)) / bw);
-    let s_max = 8.0_f64.min(1.1 * ((img.width as f64) / bw).max((img.height as f64) / bh));
+    let s_min = 0.12_f64.max((0.3 * (frame.width() as f64)) / bw);
+    let s_max = 8.0_f64.min(1.1 * ((frame.width() as f64) / bw).max((frame.height() as f64) / bh));
     let mut scales = Vec::new();
     let mut s = s_min;
     const SCALES_MAX: usize = 256;
@@ -546,7 +649,7 @@ fn grid_lv(
 }
 
 fn fine_refine_candidate(
-    img: &ImageView<'_>,
+    frame: &FrameView<'_>,
     t_refs: &BoardTemplateRefs,
     cand: (f64, f64, f64, f64),
 ) -> (f64, f64, f64, f64) {
@@ -565,7 +668,7 @@ fn fine_refine_candidate(
             for dx in -3..=3 {
                 let tx = bx + (dx as f64) * 0.5;
                 let ty = by + (dy as f64) * 0.5;
-                let sc = score_direct_sharp_sub(img, pts, &t_refs.tv, s, tx, ty);
+                let sc = score_direct_sharp_sub(frame, pts, &t_refs.tv, s, tx, ty);
                 if sc > best.3 {
                     best = (s, tx, ty, sc);
                 }
@@ -576,17 +679,22 @@ fn fine_refine_candidate(
 }
 
 fn refine_pyramid_candidates(
-    img: &ImageView<'_>,
+    frame: &FrameView<'_>,
     levels: &[PyrLevel],
     t_refs: &BoardTemplateRefs,
     top: &[(f64, f64, f64, f64, f64)],
-) -> Option<BoardLoc> {
+) -> Option<UmgViewport> {
     use rayon::prelude::*;
     assert!(!top.is_empty());
     assert!(!levels.is_empty());
     if top[0].4 < 0.45 {
-        return Some(make_loc(
-            top[0].0, top[0].1, top[0].2, top[0].4, img.width, img.height,
+        return Some(make_viewport(
+            top[0].0,
+            top[0].1,
+            top[0].2,
+            top[0].4,
+            frame.width(),
+            frame.height(),
         ));
     }
     let mid_candidates: Vec<(f64, f64, f64, f64)> = top
@@ -614,29 +722,34 @@ fn refine_pyramid_candidates(
         .copied()
         .max_by(|a, b| a.3.partial_cmp(&b.3).unwrap())?;
     if best_mid.3 < 0.52 {
-        return Some(make_loc(
-            best_mid.0, best_mid.1, best_mid.2, best_mid.3, img.width, img.height,
+        return Some(make_viewport(
+            best_mid.0,
+            best_mid.1,
+            best_mid.2,
+            best_mid.3,
+            frame.width(),
+            frame.height(),
         ));
     }
     let best_final = mid_candidates
         .par_iter()
         .filter(|c| c.3 >= 0.52)
-        .map(|&cand| fine_refine_candidate(img, t_refs, cand))
+        .map(|&cand| fine_refine_candidate(frame, t_refs, cand))
         .reduce_with(|a, b| if b.3 > a.3 { b } else { a })?;
-    Some(make_loc(
+    Some(make_viewport(
         best_final.0,
         best_final.1,
         best_final.2,
         best_final.3,
-        img.width,
-        img.height,
+        frame.width(),
+        frame.height(),
     ))
 }
 
-pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<BoardLoc> {
-    assert!(img.data.len() >= img.width * img.height * 4);
+pub fn locate_board(frame: &FrameView<'_>, hint: Option<UmgViewport>) -> Option<UmgViewport> {
+    assert!(frame.width() > 0 && frame.height() > 0);
     assert!(!REF_BOARD_POINTS.is_empty());
-    let (w, h) = (img.width, img.height);
+    let (w, h) = (frame.width(), frame.height());
     if w < 64 || h < 64 {
         return None;
     }
@@ -645,7 +758,7 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
         && hloc.w == w
         && hloc.h == h
         && let Some(near) = refine_near_direct(
-            img,
+            frame,
             t_refs,
             hloc.s,
             hloc.tx,
@@ -656,12 +769,11 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
         return Some(near);
     }
 
-    // Standard 16:9 game window board position (reference frame is 1344x756)
     let (wf, hf) = (w as f64, h as f64);
     let s_win = (wf / 1344.0).min(hf / 756.0);
     let tx_win = (wf - 1344.0 * s_win) * 0.5;
     let ty_win = (hf - 756.0 * s_win) * 0.5;
-    if let Some(near) = refine_near_direct(img, t_refs, s_win, tx_win, ty_win, 0.75) {
+    if let Some(near) = refine_near_direct(frame, t_refs, s_win, tx_win, ty_win, 0.75) {
         return Some(near);
     }
     let s_w = wf / 1344.0;
@@ -671,26 +783,26 @@ pub fn locate_board(img: &ImageView<'_>, hint: Option<BoardLoc>) -> Option<Board
         (s_w, (wf - 1344.0 * s_w) * 0.5, (hf - 756.0 * s_w) * 0.5),
         (s_win, wf * 0.5 - 658.0 * s_win, hf * 0.5 - 370.5 * s_win),
     ] {
-        if let Some(near) = refine_near_direct(img, t_refs, cand_s, cand_tx, cand_ty, 0.75) {
+        if let Some(near) = refine_near_direct(frame, t_refs, cand_s, cand_tx, cand_ty, 0.75) {
             return Some(near);
         }
     }
 
-    if let Some(coarse) = scan_coarse_32_grid(img, t_refs, s_win, tx_win, ty_win)
-        && let Some(loc) = refine_window_candidate(img, t_refs, s_win, tx_win, ty_win, coarse)
+    if let Some(coarse) = scan_coarse_32_grid(frame, t_refs, s_win, tx_win, ty_win)
+        && let Some(loc) = refine_window_candidate(frame, t_refs, s_win, tx_win, ty_win, coarse)
     {
         return Some(loc);
     }
 
     let bw = t_refs.x_max - t_refs.x_min;
     let bh = t_refs.y_max - t_refs.y_min;
-    let (levels, scales) = build_gray_pyramid(img, bw, bh);
+    let (levels, scales) = build_gray_pyramid(frame, bw, bh);
     let mut top = search_pyramid_scales(&levels, &scales, t_refs);
     if top.is_empty() {
         return None;
     }
     top.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap());
-    refine_pyramid_candidates(img, &levels, t_refs, &top)
+    refine_pyramid_candidates(frame, &levels, t_refs, &top)
 }
 
 struct LabelRansacBest {
@@ -702,7 +814,7 @@ struct LabelRansacBest {
 fn unit_label_spots(w: usize, h: usize) -> ([(f64, f64); 16], f64) {
     assert!(w > 0 && h > 0);
     assert_eq!(RING.len(), 16);
-    let unit = BoardLoc {
+    let unit = UmgViewport {
         s: 1.0,
         tx: 0.0,
         ty: 0.0,
@@ -735,17 +847,21 @@ fn unit_label_spots(w: usize, h: usize) -> ([(f64, f64); 16], f64) {
 }
 
 fn collect_seen_cell_labels(
-    img: &ImageView<'_>,
-    slot: &mut ScanScratchSlot,
+    frame: &FrameView<'_>,
+    slot: &mut UiScratchSlot,
 ) -> Vec<(usize, f64, f64)> {
-    assert!(img.width > 0 && img.height > 0);
+    assert!(frame.width() > 0 && frame.height() > 0);
     assert!(!ALLOWED_CELLS.is_empty());
     let mut seen: Vec<(usize, f64, f64)> = Vec::new();
     let rad = ((40.0_f64 / 3.0).round() as usize).max(3);
-
     for line in text_lines_radii_with_slot(
-        img,
-        [0.0, 0.0, (img.width - 1) as f64, (img.height - 1) as f64],
+        frame,
+        [
+            0.0,
+            0.0,
+            (frame.width() - 1) as f64,
+            (frame.height() - 1) as f64,
+        ],
         (6.0, 40.0),
         &[rad],
         0.34,
@@ -759,7 +875,7 @@ fn collect_seen_cell_labels(
             if p.words.len() != 1 || p.words[0].glyphs.is_empty() || p.words[0].glyphs.len() > 2 {
                 continue;
             }
-            let r = read_number(img, &p.words[0].glyphs, line.h, &ALLOWED_CELLS);
+            let r = read_number(frame, &p.words[0].glyphs, line.h, &ALLOWED_CELLS);
             if let Some(&(val, score)) = r.first()
                 && score > 0.70
             {
@@ -820,14 +936,14 @@ fn ransac_label_transform(
     best
 }
 
-pub fn locate_by_labels_with_slot(
-    img: &ImageView<'_>,
-    slot: &mut ScanScratchSlot,
-) -> Option<BoardLoc> {
-    assert!(img.width > 0 && img.height > 0);
-    assert!(img.data.len() >= img.width * img.height * 4);
-    let (spot, cell_w) = unit_label_spots(img.width, img.height);
-    let seen = collect_seen_cell_labels(img, slot);
+pub(crate) fn locate_by_labels_with_slot(
+    frame: &FrameView<'_>,
+    slot: &mut UiScratchSlot,
+) -> Option<UmgViewport> {
+    assert!(frame.width() > 0);
+    assert!(frame.height() > 0);
+    let (spot, cell_w) = unit_label_spots(frame.width(), frame.height());
+    let seen = collect_seen_cell_labels(frame, slot);
     let LabelRansacBest {
         s: best_s,
         cells: cells_matched,
@@ -848,13 +964,13 @@ pub fn locate_by_labels_with_slot(
         den += (spot[c.0].0 - rx).powi(2) + (spot[c.0].1 - ry).powi(2);
     }
     let s = if den > 0.0 { num / den } else { best_s };
-    Some(BoardLoc {
+    Some(UmgViewport {
         s,
         tx: px - s * rx,
         ty: py - s * ry,
         score: ((cells_matched as f64) / 15.0).min(1.0),
-        w: img.width,
-        h: img.height,
+        w: frame.width(),
+        h: frame.height(),
         by_labels: true,
         cells_matched,
     })

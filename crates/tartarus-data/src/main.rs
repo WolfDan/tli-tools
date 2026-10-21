@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use tartarus_data::{
-    S16GameDatabase, extract_s16_game_database, generate_cv_data_rs, load_s16_textures_by_name,
+    S16GameDatabase, extract_s16_game_database, generate_ui_data_rs, load_s16_textures_by_name,
     render_catalog_beasts_and_cells_png, render_catalog_board_layout_png,
     render_catalog_gifts_themes_events_png, render_catalog_relics_png,
 };
@@ -42,7 +42,7 @@ fn parse_cli_args() -> Result<CliArgs, String> {
     let emit_rust: PathBuf = pargs
         .opt_value_from_str("--emit-rust")
         .map_err(|e| e.to_string())?
-        .unwrap_or_else(|| workspace_root.join("crates/tartarus-scan/src/cv_data.rs"));
+        .unwrap_or_else(|| workspace_root.join("crates/tartarus-scan/src/ui_data.rs"));
     let remaining = pargs.finish();
     if let Some(unknown) = remaining.first() {
         return Err(format!("Unknown argument: {}", unknown.to_string_lossy()));
@@ -94,10 +94,10 @@ fn render_all_catalogs_and_codegen(
     println!("   -> Saved {}", board_png.display());
 
     println!(
-        "5. Synthesizing static Rust CV tables & S16 metadata 100% from .pak -> {}...",
+        "5. Synthesizing static Rust UI tables & S16 metadata 100% from .pak -> {}...",
         args.emit_rust.display()
     );
-    generate_cv_data_rs(&args.emit_rust, vfs, db, &textures)?;
+    generate_ui_data_rs(&args.emit_rust, vfs, db, &textures)?;
     println!("   -> Generated {}", args.emit_rust.display());
     Ok(())
 }

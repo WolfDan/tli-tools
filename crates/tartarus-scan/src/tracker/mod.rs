@@ -1,18 +1,20 @@
-//! Run state tracker and frame processing lifecycle.
+//! Run state tracker and frame processing lifecycle (`RunTracker`).
 
 pub mod reconcile;
 
-use crate::cv::{
-    BoardLoc, ImageView, PickScreenRead, ScanArena, ScanOptions, ScanProfile, ScanResult,
-    ScannedTool, TitleRead, read_hud_objective_with_slot, read_objective_title_with_slot,
-    scan_image_with_options_and_arena, scan_pick_with_slot,
-};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+
 use tartarus_core::{
     BoardModel, BoardRunStage, BoardStep, CHALLENGE_DAYS, CellKind, CellModel, ChoiceId,
     ChoiceModel, FixedVec, GameMode, GameParams, ObjectiveId, PendingKind, RunPhase, SimAction,
     StartEventId, ToolId, ToolsPrompt, TreasureOrigin, TreasurePhase,
+};
+
+use crate::log_watcher::{ActiveUiView, LogEvent};
+use crate::ui_reader::{
+    BoardRead, FrameView, ReadBoardOptions, RelicModalRead, TitleModalRead, ToolSlotRead,
+    UiReadProfile, UiReader, UmgViewport,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,7 +40,7 @@ impl CaptureTrigger {
     }
 }
 
-pub(crate) fn pick_is_confident(pick: &PickScreenRead) -> bool {
+pub(crate) fn pick_is_confident(pick: &RelicModalRead) -> bool {
     assert_eq!(pick.cards.len(), 3);
     assert!(pick.cards[0].score.is_finite());
     if pick.cards.iter().any(|c| c.score < 0.80) {
@@ -64,7 +66,7 @@ pub struct ScanReading {
     pub checks: u16,
     pub notes: Vec<String>,
     pub chromatic: usize,
-    pub tools: FixedVec<ScannedTool, 6>,
+    pub tools: FixedVec<ToolSlotRead, 6>,
     pub chain_targets: Option<FixedVec<u8, 16>>,
 }
 
@@ -73,7 +75,7 @@ pub struct RunTracker {
     pub model: BoardModel,
     pub phase: RunPhase,
     pub last_board_at: Option<Instant>,
-    pub hint: Option<BoardLoc>,
+    pub hint: Option<UmgViewport>,
     pub run_objective: Option<ObjectiveId>,
     pub run_start_event: Option<StartEventId>,
     pub phantom_slots: BTreeMap<u16, usize>,
@@ -85,6 +87,8 @@ pub struct RunTracker {
     pub log_days: Option<(u8, u8)>,
     /// Ground-truth whether `S16BoardRelicPop` (3-card Instrument Pick modal) is currently open
     pub log_relic_pop_open: Option<bool>,
+    /// Ground-truth active UI view from `UE_game.log`
+    pub log_active_view: ActiveUiView,
     /// Whether the last ingested board frame had visible bottom action cards
     pub last_board_had_cards: bool,
 }
@@ -113,6 +117,7 @@ impl RunTracker {
             log_run_id: None,
             log_days: None,
             log_relic_pop_open: None,
+            log_active_view: ActiveUiView::Unknown,
             last_board_had_cards: false,
         };
         assert_eq!(tracker.phase, RunPhase::WaitingForRun);
@@ -135,6 +140,7 @@ impl RunTracker {
     pub fn on_run_over(&mut self) -> bool {
         self.log_days = None;
         self.log_relic_pop_open = Some(false);
+        self.log_active_view = ActiveUiView::CheckOutRiot;
         let transitioned = if self.phase != RunPhase::RunOver {
             self.phase = RunPhase::RunOver;
             self.last_board_at = None;
@@ -204,6 +210,59 @@ impl RunTracker {
         self.phase.is_active() && (self.model.day != prev_day || self.model.days_max != prev_max)
     }
 
+    /// Applies a single `LogEvent` from `LogWatcher` and updates `log_active_view` / `log_days`.
+    pub fn apply_log_event(&mut self, event: LogEvent) -> bool {
+        let changed = match event {
+            LogEvent::RunBegin { run_id, is_settled } => self.on_log_run_begin(run_id, is_settled),
+            LogEvent::DayCheck { cur, max } => self.on_log_day_check(cur, max),
+            LogEvent::BoardTrigger { .. } => {
+                self.log_active_view = ActiveUiView::BoardMain;
+                self.on_run_new()
+            }
+            LogEvent::InstrumentsPopup { fresh } => {
+                self.log_active_view = ActiveUiView::RelicPop;
+                self.log_relic_pop_open = Some(true);
+                if fresh { self.on_run_new() } else { false }
+            }
+            LogEvent::RelicPopState(open) => {
+                self.log_relic_pop_open = Some(open);
+                if open {
+                    self.log_active_view = ActiveUiView::RelicPop;
+                } else if self.log_active_view == ActiveUiView::RelicPop {
+                    self.log_active_view = ActiveUiView::BoardMain;
+                }
+                false
+            }
+            LogEvent::ObjectivePopup => {
+                self.log_active_view = ActiveUiView::TaskPop;
+                self.on_run_new()
+            }
+            LogEvent::TreasurePopup { .. } => {
+                self.log_active_view = ActiveUiView::ColoredPop;
+                false
+            }
+            LogEvent::SkipPending => {
+                self.log_active_view = ActiveUiView::NewDayPop;
+                false
+            }
+            LogEvent::SpeedFlip => false,
+            LogEvent::Riot(on) => {
+                if on {
+                    self.log_active_view = ActiveUiView::CheckOutRiot;
+                }
+                false
+            }
+            LogEvent::RunOver => self.on_run_over(),
+            LogEvent::RunNew => {
+                self.log_active_view = ActiveUiView::Lobby;
+                self.on_run_new()
+            }
+        };
+        assert!(self.model.days_max >= 1);
+        assert!(self.model.cells.len() == 16);
+        changed
+    }
+
     pub fn set_model(&mut self, new_model: BoardModel) {
         self.model = new_model;
         self.model.clean_prey();
@@ -242,7 +301,7 @@ impl RunTracker {
         assert!(self.model.days_max >= 1);
     }
 
-    pub fn use_title(&mut self, title: TitleRead) -> String {
+    pub fn use_title(&mut self, title: TitleModalRead) -> String {
         if let RunPhase::Active {
             last_capture_matched,
         } = &mut self.phase
@@ -250,7 +309,7 @@ impl RunTracker {
             *last_capture_matched = true;
         }
         let msg = match title {
-            TitleRead::StartEvent(ev) => {
+            TitleModalRead::StartEvent(ev) => {
                 self.run_start_event = Some(ev);
                 self.set_start_event(ev);
                 format!(
@@ -258,7 +317,7 @@ impl RunTracker {
                     ev.name()
                 )
             }
-            TitleRead::Objective(obj) => {
+            TitleModalRead::Objective(obj) => {
                 self.run_objective = Some(obj);
                 self.model.objective = obj;
                 self.model.walk_tiles = 0;
@@ -312,7 +371,7 @@ impl RunTracker {
         assert!(self.run_objective.is_none());
     }
 
-    pub fn use_pick(&mut self, read: &PickScreenRead, fresh: bool) -> String {
+    pub fn use_pick(&mut self, read: &RelicModalRead, fresh: bool) -> String {
         assert_eq!(read.cards.len(), 3);
         if fresh {
             self.reset_fresh_pick_model();
@@ -444,36 +503,24 @@ impl RunTracker {
         assert_eq!(self.model.tools_prompt, ToolsPrompt::None);
     }
 
-    pub fn ingest(&mut self, scan: &ScanResult) -> bool {
-        assert!(!scan.ok || scan.cells.is_some());
-        if let Some(loc) = scan.loc
-            && scan.ok
+    pub fn ingest(&mut self, board: &BoardRead) -> bool {
+        assert!(!board.ok || board.cells.is_some());
+        if let Some(vp) = board.viewport
+            && board.ok
         {
-            self.hint = Some(loc);
+            self.hint = Some(vp);
         }
 
-        if let Some(title) = scan.title {
-            self.use_title(title);
-        }
-
-        if !scan.ok {
-            if let Some(ref pick) = scan.pick
-                && pick_is_confident(pick)
-            {
-                let fresh = self.model.day >= self.model.days_max
-                    || (self.model.tools.is_empty() && self.model.day <= 1);
-                self.use_pick(pick, fresh);
-                return true;
-            }
+        if !board.ok {
             return false;
         }
 
         let behind_treasure = self.model.treasure == TreasurePhase::WaitingForBoardView;
         self.last_board_had_cards = behind_treasure
-            || scan.doors.as_ref().is_some_and(|d| !d.cells.is_empty())
-            || scan.decision.is_some()
-            || scan.chain.is_some();
-        let reading = self.scan_to_model(scan);
+            || board.doors.as_ref().is_some_and(|d| !d.cells.is_empty())
+            || board.decision.is_some()
+            || board.chain.is_some();
+        let reading = self.scan_to_model(board);
         self.last_notes = reading.notes;
         self.model = reading.model;
         self.model.checks = reading.checks;
@@ -491,44 +538,44 @@ impl RunTracker {
         true
     }
 
-    fn try_pre_modal_scan(
+    fn try_pre_modal_read(
         &mut self,
-        view: &ImageView<'_>,
+        frame: &FrameView<'_>,
         trigger: CaptureTrigger,
-        arena: &mut ScanArena,
+        reader: &mut UiReader,
         t_start: Instant,
-    ) -> Result<(bool, Option<String>, ScanProfile), (bool, f64)> {
-        assert!(view.width > 0 && view.height > 0);
-        assert!(!arena.slots.is_empty());
+    ) -> Result<(bool, Option<String>, UiReadProfile), (bool, f64)> {
+        assert!(frame.width() > 0);
+        assert!(frame.height() > 0);
         let mut pick_already_checked = false;
-        let mut pre_pick_ms = 0.0;
+        let mut pre_modal_ms = 0.0;
 
         if trigger == CaptureTrigger::Objective {
-            let t_pick = Instant::now();
-            let title_opt = read_objective_title_with_slot(view, &mut arena.slots[0]);
-            let pick_ms = t_pick.elapsed().as_secs_f64() * 1000.0;
+            let t_modal = Instant::now();
+            let title_opt = reader.read_title_modal(frame);
+            let modal_ms = t_modal.elapsed().as_secs_f64() * 1000.0;
             if let Some(title) = title_opt {
                 let status = Some(self.use_title(title));
                 return Ok((
                     true,
                     status,
-                    ScanProfile {
-                        loc_ms: 0.0,
-                        cells_ms: 0.0,
-                        ocr_ms: 0.0,
-                        pick_ms,
+                    UiReadProfile {
+                        viewport_ms: 0.0,
+                        board_ms: 0.0,
+                        hud_ms: 0.0,
+                        modal_ms,
                         ms_total: t_start.elapsed().as_secs_f64() * 1000.0,
                     },
                 ));
             }
-            pre_pick_ms += pick_ms;
+            pre_modal_ms += modal_ms;
         }
 
         if let CaptureTrigger::Instruments { fresh: fresh_hint } = trigger {
             pick_already_checked = true;
-            let t_pick = Instant::now();
-            let pick_opt = scan_pick_with_slot(view, &mut arena.slots[0]);
-            let pick_ms = t_pick.elapsed().as_secs_f64() * 1000.0;
+            let t_modal = Instant::now();
+            let pick_opt = reader.read_relic_modal(frame);
+            let modal_ms = t_modal.elapsed().as_secs_f64() * 1000.0;
             if let Some(pick) = pick_opt
                 && pick_is_confident(&pick)
             {
@@ -541,36 +588,36 @@ impl RunTracker {
                 return Ok((
                     true,
                     status,
-                    ScanProfile {
-                        loc_ms: 0.0,
-                        cells_ms: 0.0,
-                        ocr_ms: 0.0,
-                        pick_ms,
+                    UiReadProfile {
+                        viewport_ms: 0.0,
+                        board_ms: 0.0,
+                        hud_ms: 0.0,
+                        modal_ms,
                         ms_total: t_start.elapsed().as_secs_f64() * 1000.0,
                     },
                 ));
             }
-            pre_pick_ms += pick_ms;
+            pre_modal_ms += modal_ms;
         }
 
-        Err((pick_already_checked, pre_pick_ms))
+        Err((pick_already_checked, pre_modal_ms))
     }
 
-    fn try_fallback_modal_scan(
+    fn try_fallback_modal_read(
         &mut self,
-        view: &ImageView<'_>,
+        frame: &FrameView<'_>,
         trigger: CaptureTrigger,
-        arena: &mut ScanArena,
+        reader: &mut UiReader,
         pick_already_checked: bool,
-        profile: &mut ScanProfile,
+        profile: &mut UiReadProfile,
     ) -> Option<String> {
-        assert!(view.width > 0 && view.height > 0);
-        assert!(!arena.slots.is_empty());
+        assert!(frame.width() > 0);
+        assert!(frame.height() > 0);
         let skip_pick = self.log_relic_pop_open == Some(false) && trigger != CaptureTrigger::Manual;
         if !pick_already_checked && !skip_pick {
-            let t_pick = Instant::now();
-            let pick_opt = scan_pick_with_slot(view, &mut arena.slots[0]);
-            profile.pick_ms += t_pick.elapsed().as_secs_f64() * 1000.0;
+            let t_modal = Instant::now();
+            let pick_opt = reader.read_relic_modal(frame);
+            profile.modal_ms += t_modal.elapsed().as_secs_f64() * 1000.0;
             if let Some(pick) = pick_opt
                 && pick_is_confident(&pick)
             {
@@ -585,9 +632,9 @@ impl RunTracker {
         }
 
         if trigger != CaptureTrigger::Objective {
-            let t_pick = Instant::now();
-            let title_opt = read_objective_title_with_slot(view, &mut arena.slots[0]);
-            profile.pick_ms += t_pick.elapsed().as_secs_f64() * 1000.0;
+            let t_modal = Instant::now();
+            let title_opt = reader.read_title_modal(frame);
+            profile.modal_ms += t_modal.elapsed().as_secs_f64() * 1000.0;
             if let Some(title) = title_opt {
                 return Some(self.use_title(title));
             }
@@ -596,34 +643,34 @@ impl RunTracker {
     }
 
     /// Unified frame-processing pipeline used by BOTH automatic log-triggered captures
-    /// and manual `"Picture"` / hotkey captures so state transitions are 100% identical.
+    /// and manual `"Picture"` / hotkey captures.
     pub fn process_frame(
         &mut self,
-        view: &ImageView<'_>,
+        frame: &FrameView<'_>,
         trigger: CaptureTrigger,
-        arena: &mut ScanArena,
-    ) -> (bool, Option<String>, ScanProfile) {
-        assert!(view.width > 0 && view.height > 0);
-        assert!(!arena.slots.is_empty());
+        reader: &mut UiReader,
+    ) -> (bool, Option<String>, UiReadProfile) {
+        assert!(frame.width() > 0);
+        assert!(frame.height() > 0);
         let t_start = Instant::now();
-        let (pick_already_checked, pre_pick_ms) =
-            match self.try_pre_modal_scan(view, trigger, arena, t_start) {
+        let (pick_already_checked, pre_modal_ms) =
+            match self.try_pre_modal_read(frame, trigger, reader, t_start) {
                 Ok(res) => return res,
                 Err(pair) => pair,
             };
 
-        let opts = ScanOptions {
-            skip_days: self.log_days.is_some_and(|(_, max)| max > 0),
+        let opts = ReadBoardOptions {
+            read_days: !self.log_days.is_some_and(|(_, max)| max > 0),
         };
-        let mut scan_res = scan_image_with_options_and_arena(view, self.hint, opts, arena);
-        scan_res.profile.pick_ms += pre_pick_ms;
-        if scan_res.ok {
-            let recognized = self.ingest(&scan_res);
+        let mut board_res = reader.read_board(frame, self.hint, opts);
+        board_res.profile.modal_ms += pre_modal_ms;
+        if board_res.ok {
+            let recognized = self.ingest(&board_res);
             if recognized
                 && self.model.objective == ObjectiveId::Other
                 && !self.model.milestone
-                && let Some(loc) = scan_res.loc.as_ref()
-                && let Some(obj) = read_hud_objective_with_slot(view, loc, &mut arena.slots[0])
+                && let Some(vp) = board_res.viewport.as_ref()
+                && let Some(obj) = reader.read_hud_objective(frame, vp)
             {
                 self.model.objective = obj;
             }
@@ -635,19 +682,19 @@ impl RunTracker {
             );
             let custom_status = (recognized && treasure_view)
                 .then(|| self.use_treasure(Some(TreasureOrigin::View)));
-            scan_res.profile.ms_total = t_start.elapsed().as_secs_f64() * 1000.0;
-            return (recognized, custom_status, scan_res.profile);
+            board_res.profile.ms_total = t_start.elapsed().as_secs_f64() * 1000.0;
+            return (recognized, custom_status, board_res.profile);
         }
 
-        if let Some(status) = self.try_fallback_modal_scan(
-            view,
+        if let Some(status) = self.try_fallback_modal_read(
+            frame,
             trigger,
-            arena,
+            reader,
             pick_already_checked,
-            &mut scan_res.profile,
+            &mut board_res.profile,
         ) {
-            scan_res.profile.ms_total = t_start.elapsed().as_secs_f64() * 1000.0;
-            return (true, Some(status), scan_res.profile);
+            board_res.profile.ms_total = t_start.elapsed().as_secs_f64() * 1000.0;
+            return (true, Some(status), board_res.profile);
         }
 
         if let RunPhase::Active {
@@ -657,8 +704,8 @@ impl RunTracker {
             *last_capture_matched = false;
         }
 
-        scan_res.profile.ms_total = t_start.elapsed().as_secs_f64() * 1000.0;
-        (false, None, scan_res.profile)
+        board_res.profile.ms_total = t_start.elapsed().as_secs_f64() * 1000.0;
+        (false, None, board_res.profile)
     }
 
     pub fn record_advice(&mut self, best_action: Option<SimAction>) {

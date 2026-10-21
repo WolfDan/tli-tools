@@ -1,16 +1,16 @@
-//! Pure-`.pak` CV feature & template synthesis (`crates/tartarus-scan/src/cv_data.rs`).
+//! Pure-`.pak` UMG layout & SIMD template synthesis (`crates/tartarus-scan/src/ui_data.rs`).
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use tartarus_extract::PakVfs;
+use tartarus_extract::{PakVfs, UmgAnchorData};
 
 use crate::assets::{
     DecodedAssetImage, alpha_bbox, alpha_bbox_thresh, compute_art_feature_region,
     pick_art_bbox_on_rgba, synthesize_icon_feature,
 };
-use crate::db::{S16GameDatabase, S16RelicEntry};
+use crate::db::{S16GameDatabase, S16GiftEntry, S16RelicEntry};
 use crate::error::DataError;
 use crate::font::{BoardPoint, DigitTemplates, PrefixTemplates, RasterizedGlyph, RoomBox, TtfFont};
 
@@ -223,9 +223,9 @@ fn compute_sharp_1344_from_bg(bg: &DecodedAssetImage) -> Vec<f32> {
     sharp_1344
 }
 
-/// Synthesizes the 1002 high-gradient structural board reference points (`REF_BOARD_POINTS`)
-/// in `1344x756` `H0` space and the 16 room highlight boxes (`ROOM_BG_BOXES`) in `3200x1920`
-/// `UI_Img_S16Gameplay_Jail_Bg_Normal` space directly from `.pak` textures.
+/// Synthesizes the 1008 high-gradient structural board reference points (`REF_BOARD_POINTS`,
+/// multiple of 16 for `f32x16` SIMD!) in `1344x756` `H0` space and the 16 room highlight boxes
+/// (`ROOM_BG_BOXES`) in `3200x1920` `UI_Img_S16Gameplay_Jail_Bg_Normal` space directly from `.pak`.
 pub fn synthesize_board_points_and_rooms(
     textures: &BTreeMap<String, DecodedAssetImage>,
 ) -> Result<(Vec<BoardPoint>, [RoomBox; 16]), DataError> {
@@ -267,23 +267,23 @@ pub fn synthesize_board_points_and_rooms(
         }
     }
     cands.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap());
-    let top_1002: Vec<(i32, i32, f32)> = cands
+    let top_pts: Vec<(i32, i32, f32)> = cands
         .into_iter()
-        .take(1002)
+        .take(1008)
         .map(|(x, y, v, _)| (x, y, v))
         .collect();
-    assert_eq!(top_1002.len(), 1002);
-    Ok((top_1002, room_boxes))
+    assert_eq!(top_pts.len(), 1008);
+    Ok((top_pts, room_boxes))
 }
 
-/// Synthesizes the `18x22 = 396` beast face templates for a beast from its normal (`112x120`)
-/// and jailed (`120x144`) portraits composited onto the `120x144` cell shield
-/// (`UI_T_V2_S16BoardCell_046`).
+/// Synthesizes `16x16 = 256` zero-mean unit-norm beast face templates (`f32x16` SIMD aligned!)
+/// for a beast from its normal (`112x120`) and jailed (`120x144`) portraits composited onto
+/// the `120x144` cell shield (`UI_T_V2_S16BoardCell_046`).
 pub fn synthesize_beast_face_templates(
     shield: &DecodedAssetImage,
     norm_tex: &DecodedAssetImage,
     jail_tex: &DecodedAssetImage,
-) -> Vec<[f32; 396]> {
+) -> Vec<[f32; 256]> {
     assert!(shield.width > 0 && shield.height > 0);
     let mut out = Vec::with_capacity(54);
     for (tex, ox, oy) in [(norm_tex, 4isize, 0isize), (jail_tex, 0isize, 0isize)] {
@@ -293,12 +293,12 @@ pub fn synthesize_beast_face_templates(
                 for &cx in &[58.0f64, 60.0, 62.0] {
                     let x0 = cx - cw * 0.5;
                     let y0 = cy - ch * 0.5;
-                    let mut tv = [0.0f32; 396];
-                    for j in 0..22 {
-                        for i in 0..18 {
-                            let sx = x0 + cw * ((i as f64) + 0.5) / 18.0;
-                            let sy = y0 + ch * ((j as f64) + 0.5) / 22.0;
-                            tv[j * 18 + i] = sample_gray_bilinear(&blur, 120, 144, sx, sy);
+                    let mut tv = [0.0f32; 256];
+                    for j in 0..16 {
+                        for i in 0..16 {
+                            let sx = x0 + cw * ((i as f64) + 0.5) / 16.0;
+                            let sy = y0 + ch * ((j as f64) + 0.5) / 16.0;
+                            tv[j * 16 + i] = sample_gray_bilinear(&blur, 120, 144, sx, sy);
                         }
                     }
                     normalize_zero_mean(&mut tv);
@@ -333,16 +333,16 @@ fn synthesize_digits_from_fonts(fonts: &[TtfFont; 2]) -> DigitTemplates {
             let gcy = by0 + gh * 0.5;
             for &sy_f in &[0.96f64, 1.00, 1.04] {
                 let sy_span = gh * sy_f;
-                let sx_span = sy_span * 10.0 / 14.0;
+                let sx_span = sy_span * 10.0 / 16.0;
                 for &dy_f in &[-0.03f64, 0.0, 0.03] {
                     for &dx_f in &[-0.03f64, 0.0, 0.03] {
                         let cx = gcx + dx_f * sx_span;
                         let cy = gcy + dy_f * sy_span;
-                        let mut tv = [0.0f32; 140];
-                        for j in 0..14 {
+                        let mut tv = [0.0f32; 160];
+                        for j in 0..16 {
                             for i in 0..10 {
                                 let sx = cx + (((i as f64) + 0.5) / 10.0 - 0.5) * sx_span;
-                                let sy = cy + (((j as f64) + 0.5) / 14.0 - 0.5) * sy_span;
+                                let sy = cy + (((j as f64) + 0.5) / 16.0 - 0.5) * sy_span;
                                 tv[j * 10 + i] = sample_gray_bilinear(&blur, cw, ch_px, sx, sy);
                             }
                         }
@@ -400,7 +400,8 @@ fn synthesize_prefixes_from_fonts(fonts: &[TtfFont; 2]) -> PrefixTemplates {
     prefixes
 }
 
-/// Synthesizes `DIGITS` (`0..9`, `10x14 = 140`) and `PREFIX_GLYPHS` (`"Go to Cell"`, `40x10 = 400`)
+/// Synthesizes `DIGITS` (`0..9`, `10x16 = 160`, multiple of 16 for SIMD!) and
+/// `PREFIX_GLYPHS` (`"Go to Cell"`, `40x10 = 400`, multiple of 16 for SIMD!)
 /// directly from `UI_Font_Light_EN_AZ.ufont` and `tl_main.ufont` in the `.pak` archives.
 pub fn synthesize_digits_and_prefix(
     vfs: &PakVfs,
@@ -415,8 +416,8 @@ pub fn synthesize_digits_and_prefix(
     Ok((digits, prefixes))
 }
 
-/// Synthesizes `24x24 = 576` zero-mean unit-norm grayscale templates for the 8 route/action
-/// card medallions (`UI_S16Gameplay_Route_01..02` and `UI_S16Gameplay_Action_01..06`).
+/// Synthesizes `24x24 = 576` (`36` `f32x16` SIMD vectors) zero-mean unit-norm grayscale templates
+/// for the 8 route/action card medallions (`UI_S16Gameplay_Route_01..02` & `Action_01..06`).
 pub fn synthesize_card_medallions(
     textures: &BTreeMap<String, DecodedAssetImage>,
 ) -> Vec<(&'static str, &'static str, [f32; 576])> {
@@ -467,13 +468,14 @@ fn format_f32_slice(arr: &[f32]) -> String {
     let mut s = String::from("[\n        ");
     for (i, &v) in arr.iter().enumerate() {
         if i > 0 {
-            if i % 6 == 0 {
+            if i % 5 == 0 {
                 s.push_str(",\n        ");
             } else {
                 s.push_str(", ");
             }
         }
-        s.push_str(&format!("{v:.6}_f32"));
+        let rounded: f32 = format!("{v:.5}").parse().unwrap_or(v);
+        s.push_str(&format!("{rounded:?}_f32"));
     }
     s.push_str(",\n    ]");
     assert!(s.len() > 2);
@@ -520,6 +522,117 @@ fn sim_str_to_tool_id_expr(sim: &str) -> &'static str {
     out
 }
 
+fn sim_str_to_gift_id_expr(sim: &str) -> &'static str {
+    assert!(!sim.is_empty());
+    let out = match sim {
+        "ring" => "GiftId::Ring",
+        "horn" => "GiftId::Horn",
+        "wine" => "GiftId::Wine",
+        "brand" => "GiftId::Brand",
+        _ => unreachable!("unknown gift sim key"),
+    };
+    assert!(out.starts_with("GiftId::"));
+    out
+}
+
+fn extract_umg_board_cell_slots(vfs: &PakVfs) -> [UmgAnchorData; 16] {
+    let mut out = [UmgAnchorData::default(); 16];
+    if let Ok(bp) =
+        vfs.read_umg_blueprint("UE_game/Content/Art/UIV2/S16Gameplay/BluePrint/S16BoardCentralView")
+    {
+        for (i, slot) in bp.anchor_slots.iter().copied().take(16).enumerate() {
+            out[i] = slot;
+        }
+    }
+    assert_eq!(out.len(), 16);
+    assert!(out[0].offset_left.is_finite());
+    out
+}
+
+fn emit_header_and_umg_slots(
+    out: &mut String,
+    db: &S16GameDatabase,
+    board_pts: &[BoardPoint],
+    room_boxes: &[RoomBox; 16],
+    umg_slots: &[UmgAnchorData; 16],
+) {
+    assert_eq!(room_boxes.len(), 16);
+    assert_eq!(board_pts.len(), 1008);
+    out.push_str("// @generated by `cargo run -p tartarus-data`.\n");
+    out.push_str(
+        "// Authoritative S16 UMG layouts & SIMD templates synthesized 100% from .pak assets.\n\n",
+    );
+    out.push_str("#[repr(C, align(64))]\n#[derive(Clone, Copy, Debug)]\n");
+    out.push_str("pub struct SimdVec160(pub [f32; 160]);\n\n");
+    out.push_str("#[repr(C, align(64))]\n#[derive(Clone, Copy, Debug)]\n");
+    out.push_str("pub struct SimdVec256(pub [f32; 256]);\n\n");
+    out.push_str("#[repr(C, align(64))]\n#[derive(Clone, Copy, Debug)]\n");
+    out.push_str("pub struct SimdVec400(pub [f32; 400]);\n\n");
+    out.push_str("#[repr(C, align(64))]\n#[derive(Clone, Copy, Debug)]\n");
+    out.push_str("pub struct SimdVec576(pub [f32; 576]);\n\n");
+
+    out.push_str("#[derive(Clone, Copy, Debug)]\npub struct UmgSlotSpec {\n");
+    out.push_str("    pub offset_left: f32,\n    pub offset_top: f32,\n");
+    out.push_str("    pub offset_right: f32,\n    pub offset_bottom: f32,\n");
+    out.push_str("    pub anchor_min_x: f32,\n    pub anchor_min_y: f32,\n");
+    out.push_str("    pub anchor_max_x: f32,\n    pub anchor_max_y: f32,\n");
+    out.push_str("    pub align_x: f32,\n    pub align_y: f32,\n}\n\n");
+
+    out.push_str("pub static UMG_BOARD_CELL_SLOTS: [UmgSlotSpec; 16] = [\n");
+    for s in umg_slots {
+        out.push_str("    UmgSlotSpec {\n");
+        out.push_str(&format!(
+            "        offset_left: {:.2}_f32, offset_top: {:.2}_f32,\n",
+            s.offset_left, s.offset_top
+        ));
+        out.push_str(&format!(
+            "        offset_right: {:.2}_f32, offset_bottom: {:.2}_f32,\n",
+            s.offset_right, s.offset_bottom
+        ));
+        out.push_str(&format!(
+            "        anchor_min_x: {:.4}_f32, anchor_min_y: {:.4}_f32,\n",
+            s.anchor_min_x, s.anchor_min_y
+        ));
+        out.push_str(&format!(
+            "        anchor_max_x: {:.4}_f32, anchor_max_y: {:.4}_f32,\n",
+            s.anchor_max_x, s.anchor_max_y
+        ));
+        out.push_str(&format!(
+            "        align_x: {:.4}_f32, align_y: {:.4}_f32,\n",
+            s.align_x, s.align_y
+        ));
+        out.push_str("    },\n");
+    }
+    out.push_str("];\n\n");
+    emit_relic_meta_and_board(out, db, board_pts, room_boxes);
+}
+
+fn format_rust_str_100(val: &str) -> String {
+    assert!(val.len() <= 4096);
+    if val.len() <= 54 {
+        let out = format!("{val:?}");
+        assert!(!out.is_empty());
+        return out;
+    }
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    for ch in val.chars() {
+        cur.push(ch);
+        if cur.len() >= 54 {
+            parts.push(format!("{cur:?}"));
+            cur.clear();
+        }
+    }
+    if !cur.is_empty() {
+        parts.push(format!("{cur:?}"));
+    }
+    assert!(!parts.is_empty());
+    format!(
+        "concat!(\n            {}\n        )",
+        parts.join(",\n            ")
+    )
+}
+
 fn emit_relic_meta_and_board(
     out: &mut String,
     db: &S16GameDatabase,
@@ -528,11 +641,6 @@ fn emit_relic_meta_and_board(
 ) {
     assert_eq!(room_boxes.len(), 16);
     assert!(!board_pts.is_empty());
-    out.push_str("// @generated by `cargo run -p tartarus-data`.\n");
-    out.push_str(
-        "// Authoritative S16 Tartarus CV templates synthesized 100% from .pak assets.\n\n",
-    );
-
     out.push_str("#[derive(Clone, Copy, Debug)]\n");
     out.push_str("pub struct S16RelicMeta {\n");
     out.push_str("    pub game_id: u16,\n");
@@ -555,9 +663,18 @@ fn emit_relic_meta_and_board(
             sim_str_to_tool_id_expr(&r.js_sim)
         ));
         out.push_str(&format!("        icon_asset: {:?},\n", r.icon_asset));
-        out.push_str(&format!("        name: {:?},\n", r.name));
-        out.push_str(&format!("        trigger: {:?},\n", r.trigger_text));
-        out.push_str(&format!("        effect: {:?},\n", r.effect_text));
+        out.push_str(&format!(
+            "        name: {},\n",
+            format_rust_str_100(&r.name)
+        ));
+        out.push_str(&format!(
+            "        trigger: {},\n",
+            format_rust_str_100(&r.trigger_text)
+        ));
+        out.push_str(&format!(
+            "        effect: {},\n",
+            format_rust_str_100(&r.effect_text)
+        ));
         out.push_str("    },\n");
     }
     out.push_str("];\n\n");
@@ -616,14 +733,14 @@ fn emit_beast_faces(
             .ok_or_else(|| DataError::MissingAsset(jail_name.to_string()))?;
         let vecs = synthesize_beast_face_templates(shield, norm_tex, jail_tex);
         out.push_str(&format!(
-            "pub static {}: [[f32; 396]; {}] = [\n",
+            "pub static {}: [SimdVec256; {}] = [\n",
             const_name,
             vecs.len()
         ));
         for v in &vecs {
-            out.push_str("    ");
+            out.push_str("    SimdVec256(");
             out.push_str(&format_f32_slice(v));
-            out.push_str(",\n");
+            out.push_str("),\n");
         }
         out.push_str("];\n\n");
     }
@@ -641,18 +758,18 @@ fn emit_digits_prefixes_and_medallions(
     assert_eq!(medallions.len(), 8);
     for (d, vecs) in digits.iter().enumerate() {
         out.push_str(&format!(
-            "pub static DIGIT_{}: [[f32; 140]; {}] = [\n",
+            "pub static DIGIT_{}: [SimdVec160; {}] = [\n",
             d,
             vecs.len()
         ));
         for v in vecs {
-            out.push_str("    ");
+            out.push_str("    SimdVec160(");
             out.push_str(&format_f32_slice(v));
-            out.push_str(",\n");
+            out.push_str("),\n");
         }
         out.push_str("];\n");
     }
-    out.push_str("pub static DIGITS: [&[[f32; 140]]; 10] = [\n");
+    out.push_str("pub static DIGITS: [&[SimdVec160]; 10] = [\n");
     for d in 0..=9 {
         out.push_str(&format!("    &DIGIT_{d},\n"));
     }
@@ -660,21 +777,21 @@ fn emit_digits_prefixes_and_medallions(
 
     out.push_str("pub const PREFIX_DIM: usize = 400;\n");
     out.push_str(&format!(
-        "pub static PREFIX_GLYPHS: [[f32; 400]; {}] = [\n",
+        "pub static PREFIX_GLYPHS: [SimdVec400; {}] = [\n",
         prefixes.len()
     ));
     for v in prefixes {
-        out.push_str("    ");
+        out.push_str("    SimdVec400(");
         out.push_str(&format_f32_slice(v));
-        out.push_str(",\n");
+        out.push_str("),\n");
     }
     out.push_str("];\n\n");
 
-    out.push_str("#[derive(Clone, Copy, Debug)]\n");
+    out.push_str("#[repr(C, align(64))]\n#[derive(Clone, Copy, Debug)]\n");
     out.push_str("pub struct CardMedallionTemplate {\n");
+    out.push_str("    pub grid: SimdVec576,\n");
     out.push_str("    pub id: &'static str,\n");
     out.push_str("    pub asset: &'static str,\n");
-    out.push_str("    pub grid: [f32; 576],\n");
     out.push_str("}\n\n");
     out.push_str(&format!(
         "pub static CARD_MEDALLIONS: [CardMedallionTemplate; {}] = [\n",
@@ -682,9 +799,12 @@ fn emit_digits_prefixes_and_medallions(
     ));
     for (id, asset, grid) in medallions {
         out.push_str("    CardMedallionTemplate {\n");
+        out.push_str(&format!(
+            "        grid: SimdVec576({}),\n",
+            format_f32_slice(grid)
+        ));
         out.push_str(&format!("        id: {:?},\n", id));
         out.push_str(&format!("        asset: {:?},\n", asset));
-        out.push_str(&format!("        grid: {},\n", format_f32_slice(grid)));
         out.push_str("    },\n");
     }
     out.push_str("];\n\n");
@@ -702,6 +822,7 @@ struct ToolFeatureRow {
 struct ToolRowsAccum {
     ref_tools: Vec<ToolFeatureRow>,
     ref_picks: Vec<(String, [f32; 72], [f32; 13])>,
+    ref_gifts: Vec<(String, [f32; 72], [f32; 13])>,
 }
 
 fn synthesize_relic_panel_rows(
@@ -811,7 +932,22 @@ fn synthesize_relic_pick_rows(
     assert!(!accum.ref_picks.is_empty());
 }
 
-fn emit_ref_tools_and_pick_tools(
+fn synthesize_gift_rows(g: &S16GiftEntry, icon: &DecodedAssetImage, accum: &mut ToolRowsAccum) {
+    assert!(icon.width > 0 && icon.height > 0);
+    for &alpha_thr in &[16u8, 48, 84] {
+        let bbox = alpha_bbox_thresh(&icon.rgba8, icon.width, icon.height, alpha_thr);
+        let (grid, hist) = compute_art_feature_region(
+            &icon.rgba8,
+            (icon.width, icon.height),
+            bbox,
+            (24.0, 20.0, 22.0),
+        );
+        accum.ref_gifts.push((g.js_sim.clone(), grid, hist));
+    }
+    assert!(!accum.ref_gifts.is_empty());
+}
+
+fn emit_ref_tools_and_gifts(
     out: &mut String,
     db: &S16GameDatabase,
     textures: &BTreeMap<String, DecodedAssetImage>,
@@ -822,6 +958,7 @@ fn emit_ref_tools_and_pick_tools(
     let mut accum = ToolRowsAccum {
         ref_tools: Vec::new(),
         ref_picks: Vec::new(),
+        ref_gifts: Vec::new(),
     };
 
     for r in &db.relics {
@@ -830,17 +967,23 @@ fn emit_ref_tools_and_pick_tools(
             synthesize_relic_pick_rows(r, icon, big_pics, &mut accum);
         }
     }
+    for g in &db.colored_rewards {
+        if let Some(icon) = textures.get(&g.icon_asset) {
+            synthesize_gift_rows(g, icon, &mut accum);
+        }
+    }
     assert!(!accum.ref_tools.is_empty());
+    emit_tool_and_gift_statics(out, &accum);
+}
 
-    out.push_str("#[derive(Clone, Copy, Debug)]\n");
+fn emit_tool_and_gift_statics(out: &mut String, accum: &ToolRowsAccum) {
+    assert!(!accum.ref_tools.is_empty());
+    assert!(!accum.ref_picks.is_empty());
+    out.push_str("#[repr(C, align(64))]\n#[derive(Clone, Copy, Debug)]\n");
     out.push_str("pub struct RefToolEntry {\n");
-    out.push_str("    pub id: &'static str,\n");
-    out.push_str("    pub sim: ToolId,\n");
-    out.push_str("    pub name: &'static str,\n");
-    out.push_str("    pub is_panel: bool,\n");
-    out.push_str("    pub grid: [f32; 72],\n");
-    out.push_str("    pub hist: [f32; 13],\n");
-    out.push_str("}\n\n");
+    out.push_str("    pub grid: [f32; 72],\n    pub hist: [f32; 13],\n");
+    out.push_str("    pub id: &'static str,\n    pub sim: ToolId,\n");
+    out.push_str("    pub name: &'static str,\n    pub is_panel: bool,\n}\n\n");
 
     out.push_str(&format!(
         "pub static REF_TOOLS: [RefToolEntry; {}] = [\n",
@@ -848,25 +991,26 @@ fn emit_ref_tools_and_pick_tools(
     ));
     for row in &accum.ref_tools {
         out.push_str("    RefToolEntry {\n");
+        out.push_str(&format!("        grid: {},\n", format_f32_slice(&row.grid)));
+        out.push_str(&format!("        hist: {},\n", format_f32_slice(&row.hist)));
         out.push_str(&format!("        id: {:?},\n", row.id));
         out.push_str(&format!(
             "        sim: {},\n",
             sim_str_to_tool_id_expr(&row.sim)
         ));
-        out.push_str(&format!("        name: {:?},\n", row.name));
+        out.push_str(&format!(
+            "        name: {},\n",
+            format_rust_str_100(&row.name)
+        ));
         out.push_str(&format!("        is_panel: {},\n", row.is_panel));
-        out.push_str(&format!("        grid: {},\n", format_f32_slice(&row.grid)));
-        out.push_str(&format!("        hist: {},\n", format_f32_slice(&row.hist)));
         out.push_str("    },\n");
     }
     out.push_str("];\n\n");
 
-    out.push_str("#[derive(Clone, Copy, Debug)]\n");
+    out.push_str("#[repr(C, align(64))]\n#[derive(Clone, Copy, Debug)]\n");
     out.push_str("pub struct RefPickToolEntry {\n");
-    out.push_str("    pub sim: ToolId,\n");
-    out.push_str("    pub grid: [f32; 72],\n");
-    out.push_str("    pub hist: [f32; 13],\n");
-    out.push_str("}\n\n");
+    out.push_str("    pub grid: [f32; 72],\n    pub hist: [f32; 13],\n");
+    out.push_str("    pub sim: ToolId,\n}\n\n");
 
     out.push_str(&format!(
         "pub static REF_PICK_TOOLS: [RefPickToolEntry; {}] = [\n",
@@ -874,17 +1018,35 @@ fn emit_ref_tools_and_pick_tools(
     ));
     for (sim, grid, hist) in &accum.ref_picks {
         out.push_str("    RefPickToolEntry {\n");
-        out.push_str(&format!("        sim: {},\n", sim_str_to_tool_id_expr(sim)));
         out.push_str(&format!("        grid: {},\n", format_f32_slice(grid)));
         out.push_str(&format!("        hist: {},\n", format_f32_slice(hist)));
+        out.push_str(&format!("        sim: {},\n", sim_str_to_tool_id_expr(sim)));
+        out.push_str("    },\n");
+    }
+    out.push_str("];\n\n");
+
+    out.push_str("#[repr(C, align(64))]\n#[derive(Clone, Copy, Debug)]\n");
+    out.push_str("pub struct RefGiftEntry {\n");
+    out.push_str("    pub grid: [f32; 72],\n    pub hist: [f32; 13],\n");
+    out.push_str("    pub sim: GiftId,\n}\n\n");
+
+    out.push_str(&format!(
+        "pub static REF_GIFTS: [RefGiftEntry; {}] = [\n",
+        accum.ref_gifts.len()
+    ));
+    for (sim, grid, hist) in &accum.ref_gifts {
+        out.push_str("    RefGiftEntry {\n");
+        out.push_str(&format!("        grid: {},\n", format_f32_slice(grid)));
+        out.push_str(&format!("        hist: {},\n", format_f32_slice(hist)));
+        out.push_str(&format!("        sim: {},\n", sim_str_to_gift_id_expr(sim)));
         out.push_str("    },\n");
     }
     out.push_str("];\n");
 }
 
-/// Generates the self-contained Rust source file `crates/tartarus-scan/src/cv_data.rs`
-/// 100% from the `.pak` archives (`PakVfs`), with zero `.js` dependencies.
-pub fn generate_cv_data_rs(
+/// Generates the self-contained Rust source file `crates/tartarus-scan/src/ui_data.rs`
+/// 100% from the `.pak` archives (`PakVfs`).
+pub fn generate_ui_data_rs(
     out_rs_path: &Path,
     vfs: &PakVfs,
     db: &S16GameDatabase,
@@ -894,16 +1056,17 @@ pub fn generate_cv_data_rs(
     let (board_pts, room_boxes) = synthesize_board_points_and_rooms(textures)?;
     let (digits, prefixes) = synthesize_digits_and_prefix(vfs)?;
     let medallions = synthesize_card_medallions(textures);
+    let umg_slots = extract_umg_board_cell_slots(vfs);
 
     let shield = textures
         .get("UI_T_V2_S16BoardCell_046")
         .ok_or_else(|| DataError::MissingAsset("UI_T_V2_S16BoardCell_046".to_string()))?;
 
     let mut out = String::with_capacity(640 * 1024);
-    emit_relic_meta_and_board(&mut out, db, &board_pts, &room_boxes);
+    emit_header_and_umg_slots(&mut out, db, &board_pts, &room_boxes, &umg_slots);
     emit_beast_faces(&mut out, shield, textures)?;
     emit_digits_prefixes_and_medallions(&mut out, &digits, &prefixes, &medallions);
-    emit_ref_tools_and_pick_tools(&mut out, db, textures);
+    emit_ref_tools_and_gifts(&mut out, db, textures);
     assert!(!out.is_empty());
 
     fs::write(out_rs_path, out)?;

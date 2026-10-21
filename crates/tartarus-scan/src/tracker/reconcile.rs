@@ -2,7 +2,7 @@
 //! checking, and ghost cell search.
 
 use super::{RunTracker, ScanReading};
-use crate::cv::{ScanResult, ScannedCell, ScannedCellKind, ScannedTool};
+use crate::ui_reader::{BoardRead, CellKindRead, CellRead, ToolSlotRead};
 use tartarus_core::{
     BEASTS, Beast, BoardModel, BoardRunStage, BoardStep, CHALLENGE_DAYS, CellEvent, CellKind,
     CellModel, FixedVec, GameMode, OFFICE, ObjectiveId, PendingKind, SUPREME, SimState, TOOL_SURE,
@@ -35,14 +35,14 @@ impl RunTracker {
 
     fn resolve_offered_tool(
         &self,
-        read: &[ScannedTool],
+        read: &[ToolSlotRead],
         offer: &[ToolId],
-        out: &mut FixedVec<ScannedTool, 6>,
+        out: &mut FixedVec<ToolSlotRead, 6>,
         notes: &mut Vec<String>,
     ) {
         assert!(!offer.is_empty());
         assert!(out.len() <= 6);
-        let mut seen: FixedVec<ScannedTool, 6> = read
+        let mut seen: FixedVec<ToolSlotRead, 6> = read
             .iter()
             .copied()
             .filter(|t| offer.contains(&t.sim))
@@ -53,7 +53,7 @@ impl RunTracker {
         let advised = self.last_advised_tool.filter(|id| offer.contains(id));
         let take = seen.first().map(|t| t.sim).or(advised);
         if let Some(t_id) = take {
-            let _ = out.try_push(ScannedTool {
+            let _ = out.try_push(ToolSlotRead {
                 id: t_id.as_str(),
                 sim: t_id,
                 name: t_id.name(),
@@ -79,17 +79,17 @@ impl RunTracker {
 
     fn reconcile_same_run_tools(
         &self,
-        read: &[ScannedTool],
+        read: &[ToolSlotRead],
         known_and_offer: (&[ToolId], &[ToolId]),
         extra: usize,
         m: &mut BoardModel,
-        out: &mut FixedVec<ScannedTool, 6>,
+        out: &mut FixedVec<ToolSlotRead, 6>,
         notes: &mut Vec<String>,
     ) {
         let (known, offer) = known_and_offer;
         assert!(out.len() <= 6);
         assert!(read.len() <= 6);
-        let has = |list: &[ScannedTool], id: ToolId| list.iter().any(|t| t.sim == id);
+        let has = |list: &[ToolSlotRead], id: ToolId| list.iter().any(|t| t.sim == id);
         let slots = read.len();
 
         for i in 0..out.len().min(read.len()) {
@@ -130,12 +130,12 @@ impl RunTracker {
 
     fn run_tools(
         &self,
-        read: &[ScannedTool],
+        read: &[ToolSlotRead],
         base: &BoardModel,
         m: &mut BoardModel,
         notes: &mut Vec<String>,
         scale: Option<f64>,
-    ) -> FixedVec<ScannedTool, 6> {
+    ) -> FixedVec<ToolSlotRead, 6> {
         assert!(read.len() <= 6);
         assert!(m.day >= 1);
         let same_run = m.day >= base.day;
@@ -149,10 +149,10 @@ impl RunTracker {
             &[]
         };
 
-        let mut out: FixedVec<ScannedTool, 6> = known
+        let mut out: FixedVec<ToolSlotRead, 6> = known
             .iter()
             .take(6)
-            .map(|&sim| ScannedTool {
+            .map(|&sim| ToolSlotRead {
                 id: sim.as_str(),
                 sim,
                 name: sim.name(),
@@ -193,7 +193,7 @@ impl RunTracker {
     }
 
     fn apply_darkened_chain_cells(
-        cells: &[ScannedCell; 16],
+        cells: &[CellRead; 16],
         base: &BoardModel,
         warden: u8,
         m: &mut BoardModel,
@@ -207,10 +207,10 @@ impl RunTracker {
                 continue;
             }
             match c.kind {
-                ScannedCellKind::Locked => {
+                CellKindRead::Locked => {
                     m.cells[n] = CellModel::sealed();
                 }
-                ScannedCellKind::Inmate => {
+                CellKindRead::Inmate => {
                     let tier = c.tier.min(4);
                     let mut cm = CellModel::sealed();
                     cm.kind = CellKind::Inmate;
@@ -225,7 +225,7 @@ impl RunTracker {
                     m.cells[n] = cm;
                 }
             }
-            if c.kind != ScannedCellKind::Locked {
+            if c.kind != CellKindRead::Locked {
                 *checks |= 1u16 << n;
             }
         }
@@ -237,7 +237,7 @@ impl RunTracker {
     }
 
     fn apply_chain_targets(
-        cells: &[ScannedCell; 16],
+        cells: &[CellRead; 16],
         targets: &[u8],
         tier: u8,
         m: &mut BoardModel,
@@ -265,7 +265,7 @@ impl RunTracker {
     }
 
     fn update_chain_eater(
-        cells: &[ScannedCell; 16],
+        cells: &[CellRead; 16],
         base: &BoardModel,
         warden: u8,
         m: &mut BoardModel,
@@ -278,7 +278,7 @@ impl RunTracker {
         let w_idx = warden as usize;
         let was = base.cells[w_idx];
         let eater = &cells[w_idx];
-        if eater.kind == ScannedCellKind::Inmate {
+        if eater.kind == CellKindRead::Inmate {
             let mut cm = CellModel::sealed();
             cm.kind = CellKind::Inmate;
             cm.beast = eater.beast;
@@ -299,7 +299,7 @@ impl RunTracker {
         }
     }
 
-    fn chain_to_model(&self, r: &ScanResult, base: &BoardModel) -> ScanReading {
+    fn chain_to_model(&self, r: &BoardRead, base: &BoardModel) -> ScanReading {
         assert!(r.chain.is_some());
         assert!(r.cells.is_some());
         let mut m = *base;
@@ -324,7 +324,7 @@ impl RunTracker {
             for (n, c) in cells.iter().enumerate() {
                 if n != (OFFICE as usize)
                     && n != w_idx
-                    && c.kind == ScannedCellKind::Locked
+                    && c.kind == CellKindRead::Locked
                     && m.cells[n].kind == CellKind::Inmate
                 {
                     m.cells[n] = CellModel::sealed();
@@ -342,11 +342,11 @@ impl RunTracker {
         m.chain_armed = false;
         m.stage = BoardRunStage::InProgress;
 
-        let tools: FixedVec<ScannedTool, 6> = m
+        let tools: FixedVec<ToolSlotRead, 6> = m
             .tools
             .iter()
             .take(6)
-            .map(|&id| ScannedTool {
+            .map(|&id| ToolSlotRead {
                 id: id.as_str(),
                 sim: id,
                 name: id.name(),
@@ -365,7 +365,7 @@ impl RunTracker {
         }
     }
 
-    fn reconcile_days(&self, r: &ScanResult, m: &mut BoardModel, notes: &mut Vec<String>) {
+    fn reconcile_days(&self, r: &BoardRead, m: &mut BoardModel, notes: &mut Vec<String>) {
         assert!(m.days_max >= 1);
         if let Some((cur, max)) = self.log_days.filter(|&(_, max)| max > 0) {
             let gt_left = max.saturating_sub(cur.max(1));
@@ -392,8 +392,8 @@ impl RunTracker {
         assert!(m.day >= 1);
     }
 
-    fn reconcile_locked_cell(c: &ScannedCell, was: CellModel, day: u8) -> CellModel {
-        assert_eq!(c.kind, ScannedCellKind::Locked);
+    fn reconcile_locked_cell(c: &CellRead, was: CellModel, day: u8) -> CellModel {
+        assert_eq!(c.kind, CellKindRead::Locked);
         assert!(day >= 1);
         if c.nest {
             let mut cm = CellModel::sealed();
@@ -418,7 +418,7 @@ impl RunTracker {
     }
 
     fn reconcile_scanned_cells(
-        cells: &[ScannedCell; 16],
+        cells: &[CellRead; 16],
         base: &BoardModel,
         m: &mut BoardModel,
         checks: &mut u16,
@@ -430,13 +430,13 @@ impl RunTracker {
                 continue;
             }
             match c.kind {
-                ScannedCellKind::Locked => {
+                CellKindRead::Locked => {
                     m.cells[n] = Self::reconcile_locked_cell(c, base.cells[n], m.day);
                     if c.nest || c.conf < 0.60 {
                         *checks |= 1u16 << n;
                     }
                 }
-                ScannedCellKind::Inmate => {
+                CellKindRead::Inmate => {
                     let tier = c.tier.min(4);
                     let mut cm = CellModel::sealed();
                     cm.kind = CellKind::Inmate;
@@ -464,7 +464,7 @@ impl RunTracker {
     }
 
     fn reconcile_doors_and_patrol(
-        r: &ScanResult,
+        r: &BoardRead,
         base: &BoardModel,
         m: &mut BoardModel,
         notes: &mut Vec<String>,
@@ -534,7 +534,7 @@ impl RunTracker {
     }
 
     fn apply_decision_read(
-        r: &ScanResult,
+        r: &BoardRead,
         base: &BoardModel,
         same_visit: bool,
         m: &mut BoardModel,
@@ -582,7 +582,7 @@ impl RunTracker {
     }
 
     fn solve_ghost_inmates(
-        cells: &[ScannedCell; 16],
+        cells: &[CellRead; 16],
         ghosts: &[usize],
         m: &mut BoardModel,
         final_st: &mut SimState,
@@ -611,7 +611,7 @@ impl RunTracker {
                     .iter()
                     .enumerate()
                     .filter(|&(k, d)| {
-                        d.kind == ScannedCellKind::Inmate && has_jaws_target(final_st, k) == d.jaws
+                        d.kind == CellKindRead::Inmate && has_jaws_target(final_st, k) == d.jaws
                     })
                     .count();
                 if best_combo.is_none_or(|(_, b_fit, b_orig)| {
@@ -640,8 +640,7 @@ impl RunTracker {
                         .iter()
                         .enumerate()
                         .filter(|&(k, d)| {
-                            d.kind == ScannedCellKind::Inmate
-                                && has_jaws_target(final_st, k) == d.jaws
+                            d.kind == CellKindRead::Inmate && has_jaws_target(final_st, k) == d.jaws
                         })
                         .count();
                     if best.is_none_or(|b| fit > b.1) {
@@ -659,7 +658,7 @@ impl RunTracker {
     }
 
     fn reconcile_jaws_and_ghosts(
-        cells: &[ScannedCell; 16],
+        cells: &[CellRead; 16],
         m: &mut BoardModel,
         checks: &mut u16,
         notes: &mut Vec<String>,
@@ -682,7 +681,7 @@ impl RunTracker {
 
         let mut odd = 0usize;
         for (n, c) in cells.iter().enumerate() {
-            if c.kind != ScannedCellKind::Inmate || m.cells[n].kind != CellKind::Inmate {
+            if c.kind != CellKindRead::Inmate || m.cells[n].kind != CellKind::Inmate {
                 continue;
             }
             if c.tier < SUPREME && has_jaws_target(&final_st, n) != c.jaws {
@@ -706,19 +705,19 @@ impl RunTracker {
 
     fn reconcile_tools_and_vault(
         &self,
-        r: &ScanResult,
+        r: &BoardRead,
         base: &BoardModel,
         m: &mut BoardModel,
         notes: &mut Vec<String>,
-    ) -> (FixedVec<ScannedTool, 6>, usize) {
+    ) -> (FixedVec<ToolSlotRead, 6>, usize) {
         assert!(m.day >= 1);
         assert_eq!(m.cells.len(), 16);
-        let mut tools = self.run_tools(&r.tools, base, m, notes, r.loc.map(|l| l.s));
+        let mut tools = self.run_tools(&r.tools, base, m, notes, r.viewport.map(|l| l.s));
         if r.decision.is_some_and(|d| d.hunt)
             && !tools.iter().any(|t| t.sim == ToolId::Trap)
             && tools.len() < 6
         {
-            tools.push(ScannedTool {
+            tools.push(ToolSlotRead {
                 id: ToolId::Trap.as_str(),
                 sim: ToolId::Trap,
                 name: ToolId::Trap.name(),
@@ -752,7 +751,7 @@ impl RunTracker {
         (tools, chromatic)
     }
 
-    pub fn scan_to_model(&self, r: &ScanResult) -> ScanReading {
+    pub fn scan_to_model(&self, r: &BoardRead) -> ScanReading {
         assert!(r.cells.is_some());
         let base = &self.model;
         if r.chain.is_some() {

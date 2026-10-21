@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use gpui::DisplayId;
 use tartarus_core::{AdviceSnapshot, BoardModel, RunPhase};
-use tartarus_scan::ScanProfile;
+use tartarus_scan::UiReadProfile;
 
 use crate::capture::GameWindowPlacement;
 use crate::tray::ControlHub;
@@ -188,7 +188,7 @@ pub struct OverlaySnapshot {
     pub log_connected: bool,
     pub cap_ms: f64,
     pub scan_ms: f64,
-    pub scan_profile: ScanProfile,
+    pub scan_profile: UiReadProfile,
     pub solve_ms: f64,
     pub rss_mb: f64,
     pub status_text: String,
@@ -205,7 +205,7 @@ pub fn initial_snapshot() -> OverlaySnapshot {
         log_connected: false,
         cap_ms: 0.0,
         scan_ms: 0.0,
-        scan_profile: ScanProfile::default(),
+        scan_profile: UiReadProfile::default(),
         solve_ms: 0.0,
         rss_mb: read_process_rss_mb(),
         status_text: "Waiting for the next move".into(),

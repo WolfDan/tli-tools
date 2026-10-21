@@ -21,7 +21,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 102,
@@ -43,7 +43,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 103,
@@ -65,7 +65,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 104,
@@ -87,7 +87,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 105,
@@ -109,7 +109,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 106,
@@ -131,7 +131,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 107,
@@ -153,7 +153,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 111,
@@ -175,7 +175,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 112,
@@ -197,7 +197,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 113,
@@ -219,7 +219,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 114,
@@ -241,7 +241,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 115,
@@ -263,7 +263,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 116,
@@ -285,7 +285,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 117,
@@ -307,7 +307,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 121,
@@ -329,7 +329,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 122,
@@ -351,7 +351,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 123,
@@ -373,7 +373,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 124,
@@ -395,7 +395,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 125,
@@ -417,7 +417,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 126,
@@ -439,7 +439,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 127,
@@ -461,7 +461,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 131,
@@ -483,7 +483,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 132,
@@ -505,7 +505,7 @@
       "unlock_type": 402,
       "unlock_param": 1,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 141,
@@ -527,7 +527,7 @@
       "unlock_type": 402,
       "unlock_param": 5,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 142,
@@ -549,7 +549,7 @@
       "unlock_type": 402,
       "unlock_param": 5,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 143,
@@ -571,7 +571,7 @@
       "unlock_type": 402,
       "unlock_param": 5,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 144,
@@ -593,7 +593,7 @@
       "unlock_type": 402,
       "unlock_param": 5,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 145,
@@ -615,7 +615,7 @@
       "unlock_type": 402,
       "unlock_param": 5,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 146,
@@ -637,7 +637,7 @@
       "unlock_type": 402,
       "unlock_param": 5,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 147,
@@ -659,7 +659,7 @@
       "unlock_type": 402,
       "unlock_param": 5,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 148,
@@ -681,7 +681,7 @@
       "unlock_type": 402,
       "unlock_param": 5,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     }
   ],
   "start_themes": [
@@ -705,7 +705,7 @@
       "unlock_type": 402,
       "unlock_param": 4,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 302,
@@ -727,7 +727,7 @@
       "unlock_type": 402,
       "unlock_param": 4,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 303,
@@ -749,7 +749,7 @@
       "unlock_type": 402,
       "unlock_param": 4,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     },
     {
       "id": 304,
@@ -771,7 +771,7 @@
       "unlock_type": 402,
       "unlock_param": 4,
       "one_turn_limit": 0,
-      "total_limit": 0
+      "limit_total": 0
     }
   ],
   "colored_rewards": [

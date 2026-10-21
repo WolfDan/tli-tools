@@ -100,10 +100,10 @@ fn test_synthesize_icon_feature_and_art_bbox() {
 }
 
 #[test]
-fn test_cv_data_uses_tool_id_enum() {
-    let cv_data_path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../tartarus-scan/src/cv_data.rs");
-    let content = fs::read_to_string(&cv_data_path).expect("read cv_data.rs");
+fn test_ui_data_uses_tool_id_enum() {
+    let ui_data_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../tartarus-scan/src/ui_data.rs");
+    let content = fs::read_to_string(&ui_data_path).expect("read ui_data.rs");
     assert!(!content.contains("pub sim: &'static str,"));
     assert!(content.contains("pub sim: ToolId,"));
 }

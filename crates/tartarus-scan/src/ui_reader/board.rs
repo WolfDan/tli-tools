@@ -1,21 +1,27 @@
-//! Cell state classification, face template matching, frame rarity,
-//! warden arrow, and event exclamation detection.
+//! Board cell classification, `std::simd::f32x16` beast portrait correlation (`dot_vec256_simd`),
+//! frame rarity, warden arrow, and event exclamation detection.
 
 use tartarus_core::Beast;
 
-use super::arena::{
-    Blob, CellScratchSlot, ScanScratchSlot, blobs_from_mask_hits, blobs_rgb_strided_with_slot,
-    blobs_with_slot,
-};
 use super::data::{
     ARROW, FACE_GX, FACE_GY, FACE_X0, FACE_X1, FACE_Y0, FACE_Y1, FACES_LION, FACES_MAMMOTH,
-    FACES_RAT, FACES_WOLF, RING,
+    FACES_RAT, FACES_WOLF, RING, SimdVec256,
 };
-use super::image::{
-    ImageView, color_share, color_share_rgb, is_gold, is_gold_rgb, is_jaws_rgb, is_nest_rgb,
-    is_orange_rgb, sample,
+use super::glyphs::{
+    Blob, CellScratchSlot, UiScratchSlot, blobs_from_mask_hits, blobs_rgb_strided_with_slot,
+    blobs_with_slot,
 };
-use super::math::{BoardLoc, dot_f32, normalize_zero_mean_in_place};
+use super::simd::{
+    FrameView, color_share_hsv, color_share_rgb, dot_vec256_simd, is_gold, is_gold_rgb,
+    is_jaws_rgb, is_nest_rgb, is_orange_rgb, normalize_zero_mean_in_place_simd, sample_bilinear,
+};
+use super::viewport::UmgViewport;
+
+const _: () = {
+    assert!(FACE_GX * FACE_GY == 256);
+    assert!(RING.len() == 16);
+    assert!(ARROW.len() == 16);
+};
 
 #[inline]
 fn is_padlock_rgb(r: u8, g: u8, b: u8) -> bool {
@@ -32,13 +38,13 @@ fn is_padlock_rgb(r: u8, g: u8, b: u8) -> bool {
         && (r - b <= 64 || (r - b <= 96 && g >= 95 && b >= 75))
 }
 
-fn extract_padlock_blobs(img: &ImageView<'_>, x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Blob> {
-    assert!(img.width > 0 && img.height > 0);
+fn extract_padlock_blobs(frame: &FrameView<'_>, x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Blob> {
+    assert!(frame.width() > 0 && frame.height() > 0);
     assert!(x1 >= x0 && y1 >= y0);
     let bx0 = (x0.floor() as isize).max(0) as usize;
     let by0 = (y0.floor() as isize).max(0) as usize;
-    let bx1 = (x1.ceil() as isize).min(img.width as isize - 1);
-    let by1 = (y1.ceil() as isize).min(img.height as isize - 1);
+    let bx1 = (x1.ceil() as isize).min(frame.width() as isize - 1);
+    let by1 = (y1.ceil() as isize).min(frame.height() as isize - 1);
     if bx1 < bx0 as isize || by1 < by0 as isize {
         return Vec::new();
     }
@@ -48,7 +54,7 @@ fn extract_padlock_blobs(img: &ImageView<'_>, x0: f64, y0: f64, x1: f64, y1: f64
     let h = by1 - by0 + 1;
     let n_px = w * h;
     let test = |px: usize, py: usize| -> bool {
-        let (r, g, b) = img.rgb_at(px as isize, py as isize);
+        let (r, g, b) = frame.rgb_at(px as isize, py as isize);
         is_padlock_rgb(r, g, b)
     };
     if n_px <= 4096 {
@@ -81,15 +87,21 @@ fn extract_padlock_blobs(img: &ImageView<'_>, x0: f64, y0: f64, x1: f64, y1: f64
             )
         }
     } else {
-        let mut slot = ScanScratchSlot::default();
-        blobs_with_slot(img, x0, y0, x1, y1, &mut slot, test)
+        let mut slot = UiScratchSlot::default();
+        blobs_with_slot(frame, x0, y0, x1, y1, &mut slot, test)
     }
 }
 
-pub fn padlock_at(img: &ImageView<'_>, x: f64, y: f64, k: f64) -> f32 {
-    assert!(img.width > 0 && img.height > 0);
+pub fn padlock_at(frame: &FrameView<'_>, x: f64, y: f64, k: f64) -> f32 {
+    assert!(frame.width() > 0 && frame.height() > 0);
     assert!(k > 0.0 && k.is_finite());
-    let found = extract_padlock_blobs(img, x - 13.0 * k, y - 11.0 * k, x + 13.0 * k, y + 11.0 * k);
+    let found = extract_padlock_blobs(
+        frame,
+        x - 13.0 * k,
+        y - 11.0 * k,
+        x + 13.0 * k,
+        y + 11.0 * k,
+    );
     let mut best_fit: Option<f64> = None;
     for b in found {
         let area = (b.n as f64) / (k * k);
@@ -111,10 +123,10 @@ pub fn padlock_at(img: &ImageView<'_>, x: f64, y: f64, k: f64) -> f32 {
     best_fit.map_or(0.0, |fit| (0.55 + fit / 2.0).clamp(0.05, 1.0) as f32)
 }
 
-pub fn face_vector(gray: &[f32], w: usize, h: usize, x: f64, y: f64, k: f64) -> ([f32; 396], f32) {
+pub fn face_vector(gray: &[f32], w: usize, h: usize, x: f64, y: f64, k: f64) -> (SimdVec256, f32) {
     assert!(w >= 2 && h >= 2);
     assert!(k > 0.0 && k.is_finite());
-    let mut v = [0.0_f32; 396];
+    let mut v = SimdVec256([0.0_f32; 256]);
     let mut mean = 0.0_f32;
     for j in 0..FACE_GY {
         for i in 0..FACE_GX {
@@ -122,13 +134,13 @@ pub fn face_vector(gray: &[f32], w: usize, h: usize, x: f64, y: f64, k: f64) -> 
                 x + k * (FACE_X0 + ((FACE_X1 - FACE_X0) * ((i as f64) + 0.5)) / (FACE_GX as f64));
             let py =
                 y + k * (FACE_Y0 + ((FACE_Y1 - FACE_Y0) * ((j as f64) + 0.5)) / (FACE_GY as f64));
-            let val = sample(gray, w, h, px, py);
-            v[j * FACE_GX + i] = val;
+            let val = sample_bilinear(gray, w, h, px, py);
+            v.0[j * FACE_GX + i] = val;
             mean += val;
         }
     }
-    mean /= 396.0;
-    normalize_zero_mean_in_place(&mut v, mean);
+    mean /= 256.0;
+    normalize_zero_mean_in_place_simd(&mut v.0, mean);
     (v, mean)
 }
 
@@ -143,7 +155,7 @@ pub fn face_match(gray: &[f32], w: usize, h: usize, x: f64, y: f64, k: f64) -> F
     assert!(w >= 2 && h >= 2);
     assert!(k > 0.0 && k.is_finite());
     const CENTER_INDICES: [usize; 6] = [4, 13, 22, 31, 40, 49];
-    let face_sets: [(usize, &[[f32; 396]]); 4] = [
+    let face_sets: [(usize, &[SimdVec256]); 4] = [
         (0, &FACES_MAMMOTH[..]),
         (1, &FACES_LION[..]),
         (2, &FACES_WOLF[..]),
@@ -153,7 +165,7 @@ pub fn face_match(gray: &[f32], w: usize, h: usize, x: f64, y: f64, k: f64) -> F
     let (fv0, brightness) = face_vector(gray, w, h, x, y, k);
     for (idx, refs) in face_sets {
         for r in refs {
-            scores[idx] = scores[idx].max(dot_f32(r, &fv0));
+            scores[idx] = scores[idx].max(dot_vec256_simd(&r.0, &fv0.0));
         }
     }
     let score_max0 = scores[0].max(scores[1]).max(scores[2]).max(scores[3]);
@@ -164,7 +176,7 @@ pub fn face_match(gray: &[f32], w: usize, h: usize, x: f64, y: f64, k: f64) -> F
                     let (fv, _) = face_vector(gray, w, h, x + dx * k, y + dy * k, k);
                     for (idx, refs) in face_sets {
                         for &ci in &CENTER_INDICES {
-                            scores[idx] = scores[idx].max(dot_f32(&refs[ci], &fv));
+                            scores[idx] = scores[idx].max(dot_vec256_simd(&refs[ci].0, &fv.0));
                         }
                     }
                 }
@@ -219,8 +231,8 @@ fn accum_frame_hue(bins: &mut [f32; 5], bright: &mut usize, hh: f32, ss: f32, vv
     }
 }
 
-pub fn frame_rarity(img: &ImageView<'_>, x: f64, y: f64, k: f64) -> FrameRarity {
-    assert!(img.width > 0 && img.height > 0);
+pub fn frame_rarity(frame: &FrameView<'_>, x: f64, y: f64, k: f64) -> FrameRarity {
+    assert!(frame.width() > 0 && frame.height() > 0);
     assert!(k > 0.0 && k.is_finite());
     let mut bins = [0.0_f32; 5];
     let mut samples = 0usize;
@@ -237,7 +249,7 @@ pub fn frame_rarity(img: &ImageView<'_>, x: f64, y: f64, k: f64) -> FrameRarity 
             while px <= x_end + 1e-5 {
                 iter_x += 1;
                 assert!(iter_x <= 256);
-                let (hh, ss, vv) = img.hsv_at(px, py);
+                let (hh, ss, vv) = frame.hsv_at(px, py);
                 samples += 1;
                 accum_frame_hue(&mut bins, &mut bright, hh, ss, vv);
                 px += step_px;
@@ -255,7 +267,7 @@ pub fn frame_rarity(img: &ImageView<'_>, x: f64, y: f64, k: f64) -> FrameRarity 
         while px <= x + 9.0 * k + 1e-5 {
             iter_x2 += 1;
             assert!(iter_x2 <= 256);
-            let (hh, ss, vv) = img.hsv_at(px, py2);
+            let (hh, ss, vv) = frame.hsv_at(px, py2);
             samples += 1;
             accum_frame_hue(&mut bins, &mut bright, hh, ss, vv);
             px += step_px;
@@ -289,7 +301,7 @@ pub fn frame_rarity(img: &ImageView<'_>, x: f64, y: f64, k: f64) -> FrameRarity 
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ScannedCellKind {
+pub enum CellKindRead {
     Office,
     Locked,
     Inmate,
@@ -298,9 +310,9 @@ pub enum ScannedCellKind {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ScannedCell {
+pub struct CellRead {
     pub n: u8,
-    pub kind: ScannedCellKind,
+    pub kind: CellKindRead,
     pub beast: Beast,
     pub tier: u8,
     pub conf: f32,
@@ -313,11 +325,11 @@ pub struct ScannedCell {
     pub event: bool,
 }
 
-impl Default for ScannedCell {
+impl Default for CellRead {
     fn default() -> Self {
         let cell = Self {
             n: 0,
-            kind: ScannedCellKind::Empty,
+            kind: CellKindRead::Empty,
             beast: Beast::Mammoth,
             tier: 0,
             conf: 0.0,
@@ -335,24 +347,24 @@ impl Default for ScannedCell {
     }
 }
 
-pub fn read_cell(img: &ImageView<'_>, loc: &BoardLoc, n: u8) -> ScannedCell {
-    assert!(img.width > 0 && img.height > 0);
+pub fn read_cell(frame: &FrameView<'_>, viewport: &UmgViewport, n: u8) -> CellRead {
+    assert!(frame.width() > 0 && frame.height() > 0);
     assert!(n < 16);
     let mut slot = CellScratchSlot::with_capacity();
-    read_cell_with_slot(img, loc, n, &mut slot)
+    read_cell_with_slot(frame, viewport, n, &mut slot)
 }
 
 fn match_cell_face_patch(
-    img: &ImageView<'_>,
+    frame: &FrameView<'_>,
     x: f64,
     y: f64,
     k: f64,
     slot: &mut CellScratchSlot,
 ) -> FaceMatch {
-    assert!(img.width > 0 && img.height > 0);
+    assert!(frame.width() > 0 && frame.height() > 0);
     assert!(k > 0.0 && k.is_finite());
-    let wi = img.width as isize;
-    let hi = img.height as isize;
+    let wi = frame.width() as isize;
+    let hi = frame.height() as isize;
     let bx0 = (((x + k * (-3.0 + FACE_X0)).floor() as isize) - 1).clamp(0, wi - 1) as usize;
     let bx1 = (((x + k * (3.0 + FACE_X1)).ceil() as isize) + 2).clamp(0, wi - 1) as usize;
     let by0 = (((y + k * (-3.0 + FACE_Y0)).floor() as isize) - 1).clamp(0, hi - 1) as usize;
@@ -369,26 +381,26 @@ fn match_cell_face_patch(
     }
     let row_buf = &mut slot.row_buf[..row_buf_len];
     let patch = &mut slot.patch[..patch_len];
-    let w = img.width;
+    let w = frame.width();
     for ry in 0..(ph + 2) {
         let cy = ((by0 as isize) + (ry as isize) - 1).clamp(0, hi - 1) as usize;
-        let row_base = cy * w * 4;
+        let row_base = frame.row_offset(cy);
         let dst = &mut row_buf[ry * pw..(ry + 1) * pw];
         let x_m1 = ((bx0 as isize) - 1).max(0) as usize;
         let o_m1 = row_base + x_m1 * 4;
-        let mut l0 = 0.299 * (img.data[o_m1] as f32)
-            + 0.587 * (img.data[o_m1 + 1] as f32)
-            + 0.114 * (img.data[o_m1 + 2] as f32);
+        let mut l0 = 0.299 * (frame.pixels_rgba8[o_m1] as f32)
+            + 0.587 * (frame.pixels_rgba8[o_m1 + 1] as f32)
+            + 0.114 * (frame.pixels_rgba8[o_m1 + 2] as f32);
         let o_0 = row_base + bx0 * 4;
-        let mut l1 = 0.299 * (img.data[o_0] as f32)
-            + 0.587 * (img.data[o_0 + 1] as f32)
-            + 0.114 * (img.data[o_0 + 2] as f32);
+        let mut l1 = 0.299 * (frame.pixels_rgba8[o_0] as f32)
+            + 0.587 * (frame.pixels_rgba8[o_0 + 1] as f32)
+            + 0.114 * (frame.pixels_rgba8[o_0 + 2] as f32);
         for (px, dst_slot) in dst.iter_mut().enumerate() {
             let cx2 = (bx0 + px + 1).min(w - 1);
             let o2 = row_base + cx2 * 4;
-            let l2 = 0.299 * (img.data[o2] as f32)
-                + 0.587 * (img.data[o2 + 1] as f32)
-                + 0.114 * (img.data[o2 + 2] as f32);
+            let l2 = 0.299 * (frame.pixels_rgba8[o2] as f32)
+                + 0.587 * (frame.pixels_rgba8[o2 + 1] as f32)
+                + 0.114 * (frame.pixels_rgba8[o2 + 2] as f32);
             *dst_slot = l0 + l1 + l2;
             l0 = l1;
             l1 = l2;
@@ -408,11 +420,11 @@ fn match_cell_face_patch(
 }
 
 #[inline]
-fn detect_cell_jaws(img: &ImageView<'_>, x: f64, y: f64, k: f64) -> bool {
-    assert!(img.width > 0 && img.height > 0);
+fn detect_cell_jaws(frame: &FrameView<'_>, x: f64, y: f64, k: f64) -> bool {
+    assert!(frame.width() > 0 && frame.height() > 0);
     assert!(k > 0.0 && k.is_finite());
     color_share_rgb(
-        img,
+        frame,
         x - 12.0 * k,
         y - 70.0 * k,
         x + 12.0 * k,
@@ -421,7 +433,7 @@ fn detect_cell_jaws(img: &ImageView<'_>, x: f64, y: f64, k: f64) -> bool {
         is_jaws_rgb,
     ) > 0.14
         && color_share_rgb(
-            img,
+            frame,
             x - 10.0 * k,
             y - 55.0 * k,
             x + 10.0 * k,
@@ -431,16 +443,16 @@ fn detect_cell_jaws(img: &ImageView<'_>, x: f64, y: f64, k: f64) -> bool {
         ) > 0.18
 }
 
-impl ScannedCell {
+impl CellRead {
     #[inline]
-    fn office(loc: &BoardLoc) -> Self {
-        assert!(loc.s > 0.0);
-        let (ox, oy) = loc.at(0.0, 0.0);
-        let k = loc.scale_at(0.0, 0.0);
+    fn office(viewport: &UmgViewport) -> Self {
+        assert!(viewport.s > 0.0);
+        let (ox, oy) = viewport.at(0.0, 0.0);
+        let k = viewport.scale_at(0.0, 0.0);
         assert!(k > 0.0);
         Self {
             n: 0,
-            kind: ScannedCellKind::Office,
+            kind: CellKindRead::Office,
             beast: Beast::Mammoth,
             tier: 0,
             conf: 1.0,
@@ -460,7 +472,7 @@ impl ScannedCell {
         assert!(conf.is_finite());
         Self {
             n,
-            kind: ScannedCellKind::Locked,
+            kind: CellKindRead::Locked,
             beast: Beast::Mammoth,
             tier: 0,
             conf,
@@ -475,45 +487,45 @@ impl ScannedCell {
     }
 }
 
-pub fn read_cell_with_slot(
-    img: &ImageView<'_>,
-    loc: &BoardLoc,
+pub(crate) fn read_cell_with_slot(
+    frame: &FrameView<'_>,
+    viewport: &UmgViewport,
     n: u8,
     slot: &mut CellScratchSlot,
-) -> ScannedCell {
-    assert!(img.width > 0 && img.height > 0);
+) -> CellRead {
+    assert!(frame.width() > 0 && frame.height() > 0);
     assert!(n < 16);
     if n == 0 {
-        return ScannedCell::office(loc);
+        return CellRead::office(viewport);
     }
     let (u, v) = RING[n as usize];
-    let (x, y) = loc.at(u as f64, v as f64);
-    let k = loc.scale_at(u as f64, v as f64);
-    let lock = padlock_at(img, x, y, k);
+    let (x, y) = viewport.at(u as f64, v as f64);
+    let k = viewport.scale_at(u as f64, v as f64);
+    let lock = padlock_at(frame, x, y, k);
     let (nx0, ny0, nx1, ny1) = (x - 15.0 * k, y - 28.0 * k, x + 15.0 * k, y - 6.0 * k);
-    let nest = color_share_rgb(img, nx0, ny0, nx1, ny1, 1, is_nest_rgb) > 0.07;
+    let nest = color_share_rgb(frame, nx0, ny0, nx1, ny1, 1, is_nest_rgb) > 0.07;
     if lock > 0.68 {
-        return ScannedCell::locked(n, lock, [x, y, k], nest);
+        return CellRead::locked(n, lock, [x, y, k], nest);
     }
-    let face = match_cell_face_patch(img, x, y, k, slot);
-    let frame = frame_rarity(img, x, y, k);
+    let face = match_cell_face_patch(frame, x, y, k, slot);
+    let rarity = frame_rarity(frame, x, y, k);
     if lock > 0.40
-        && !(face.score > 0.62 && (frame.colored > 0.08 || (face.score - face.second) > 0.12))
+        && !(face.score > 0.62 && (rarity.colored > 0.08 || (face.score - face.second) > 0.12))
     {
-        return ScannedCell::locked(n, lock, [x, y, k], nest);
+        return CellRead::locked(n, lock, [x, y, k], nest);
     }
-    let jaws = detect_cell_jaws(img, x, y, k);
+    let jaws = detect_cell_jaws(frame, x, y, k);
     let ghost = face.brightness > 175.0 && face.score < 0.55;
-    if face.score > 0.42 || ghost || frame.colored > 0.12 {
+    if face.score > 0.42 || ghost || rarity.colored > 0.12 {
         let margin = face.score - face.second;
         let c1 = (face.score - 0.30) * 1.6;
         let c2 = 0.40 + margin * 3.0;
-        let raw_conf = c1.min(c2).min(frame.conf).clamp(0.05, 1.0);
-        return ScannedCell {
+        let raw_conf = c1.min(c2).min(rarity.conf).clamp(0.05, 1.0);
+        return CellRead {
             n,
-            kind: ScannedCellKind::Inmate,
+            kind: CellKindRead::Inmate,
             beast: face.beast,
-            tier: frame.tier,
+            tier: rarity.tier,
             conf: raw_conf * if ghost { 0.5 } else { 1.0 },
             x,
             y,
@@ -524,9 +536,9 @@ pub fn read_cell_with_slot(
             event: false,
         };
     }
-    ScannedCell {
+    CellRead {
         n,
-        kind: ScannedCellKind::Empty,
+        kind: CellKindRead::Empty,
         beast: Beast::Mammoth,
         tier: 0,
         conf: 0.40,
@@ -548,14 +560,14 @@ pub struct WardenRead {
 }
 
 fn cluster_warden_gold_blobs(
-    img: &ImageView<'_>,
-    loc: &BoardLoc,
-    slot: &mut ScanScratchSlot,
+    frame: &FrameView<'_>,
+    viewport: &UmgViewport,
+    slot: &mut UiScratchSlot,
 ) -> Vec<(f64, f64, usize, [i32; 4])> {
-    assert!(img.width > 0 && img.height > 0);
-    assert!(loc.s > 0.0);
+    assert!(frame.width() > 0 && frame.height() > 0);
+    assert!(viewport.s > 0.0);
     let corners =
-        [(0.15, -0.15), (4.85, -0.15), (4.85, 2.3), (0.15, 2.3)].map(|(u, v)| loc.at(u, v));
+        [(0.15, -0.15), (4.85, -0.15), (4.85, 2.3), (0.15, 2.3)].map(|(u, v)| viewport.at(u, v));
     let x_min = corners.iter().map(|c| c.0).fold(f64::INFINITY, f64::min);
     let x_max = corners
         .iter()
@@ -566,9 +578,8 @@ fn cluster_warden_gold_blobs(
         .iter()
         .map(|c| c.1)
         .fold(f64::NEG_INFINITY, f64::max);
-    // Central courtyard (u in 1.25..3.75, v in 0.72..1.40) is > 0.55 grid units from ARROW.
-    let (ix0, iy0) = loc.at(1.25, 0.72);
-    let (ix1, iy1) = loc.at(3.75, 1.40);
+    let (ix0, iy0) = viewport.at(1.25, 0.72);
+    let (ix1, iy1) = viewport.at(3.75, 1.40);
     let skip_rect = if ix1 > ix0 + 8.0 && iy1 > iy0 + 8.0 {
         Some([
             ix0.ceil().max(0.0) as usize,
@@ -579,10 +590,10 @@ fn cluster_warden_gold_blobs(
     } else {
         None
     };
-    let k = loc.s;
+    let k = viewport.s;
     let step_y = ((3.0 * k) as usize).clamp(1, 4);
     let found = blobs_rgb_strided_with_slot(
-        img,
+        frame,
         [x_min, y_min, x_max, y_max],
         skip_rect,
         step_y,
@@ -617,18 +628,18 @@ fn cluster_warden_gold_blobs(
 
 fn match_warden_blob_groups(
     groups: &[(f64, f64, usize, [i32; 4])],
-    loc: &BoardLoc,
+    viewport: &UmgViewport,
 ) -> Option<WardenRead> {
-    assert!(loc.s > 0.0);
-    assert!(loc.s.is_finite());
-    let k = loc.s;
+    assert!(viewport.s > 0.0);
+    assert!(viewport.s.is_finite());
+    let k = viewport.s;
     let mut best: Option<(u8, f64, f64, [i32; 4])> = None;
     for &(cx, cy, n, bx) in groups {
         let area = (n as f64) / (k * k);
         if !(70.0..=1600.0).contains(&area) {
             continue;
         }
-        let (gu, gv) = loc.grid_of(cx, cy);
+        let (gu, gv) = viewport.grid_of(cx, cy);
         let mut cell = 0u8;
         let mut dist = f64::INFINITY;
         for (idx, &(au, av)) in ARROW.iter().enumerate() {
@@ -653,25 +664,25 @@ fn match_warden_blob_groups(
     })
 }
 
-pub fn find_warden_with_slot(
-    img: &ImageView<'_>,
-    loc: &BoardLoc,
-    slot: &mut ScanScratchSlot,
+pub(crate) fn find_warden_with_slot(
+    frame: &FrameView<'_>,
+    viewport: &UmgViewport,
+    slot: &mut UiScratchSlot,
 ) -> Option<WardenRead> {
-    assert!(img.width > 0 && img.height > 0);
-    assert!(loc.s > 0.0);
-    let groups = cluster_warden_gold_blobs(img, loc, slot);
-    let blob_res = match_warden_blob_groups(&groups, loc);
+    assert!(frame.width() > 0 && frame.height() > 0);
+    assert!(viewport.s > 0.0);
+    let groups = cluster_warden_gold_blobs(frame, viewport, slot);
+    let blob_res = match_warden_blob_groups(&groups, viewport);
     if blob_res.as_ref().is_some_and(|w| w.conf >= 0.58) {
         return blob_res;
     }
-    let k = loc.s;
+    let k = viewport.s;
     let mut best_anchor: Option<(u8, f32, [i32; 4])> = None;
     for (idx, &(au, av)) in ARROW.iter().enumerate() {
-        let (ax, ay) = loc.at(au, av);
+        let (ax, ay) = viewport.at(au, av);
         let rx = 18.0 * k;
         let ry = 20.0 * k;
-        let share = color_share(img, ax - rx, ay - ry, ax + rx, ay + ry, is_gold);
+        let share = color_share_hsv(frame, ax - rx, ay - ry, ax + rx, ay + ry, is_gold);
         if share > 0.08 && best_anchor.is_none_or(|b| share > b.1) {
             best_anchor = Some((
                 idx as u8,
@@ -698,12 +709,12 @@ pub fn find_warden_with_slot(
     blob_res
 }
 
-fn event_band_rects(loc: &BoardLoc) -> [[f64; 4]; 4] {
-    assert!(loc.s > 0.0);
-    assert!(loc.s.is_finite());
-    let c1 = loc.at(1.0, 0.0);
-    let c5 = loc.at(5.0, 0.0);
-    let k_top = loc.scale_at(1.0, 0.0).max(loc.scale_at(5.0, 0.0));
+fn event_band_rects(viewport: &UmgViewport) -> [[f64; 4]; 4] {
+    assert!(viewport.s > 0.0);
+    assert!(viewport.s.is_finite());
+    let c1 = viewport.at(1.0, 0.0);
+    let c5 = viewport.at(5.0, 0.0);
+    let k_top = viewport.scale_at(1.0, 0.0).max(viewport.scale_at(5.0, 0.0));
     let top = [
         c1.0.min(c5.0) - 115.0 * k_top,
         c1.1.min(c5.1) - 155.0 * k_top,
@@ -711,9 +722,9 @@ fn event_band_rects(loc: &BoardLoc) -> [[f64; 4]; 4] {
         c1.1.max(c5.1) + 80.0 * k_top,
     ];
 
-    let c13 = loc.at(0.0, 3.0);
-    let c8 = loc.at(5.0, 3.0);
-    let k_bot = loc.scale_at(0.0, 3.0).max(loc.scale_at(5.0, 3.0));
+    let c13 = viewport.at(0.0, 3.0);
+    let c8 = viewport.at(5.0, 3.0);
+    let k_bot = viewport.scale_at(0.0, 3.0).max(viewport.scale_at(5.0, 3.0));
     let bot = [
         c13.0.min(c8.0) - 115.0 * k_bot,
         c13.1.min(c8.1) - 155.0 * k_bot,
@@ -721,9 +732,9 @@ fn event_band_rects(loc: &BoardLoc) -> [[f64; 4]; 4] {
         c13.1.max(c8.1) + 80.0 * k_bot,
     ];
 
-    let c15 = loc.at(0.0, 1.0);
-    let c14 = loc.at(0.0, 2.0);
-    let k_left = loc.scale_at(0.0, 1.0).max(loc.scale_at(0.0, 2.0));
+    let c15 = viewport.at(0.0, 1.0);
+    let c14 = viewport.at(0.0, 2.0);
+    let k_left = viewport.scale_at(0.0, 1.0).max(viewport.scale_at(0.0, 2.0));
     let left = [
         c14.0.min(c15.0) - 115.0 * k_left,
         c15.1.min(c14.1) - 155.0 * k_left,
@@ -731,9 +742,9 @@ fn event_band_rects(loc: &BoardLoc) -> [[f64; 4]; 4] {
         c15.1.max(c14.1) + 80.0 * k_left,
     ];
 
-    let c6 = loc.at(5.0, 1.0);
-    let c7 = loc.at(5.0, 2.0);
-    let k_right = loc.scale_at(5.0, 1.0).max(loc.scale_at(5.0, 2.0));
+    let c6 = viewport.at(5.0, 1.0);
+    let c7 = viewport.at(5.0, 2.0);
+    let k_right = viewport.scale_at(5.0, 1.0).max(viewport.scale_at(5.0, 2.0));
     let right = [
         c6.0.min(c7.0) - 115.0 * k_right,
         c6.1.min(c7.1) - 155.0 * k_right,
@@ -745,18 +756,18 @@ fn event_band_rects(loc: &BoardLoc) -> [[f64; 4]; 4] {
 }
 
 pub(crate) fn find_event_blobs_with_slot(
-    img: &ImageView<'_>,
-    loc: &BoardLoc,
-    slot: &mut ScanScratchSlot,
+    frame: &FrameView<'_>,
+    viewport: &UmgViewport,
+    slot: &mut UiScratchSlot,
 ) -> Vec<Blob> {
-    assert!(img.width > 0 && img.height > 0);
-    assert!(loc.s > 0.0);
-    let bands = event_band_rects(loc);
-    let step_y = ((6.0 * loc.s) as usize).clamp(1, 8);
+    assert!(frame.width() > 0 && frame.height() > 0);
+    assert!(viewport.s > 0.0);
+    let bands = event_band_rects(viewport);
+    let step_y = ((6.0 * viewport.s) as usize).clamp(1, 8);
     let mut out = Vec::with_capacity(32);
     for rect in bands {
         out.extend(blobs_rgb_strided_with_slot(
-            img,
+            frame,
             rect,
             None,
             step_y,
@@ -769,13 +780,13 @@ pub(crate) fn find_event_blobs_with_slot(
 
 pub(crate) fn match_events_from_blobs(
     found: &[Blob],
-    loc: &BoardLoc,
-    cells: &[ScannedCell; 16],
+    viewport: &UmgViewport,
+    cells: &[CellRead; 16],
     warden: Option<&WardenRead>,
 ) -> u16 {
-    assert!(loc.s > 0.0);
+    assert!(viewport.s > 0.0);
     assert_eq!(cells.len(), 16);
-    let k = loc.s;
+    let k = viewport.s;
     let mut out = 0u16;
     for b in found {
         let bh = b.h as f64;
@@ -802,22 +813,9 @@ pub(crate) fn match_events_from_blobs(
                 nearest = c.n;
             }
         }
-        if dist > 35.0 && dist < 95.0 {
+        if dist < 24.0 && nearest < 16 {
             out |= 1u16 << nearest;
         }
     }
     out
-}
-
-pub fn find_events_with_slot(
-    img: &ImageView<'_>,
-    loc: &BoardLoc,
-    cells: &[ScannedCell; 16],
-    warden: Option<&WardenRead>,
-    slot: &mut ScanScratchSlot,
-) -> u16 {
-    assert!(img.width > 0 && img.height > 0);
-    assert_eq!(cells.len(), 16);
-    let found = find_event_blobs_with_slot(img, loc, slot);
-    match_events_from_blobs(&found, loc, cells, warden)
 }
