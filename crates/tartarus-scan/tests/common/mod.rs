@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-pub fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
         .parent()
@@ -11,11 +11,11 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-pub fn fixture_path(name: &str) -> PathBuf {
+pub(crate) fn fixture_path(name: &str) -> PathBuf {
     workspace_root().join("tests").join("fixtures").join(name)
 }
 
-pub fn load_png_rgba8(path: &Path) -> (usize, usize, Vec<u8>) {
+pub(crate) fn load_png_rgba8(path: &Path) -> (usize, usize, Vec<u8>) {
     let file =
         File::open(path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
     let mut decoder = png::Decoder::new(BufReader::new(file));

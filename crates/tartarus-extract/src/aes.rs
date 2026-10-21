@@ -3,6 +3,8 @@
 use aes::Aes256Dec;
 use aes::cipher::{Array, BlockCipherDecrypt, KeyInit};
 
+use crate::error::ExtractError;
+
 /// Default AES-256 key for Torchlight: Infinite UE 4.27 Pak v12 archives.
 pub const DEFAULT_AES_KEY_HEX: &str =
     "0x4F17B93C3F6BC5566B505A9445EE2F620C6FBB4EF99AFD7AD6F50F361C1B34E0";
@@ -12,7 +14,7 @@ pub const DEFAULT_AES_KEY: [u8; 32] = [
     0x0C, 0x6F, 0xBB, 0x4E, 0xF9, 0x9A, 0xFD, 0x7A, 0xD6, 0xF5, 0x0F, 0x36, 0x1C, 0x1B, 0x34, 0xE0,
 ];
 
-pub fn parse_hex_key(s: &str) -> Result<[u8; 32], String> {
+pub fn parse_hex_key(s: &str) -> Result<[u8; 32], ExtractError> {
     let clean = s
         .trim()
         .strip_prefix("0x")
@@ -20,11 +22,11 @@ pub fn parse_hex_key(s: &str) -> Result<[u8; 32], String> {
         .unwrap_or(s.trim());
     let mut out = [0u8; 32];
     hex::decode_to_slice(clean, &mut out)
-        .map_err(|e| format!("Invalid AES-256 hex key ({} chars): {e}", clean.len()))?;
+        .map_err(|e| ExtractError::InvalidKey(format!("({} chars): {e}", clean.len())))?;
     Ok(out)
 }
 
-pub fn parse_aes_key_hex(s: &str) -> Result<[u8; 32], String> {
+pub fn parse_aes_key_hex(s: &str) -> Result<[u8; 32], ExtractError> {
     parse_hex_key(s)
 }
 

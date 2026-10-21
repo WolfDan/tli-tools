@@ -3,22 +3,26 @@ name = "tartarus-overlay"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 tartarus-core = { path = "../tartarus-core" }
 tartarus-scan = { path = "../tartarus-scan" }
 gpui = { package = "gpui-ce", version = "0.2.2" }
-gpui_platform = { package = "gpui_ce_platform", version = "0.1.0", features = ["wayland", "x11"] }
+gpui_platform = { package = "gpui_ce_platform", version = "0.1.0", features = [
+  "wayland",
+  "x11",
+] }
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
 fnv.workspace = true
 memory-stats.workspace = true
+libc.workspace = true
+tracing-subscriber.workspace = true
+steamlocate.workspace = true
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
-libc = "0.2.191"
-tracing-subscriber = "0.3.23"
-steamlocate = "2.1.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["shm", "randr"] }
@@ -27,10 +31,13 @@ ksni = "0.2"
 [target.'cfg(target_os = "windows")'.dependencies]
 global-hotkey = "0.6"
 windows-sys = { version = "0.59", features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_Storage_Xps",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_System_Threading",
-    "Win32_UI_Shell",
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_Storage_Xps",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
 ] }
+
+[lints]
+workspace = true

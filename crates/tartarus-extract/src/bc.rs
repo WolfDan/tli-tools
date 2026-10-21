@@ -3,6 +3,8 @@
 
 use serde::Serialize;
 
+use crate::error::ExtractError;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum PixelFormat {
     BC7,
@@ -55,7 +57,7 @@ pub fn decode_mip_to_rgba8(
     width: usize,
     height: usize,
     fmt: PixelFormat,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, ExtractError> {
     decode_texture_to_rgba8(fmt, width, height, src)
 }
 
@@ -64,13 +66,13 @@ pub fn decode_texture_to_rgba8(
     width: usize,
     height: usize,
     src: &[u8],
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, ExtractError> {
     let expected = fmt.byte_size_for_dimensions(width, height);
     if src.len() < expected {
-        return Err(format!(
+        return Err(ExtractError::TextureDecode(format!(
             "Source buffer too small for {fmt:?} {width}x{height}: need {expected} bytes, got {}",
             src.len()
-        ));
+        )));
     }
     let mut out = vec![0u8; width * height * 4];
     match fmt {
@@ -112,7 +114,7 @@ pub fn decode_texture_to_rgba8(
                 PixelFormat::BC7 => texture2ddecoder::decode_bc7(src, width, height, &mut bgra),
                 _ => unreachable!(),
             };
-            res.map_err(|e| e.to_string())?;
+            res.map_err(|e| ExtractError::TextureDecode(e.to_string()))?;
             for (dst, &px) in out.as_chunks_mut::<4>().0.iter_mut().zip(bgra.iter()) {
                 let [b, g, r, a] = px.to_le_bytes();
                 *dst = [r, g, b, a];
@@ -121,7 +123,7 @@ pub fn decode_texture_to_rgba8(
         PixelFormat::BC4 => {
             let mut bgra = vec![0u32; width * height];
             texture2ddecoder::decode_bc4(src, width, height, &mut bgra)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| ExtractError::TextureDecode(e.to_string()))?;
             for (dst, &px) in out.as_chunks_mut::<4>().0.iter_mut().zip(bgra.iter()) {
                 let [_, _, r, _] = px.to_le_bytes();
                 *dst = [r, r, r, 255];
@@ -153,36 +155,45 @@ pub fn crop_rgba8(
 }
 
 /// Encodes an RGBA8 buffer (`width * height * 4` bytes) into a standard lossless `.png` file.
-pub fn encode_png_rgba8(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
+pub fn encode_png_rgba8(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, ExtractError> {
     let expected = (width as usize) * (height as usize) * 4;
     if rgba.len() < expected {
-        return Err("RGBA buffer shorter than width * height * 4".to_string());
+        return Err(ExtractError::PngCodec(
+            "RGBA buffer shorter than width * height * 4".to_string(),
+        ));
     }
     let mut png = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut png, width, height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+        let mut writer = encoder
+            .write_header()
+            .map_err(|e| ExtractError::PngCodec(e.to_string()))?;
         writer
             .write_image_data(&rgba[..expected])
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| ExtractError::PngCodec(e.to_string()))?;
     }
     Ok(png)
 }
 
 /// Decodes a standard 8-bit RGB or RGBA `.png` file into `(width, height, rgba8)`.
-pub fn decode_png_rgba8(png: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
+pub fn decode_png_rgba8(png: &[u8]) -> Result<(usize, usize, Vec<u8>), ExtractError> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
-    let mut buf = vec![
-        0u8;
-        reader
-            .output_buffer_size()
-            .ok_or("PNG buffer size overflow")?
-    ];
-    let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| ExtractError::PngCodec(e.to_string()))?;
+    let mut buf =
+        vec![
+            0u8;
+            reader
+                .output_buffer_size()
+                .ok_or_else(|| ExtractError::PngCodec("PNG buffer size overflow".to_string()))?
+        ];
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| ExtractError::PngCodec(e.to_string()))?;
     buf.truncate(info.buffer_size());
 
     let w = info.width as usize;
@@ -210,7 +221,11 @@ pub fn decode_png_rgba8(png: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
             }
             out
         }
-        other => return Err(format!("Unsupported PNG color type: {other:?}")),
+        other => {
+            return Err(ExtractError::PngCodec(format!(
+                "Unsupported PNG color type: {other:?}"
+            )));
+        }
     };
     Ok((w, h, rgba))
 }

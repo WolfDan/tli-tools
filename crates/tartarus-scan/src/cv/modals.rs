@@ -1,0 +1,661 @@
+//! Modal screen scanners: 3-card Instrument Pick (`scan_pick_with_slot`), Objective/Start-Event scroll popup (`read_objective_title_with_slot`), and Consume target banner (`read_chain_screen`).
+
+use tartarus_core::{FixedVec, ObjectiveId, StartEventId, ToolId};
+
+use super::arena::ScanScratchSlot;
+use super::cell::{ScannedCell, WardenRead};
+use super::data::{REF_PICK_TOOLS, REF_TOOLS};
+use super::hud::{art_feature, art_similarity};
+use super::image::{ImageView, color_share_rgb, hsv, is_banner_red_rgb};
+use super::math::BoardLoc;
+use super::ocr::{text_lines_radii_with_slot, text_radii};
+
+#[derive(Clone, Copy, Debug)]
+pub struct ChainRead {
+    pub banner: f32,
+    pub targets: FixedVec<u8, 16>,
+}
+
+#[inline]
+pub(crate) fn chain_banner_score(img: &ImageView<'_>, loc: &BoardLoc) -> f32 {
+    let step = ((2.0 * loc.s).round() as usize).clamp(1, 4);
+    let mut banner = 0.0_f32;
+    let mut v = 3.9_f64;
+    while v <= 5.01 {
+        let (x0, y0) = loc.at(1.0, v);
+        let (x1, y1) = loc.at(4.0, v + 0.15);
+        let sh = color_share_rgb(
+            img,
+            x0.min(x1),
+            y0.min(y1),
+            x0.max(x1),
+            y0.max(y1),
+            step,
+            is_banner_red_rgb,
+        );
+        if sh > banner {
+            banner = sh;
+        }
+        v += 0.15;
+    }
+    banner
+}
+
+pub fn read_chain_screen(
+    img: &ImageView<'_>,
+    loc: &BoardLoc,
+    cells: &[ScannedCell; 16],
+    warden: Option<&WardenRead>,
+) -> Option<ChainRead> {
+    read_chain_screen_with_banner(img, loc, cells, warden, chain_banner_score(img, loc))
+}
+
+pub(crate) fn read_chain_screen_with_banner(
+    img: &ImageView<'_>,
+    _loc: &BoardLoc,
+    cells: &[ScannedCell; 16],
+    warden: Option<&WardenRead>,
+    banner: f32,
+) -> Option<ChainRead> {
+    if banner < 0.20 {
+        return None;
+    }
+    let mut targets = FixedVec::new();
+    for c in cells.iter().skip(1) {
+        if warden.is_some_and(|w| c.n == w.cell) {
+            continue;
+        }
+        let k = c.k;
+        let step = (k.round() as usize).clamp(1, 2);
+        if color_share_rgb(
+            img,
+            c.x - 40.0 * k,
+            c.y - 80.0 * k,
+            c.x + 40.0 * k,
+            c.y - 50.0 * k,
+            step,
+            is_banner_red_rgb,
+        ) > 0.15
+        {
+            targets.push(c.n);
+        }
+    }
+    if targets.is_empty() {
+        None
+    } else {
+        Some(ChainRead { banner, targets })
+    }
+}
+
+pub(crate) fn has_devour_banner(img: &ImageView<'_>) -> bool {
+    let x0 = (img.width * 3) / 10;
+    let x1 = (img.width * 7) / 10;
+    let y0 = (img.height * 45) / 100;
+    let y1 = (img.height * 90) / 100;
+    if x1 <= x0 || y1 <= y0 {
+        return false;
+    }
+    let step_x = ((x1 - x0) / 32).max(2);
+    let step_y = ((y1 - y0) / 24).max(2);
+    for y in (y0..y1).step_by(step_y) {
+        let mut hits = 0usize;
+        let mut total = 0usize;
+        for x in (x0..x1).step_by(step_x) {
+            let (r, g, b) = img.rgb_at(x as isize, y as isize);
+            total += 1;
+            if r >= 102 && r > g && r > b {
+                let (h, s, v) = hsv(r as f32, g as f32, b as f32);
+                if (h < 16.0 || h > 340.0) && s > 0.45 && v > 0.40 {
+                    hits += 1;
+                }
+            }
+        }
+        if total > 0 && hits * 6 >= total {
+            return true;
+        }
+    }
+    false
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PickCardRead {
+    pub sim: ToolId,
+    pub score: f32,
+    pub conf: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct PickScreenRead {
+    pub cards: [PickCardRead; 3],
+    pub reroll: bool,
+}
+
+/// Fast (< 0.03ms) structural verification that the 3-card Instrument Pick modal (`S16BoardRelicPop`)
+/// is actually rendered on screen before running histograms or OCR.
+/// Checks that the 3 card lower-body panels (`k = -1, 0, 1` at `y = 560..760`) and the two
+/// inter-card dimmed modal gutters (`x = w/2 ± 240s`) have the dark slate backdrop of the popup.
+#[inline]
+fn pick_modal_backdrop_ok(img: &ImageView<'_>) -> bool {
+    let s = (img.height as f64) / 1080.0;
+    let step = (4.0 * s).round().max(2.0) as usize;
+
+    // 1. Check the 3 dark card description bodies
+    for k in [-1i32, 0, 1] {
+        let c = (img.width as f64) * 0.5 + (k as f64) * 480.0 * s;
+        let x0 = ((c - 150.0 * s).round() as isize).max(0) as usize;
+        let x1 = ((c + 150.0 * s).round() as isize).min(img.width as isize - 1) as usize;
+        let y0 = ((560.0 * s).round() as isize).max(0) as usize;
+        let y1 = ((760.0 * s).round() as isize).min(img.height as isize - 1) as usize;
+        if x1 <= x0 || y1 <= y0 {
+            return false;
+        }
+        let mut total = 0usize;
+        let mut dark_slate = 0usize;
+        let mut sum_v = 0u32;
+        for y in (y0..=y1).step_by(step) {
+            let row = y * img.width * 4;
+            for x in (x0..=x1).step_by(step) {
+                let o = row + x * 4;
+                let r = img.data[o];
+                let g = img.data[o + 1];
+                let b = img.data[o + 2];
+                let mx = r.max(g).max(b);
+                let mn = r.min(g).min(b);
+                total += 1;
+                sum_v += mx as u32;
+                // Dark slate card background: low-to-moderate brightness and low saturation
+                if mx <= 105 && (mx - mn) <= 48 {
+                    dark_slate += 1;
+                }
+            }
+        }
+        if total == 0 || dark_slate * 100 < total * 48 || (sum_v / (total as u32)) > 96 {
+            return false;
+        }
+    }
+
+    // 2. Check the two dimmed modal gutters between cards (-240s and +240s)
+    for sign in [-1.0_f64, 1.0_f64] {
+        let gx = (img.width as f64) * 0.5 + sign * 240.0 * s;
+        let x0 = ((gx - 18.0 * s).round() as isize).max(0) as usize;
+        let x1 = ((gx + 18.0 * s).round() as isize).min(img.width as isize - 1) as usize;
+        let y0 = ((280.0 * s).round() as isize).max(0) as usize;
+        let y1 = ((740.0 * s).round() as isize).min(img.height as isize - 1) as usize;
+        if x1 <= x0 || y1 <= y0 {
+            return false;
+        }
+        let mut total = 0usize;
+        let mut sum_v = 0u32;
+        for y in (y0..=y1).step_by(step) {
+            let row = y * img.width * 4;
+            for x in (x0..=x1).step_by(step) {
+                let o = row + x * 4;
+                let mx = img.data[o].max(img.data[o + 1]).max(img.data[o + 2]);
+                total += 1;
+                sum_v += mx as u32;
+            }
+        }
+        if total == 0 || (sum_v / (total as u32)) > 110 {
+            return false;
+        }
+    }
+
+    true
+}
+
+pub fn pick_art_box(img: &ImageView<'_>, k: i32) -> Option<[i32; 4]> {
+    let s = (img.height as f64) / 1080.0;
+    let c = (img.width as f64) * 0.5 + (k as f64) * 480.0 * s;
+    let x0 = ((c - 85.0 * s).round() as i32).max(0);
+    let x1 = ((c + 85.0 * s).round() as i32).min(img.width as i32 - 1);
+    let y0 = ((270.0 * s).round() as i32).max(0);
+    let y1 = ((480.0 * s).round() as i32).min(img.height as i32 - 1);
+    if x1 < x0 || y1 < y0 {
+        return None;
+    }
+    let w = (x1 - x0 + 1) as usize;
+    let h = (y1 - y0 + 1) as usize;
+    if w > 512 || h > 512 {
+        return None;
+    }
+    let mut x_hist = [0u32; 512];
+    let mut y_hist = [0u32; 512];
+    let mut count = 0usize;
+    let ux0 = x0 as usize;
+    let uy0 = y0 as usize;
+    for (dy, y_slot) in y_hist[..h].iter_mut().enumerate() {
+        let row_base = (uy0 + dy) * img.width * 4;
+        let mut row_hits = 0u32;
+        for (dx, x_slot) in x_hist[..w].iter_mut().enumerate() {
+            let o = row_base + (ux0 + dx) * 4;
+            let r = img.data[o];
+            let g = img.data[o + 1];
+            let b = img.data[o + 2];
+            let mx = r.max(g).max(b);
+            let matched = if mx >= 82 {
+                true
+            } else if mx <= 45 {
+                false
+            } else {
+                let mn = r.min(g).min(b);
+                if ((mx - mn) as u32) * 20 <= 9 * (mx as u32) {
+                    false
+                } else {
+                    let (hue, sat, v) = hsv(r as f32, g as f32, b as f32);
+                    v > 0.32 || (sat > 0.45 && v > 0.18 && !(15.0..=50.0).contains(&hue))
+                }
+            };
+            if matched {
+                *x_slot += 1;
+                row_hits += 1;
+            }
+        }
+        *y_slot = row_hits;
+        count += row_hits as usize;
+    }
+    let total_area = w * h;
+    // Reject if too few pixels matched OR if the entire search box is uniformly bright (>92% fill)
+    if (count as f64) < 400.0 * s * s || count * 100 > total_area * 92 {
+        return None;
+    }
+    let rank_lo = (0.01 * ((count - 1) as f64)).round() as u32;
+    let rank_hi = (0.99 * ((count - 1) as f64)).round() as u32;
+    let percentile_from_hist = |hist: &[u32], base: i32, rank: u32| -> i32 {
+        let mut acc = 0u32;
+        for (idx, &c) in hist.iter().enumerate() {
+            acc += c;
+            if acc > rank {
+                return base + (idx as i32);
+            }
+        }
+        base + (hist.len().saturating_sub(1) as i32)
+    };
+    Some([
+        percentile_from_hist(&x_hist[..w], x0, rank_lo),
+        percentile_from_hist(&y_hist[..h], y0, rank_lo),
+        percentile_from_hist(&x_hist[..w], x0, rank_hi),
+        percentile_from_hist(&y_hist[..h], y0, rank_hi),
+    ])
+}
+
+#[inline]
+fn count_neutral_light_thresh(
+    img: &ImageView<'_>,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    min_mx: u8,
+) -> usize {
+    let ux0 = x0.max(0) as usize;
+    let uy0 = y0.max(0) as usize;
+    let ux1 = x1.min(img.width as i32 - 1);
+    let uy1 = y1.min(img.height as i32 - 1);
+    if ux1 < ux0 as i32 || uy1 < uy0 as i32 {
+        return 0;
+    }
+    let ux1 = ux1 as usize;
+    let uy1 = uy1 as usize;
+    let mut light = 0usize;
+    for y in (uy0..=uy1).step_by(2) {
+        let row_base = y * img.width * 4;
+        for x in (ux0..=ux1).step_by(2) {
+            let o = row_base + x * 4;
+            let r = img.data[o];
+            let g = img.data[o + 1];
+            let b = img.data[o + 2];
+            let mx = r.max(g).max(b);
+            if mx > min_mx {
+                let mn = r.min(g).min(b);
+                if ((mx - mn) as u32) * 4 < (mx as u32) {
+                    light += 1;
+                }
+            }
+        }
+    }
+    light
+}
+
+#[inline]
+fn count_neutral_light(img: &ImageView<'_>, x0: i32, y0: i32, x1: i32, y1: i32) -> usize {
+    count_neutral_light_thresh(img, x0, y0, x1, y1, 140)
+}
+
+pub fn pick_reroll_shown(img: &ImageView<'_>) -> bool {
+    let s = (img.height as f64) / 1080.0;
+    let x0 = ((img.width as f64) * 0.5 - 330.0 * s).round() as i32;
+    let x1 = ((img.width as f64) * 0.5 - 175.0 * s).round() as i32;
+    let y0 = (940.0 * s).round() as i32;
+    let y1 = (985.0 * s).round() as i32;
+    (count_neutral_light(img, x0, y0, x1, y1) as f64) > 15.0 * s * s
+}
+
+pub fn pick_confirm_shown(img: &ImageView<'_>) -> bool {
+    let s = (img.height as f64) / 1080.0;
+    let x0 = ((img.width as f64) * 0.5 - 120.0 * s).round() as i32;
+    let x1 = ((img.width as f64) * 0.5 + 330.0 * s).round() as i32;
+    let y0 = (940.0 * s).round() as i32;
+    let y1 = (985.0 * s).round() as i32;
+    (count_neutral_light_thresh(img, x0, y0, x1, y1, 115) as f64) > 15.0 * s * s
+}
+
+pub fn scan_pick_with_slot(
+    img: &ImageView<'_>,
+    slot: &mut ScanScratchSlot,
+) -> Option<PickScreenRead> {
+    if !pick_confirm_shown(img) || !pick_modal_backdrop_ok(img) {
+        return None;
+    }
+    let s = (img.height as f64) / 1080.0;
+    for k in [-1, 0, 1] {
+        let c = (img.width as f64) * 0.5 + (k as f64) * 480.0 * s;
+        let tx0 = (c - 180.0 * s).round() as i32;
+        let tx1 = (c + 180.0 * s).round() as i32;
+        let ty0 = (420.0 * s).round() as i32;
+        let ty1 = (550.0 * s).round() as i32;
+        if (count_neutral_light(img, tx0, ty0, tx1, ty1) as f64) < 10.0 * s * s {
+            return None;
+        }
+    }
+
+    let art_boxes = [
+        pick_art_box(img, -1)?,
+        pick_art_box(img, 0)?,
+        pick_art_box(img, 1)?,
+    ];
+    for bx in &art_boxes {
+        if ((bx[2] - bx[0]) as f64) < 60.0 * s || ((bx[3] - bx[1]) as f64) < 60.0 * s {
+            return None;
+        }
+    }
+
+    let radii = text_radii(img);
+    let title_radius = [radii[1]];
+    let min_title_h = (15.0 * s).round().max(8.0) as i32;
+    let mut cards = [PickCardRead {
+        sim: ToolId::Revenge,
+        score: 0.0,
+        conf: 0.0,
+    }; 3];
+    for (idx, k) in [-1, 0, 1].into_iter().enumerate() {
+        let c = (img.width as f64) * 0.5 + (k as f64) * 480.0 * s;
+        let title_lines = text_lines_radii_with_slot(
+            img,
+            [c - 185.0 * s, 420.0 * s, c + 185.0 * s, 550.0 * s],
+            ((8.0 * s).max(5.0), (45.0 * s).max(16.0)),
+            &title_radius,
+            0.35,
+            slot,
+        );
+        let mut observed_title_glyphs = 0usize;
+        if let Some(lines) = title_lines.first() {
+            for line in lines {
+                let ly = (line.y0 + line.y1) as f64 * 0.5;
+                if ly < 470.0 * s || ly > 548.0 * s || line.h < min_title_h {
+                    continue;
+                }
+                for piece in &line.pieces {
+                    let px = (piece.x0 + piece.x1) as f64 * 0.5;
+                    if (px - c).abs() <= 65.0 * s && piece.glyphs.len() >= 3 {
+                        observed_title_glyphs += piece.glyphs.len();
+                    }
+                }
+            }
+            if observed_title_glyphs < 4 {
+                for line in lines {
+                    if line.glyphs.len() >= 4 {
+                        observed_title_glyphs = observed_title_glyphs.max(line.glyphs.len());
+                    }
+                }
+            }
+        }
+        if observed_title_glyphs < 4 {
+            return None;
+        }
+        let bx = art_boxes[idx];
+        let feats: [([f32; 72], [f32; 13]); 5] = [
+            art_feature(img, bx[0], bx[1], bx[2], bx[3]),
+            art_feature(img, bx[0] - 2, bx[1], bx[2] - 2, bx[3]),
+            art_feature(img, bx[0] + 2, bx[1], bx[2] + 2, bx[3]),
+            art_feature(img, bx[0], bx[1] - 2, bx[2], bx[3] - 2),
+            art_feature(img, bx[0], bx[1] + 2, bx[2], bx[3] + 2),
+        ];
+        let mut best_by_sim = [f32::NEG_INFINITY; 31];
+        for r in &REF_PICK_TOOLS {
+            let sc = feats
+                .iter()
+                .map(|(fg, fh)| art_similarity(fg, fh, &r.grid, &r.hist))
+                .fold(f32::NEG_INFINITY, f32::max);
+            let slot_sc = &mut best_by_sim[r.sim.idx()];
+            if sc > *slot_sc {
+                *slot_sc = sc;
+            }
+        }
+        for r in &REF_TOOLS {
+            if r.is_panel {
+                continue;
+            }
+            let sc = feats
+                .iter()
+                .map(|(fg, fh)| art_similarity(fg, fh, &r.grid, &r.hist))
+                .fold(f32::NEG_INFINITY, f32::max);
+            let slot_sc = &mut best_by_sim[r.sim.idx()];
+            if sc > *slot_sc {
+                *slot_sc = sc;
+            }
+        }
+        let mut top_sim = ToolId::Revenge;
+        let mut top_raw_sc = f32::NEG_INFINITY;
+        let mut top_sc = f32::NEG_INFINITY;
+        let mut second_sc = f32::NEG_INFINITY;
+        for (&sim_id, &raw_sc) in tartarus_core::ALL_TOOLS.iter().zip(best_by_sim.iter()) {
+            if !raw_sc.is_finite() {
+                continue;
+            }
+            let expected_chars = sim_id.name_alnum_len();
+            let diff = observed_title_glyphs.abs_diff(expected_chars);
+            let title_adj = if diff == 0 {
+                0.035
+            } else if diff <= 1 {
+                0.025
+            } else if diff <= 2 {
+                0.012
+            } else if diff <= 4 {
+                0.0
+            } else {
+                -((diff as f32 - 4.0) * 0.006).min(0.06)
+            };
+            let sc = raw_sc + title_adj;
+            if sc > top_sc {
+                second_sc = top_sc;
+                top_sc = sc;
+                top_raw_sc = raw_sc;
+                top_sim = sim_id;
+            } else if sc > second_sc {
+                second_sc = sc;
+            }
+        }
+        // Require a real minimum template similarity so background textures never pass via margin alone
+        if !top_raw_sc.is_finite() || top_raw_sc < 0.80 {
+            return None;
+        }
+        let second = if second_sc.is_finite() {
+            second_sc
+        } else {
+            0.0
+        };
+        let margin = top_sc - second;
+        let eff_sc = top_sc.max(top_raw_sc);
+        let conf = if eff_sc < 0.82 {
+            0.0
+        } else {
+            ((eff_sc - 0.85) * 5.0 + margin * 8.0).clamp(0.0, 1.0)
+        };
+        cards[idx] = PickCardRead {
+            sim: top_sim,
+            score: eff_sc,
+            conf,
+        };
+    }
+    // Enforce game-rule invariant: the 3 offered instruments in a pick are always distinct
+    if cards[0].sim == cards[1].sim || cards[1].sim == cards[2].sim || cards[0].sim == cards[2].sim
+    {
+        return None;
+    }
+    if cards.iter().all(|c| c.conf < 0.20) {
+        return None;
+    }
+    Some(PickScreenRead {
+        cards,
+        reroll: pick_reroll_shown(img),
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TitleRead {
+    Objective(ObjectiveId),
+    StartEvent(StartEventId),
+}
+
+fn is_opulence_popup(img: &ImageView<'_>) -> bool {
+    let w = img.width;
+    let h = img.height;
+    if w == 0 || h == 0 {
+        return false;
+    }
+    let mut crimson = 0usize;
+    let mut purple = 0usize;
+    let ex0 = ((w as f64) * 0.46) as usize;
+    let ex1 = (((w as f64) * 0.54) as usize).min(w);
+    let ey0 = ((h as f64) * 0.16) as usize;
+    let ey1 = (((h as f64) * 0.27) as usize).min(h);
+    for y in ey0..ey1 {
+        for x in ex0..ex1 {
+            let idx = (y * w + x) * 4;
+            let r = img.data[idx] as i32;
+            let g = img.data[idx + 1] as i32;
+            let b = img.data[idx + 2] as i32;
+            if r > 110 && r > b + 45 && r > g + 35 {
+                crimson += 1;
+            } else if b > 70 && r > 50 && b > g + 15 && r > g + 10 && r <= b + 30 {
+                purple += 1;
+            }
+        }
+    }
+
+    let mut cyan_line1 = 0usize;
+    let lx0 = ((w as f64) * 0.45) as usize;
+    let lx1 = (((w as f64) * 0.65) as usize).min(w);
+    let ly0 = ((h as f64) * 0.365) as usize;
+    let ly1 = (((h as f64) * 0.402) as usize).min(h);
+    for y in ly0..ly1 {
+        for x in lx0..lx1 {
+            let idx = (y * w + x) * 4;
+            let r = img.data[idx] as i32;
+            let g = img.data[idx + 1] as i32;
+            let b = img.data[idx + 2] as i32;
+            if b > 130 && g > 120 && b > r + 40 && g > r + 30 {
+                cyan_line1 += 1;
+            }
+        }
+    }
+
+    crimson > purple.saturating_mul(2).max(10) && cyan_line1 < 5
+}
+
+pub fn read_objective_title_with_slot(
+    img: &ImageView<'_>,
+    slot: &mut ScanScratchSlot,
+) -> Option<TitleRead> {
+    let single_word_start = if is_opulence_popup(img) {
+        StartEventId::Opulence
+    } else {
+        StartEventId::Tyranny
+    };
+    let patterns: &[(TitleRead, &[isize])] = &[
+        (TitleRead::Objective(ObjectiveId::Consume), &[8, 2, 3, 7]),
+        (TitleRead::Objective(ObjectiveId::Consume), &[8, 5, 7]),
+        (TitleRead::Objective(ObjectiveId::Doors), &[6, 4, 5]),
+        (TitleRead::Objective(ObjectiveId::Incident), &[13]),
+        (TitleRead::Objective(ObjectiveId::King), &[4, 2, 3, 5]),
+        (TitleRead::Objective(ObjectiveId::King), &[4, 5, 5]),
+        (TitleRead::Objective(ObjectiveId::Walk), &[6, 4]),
+        (TitleRead::StartEvent(StartEventId::CageFight), &[4, 5]),
+        (TitleRead::StartEvent(StartEventId::CageFight), &[4, 4]),
+        (TitleRead::StartEvent(StartEventId::IronLaw), &[4, 3]),
+        (TitleRead::StartEvent(single_word_start), &[7]),
+        (TitleRead::StartEvent(single_word_start), &[8]),
+    ];
+
+    let mut best_match: Option<(TitleRead, i32, isize)> = None;
+    let radii = text_radii(img);
+    for lines in text_lines_radii_with_slot(
+        img,
+        [
+            (img.width as f64) * 0.25,
+            (img.height as f64) * 0.12,
+            (img.width as f64) * 0.75,
+            (img.height as f64) * 0.40,
+        ],
+        (6.0, 48.0_f64.max((img.height as f64) * 0.07)),
+        &radii,
+        0.34,
+        slot,
+    ) {
+        for line in lines {
+            for p in &line.pieces {
+                let words: Vec<isize> = p.words.iter().map(|w| w.glyphs.len() as isize).collect();
+                if words.is_empty() {
+                    continue;
+                }
+                let has_obj_prefix = words[0] >= 8 && words[0] <= 11 && words.len() > 1;
+                let name = if has_obj_prefix {
+                    &words[1..]
+                } else {
+                    &words[..]
+                };
+                let mid_x = ((p.x0 + p.x1) as f64) * 0.5;
+                let centered =
+                    (mid_x - (img.width as f64) * 0.5).abs() <= (img.width as f64) * 0.12;
+                for &(id, want) in patterns {
+                    if has_obj_prefix && matches!(id, TitleRead::StartEvent(_)) {
+                        continue;
+                    }
+                    if want.len() == 1 && matches!(id, TitleRead::StartEvent(_)) && !centered {
+                        continue;
+                    }
+                    if want.len() != name.len() {
+                        continue;
+                    }
+                    if want
+                        .iter()
+                        .zip(name.iter())
+                        .any(|(&a, &b)| (a - b).abs() > if a >= 8 { 2 } else { 1 })
+                    {
+                        continue;
+                    }
+                    let off: isize = want
+                        .iter()
+                        .zip(name.iter())
+                        .map(|(a, b)| (a - b).abs())
+                        .sum();
+                    let total: isize = want.iter().sum();
+                    if (off as f64) <= 1.0 + (total as f64) * 0.15 {
+                        let better = best_match.is_none_or(|(_, bh, boff)| {
+                            let same_tier = (line.h - bh).abs() <= bh.max(line.h) / 5;
+                            if same_tier {
+                                off < boff || (off == boff && line.h > bh)
+                            } else {
+                                line.h > bh
+                            }
+                        });
+                        if better {
+                            best_match = Some((id, line.h, off));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    best_match.map(|m| m.0)
+}

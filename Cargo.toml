@@ -1,17 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/tartarus-core",
-    "crates/tartarus-scan",
-    "crates/tartarus-overlay",
-    "crates/tartarus-extract",
-    "crates/tartarus-data",
-    "crates/workspace-hack",
+  "crates/tartarus-core",
+  "crates/tartarus-scan",
+  "crates/tartarus-overlay",
+  "crates/tartarus-extract",
+  "crates/tartarus-data",
+  "crates/workspace-hack",
 ]
 default-members = [
-    "crates/tartarus-core",
-    "crates/tartarus-scan",
-    "crates/tartarus-overlay",
+  "crates/tartarus-core",
+  "crates/tartarus-scan",
+  "crates/tartarus-overlay",
 ]
 
 [workspace.package]
@@ -27,16 +27,46 @@ name = "tartarus-workspace"
 rayon = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+thiserror = "2.0"
 regex = "1.11"
 oozextract = "0.5.5"
 flate2 = "1.0"
 heapless = "0.8"
 fnv = "1.0"
 rand = { version = "0.8", features = ["small_rng"] }
+tinyvec = { version = "1.13.3", features = ["serde"] }
 memchr = "2.7"
 glam = "0.29"
-palette = { version = "0.7", default-features = false, features = ["std", "approx"] }
+palette = { version = "0.7", default-features = false, features = [
+  "std",
+  "approx",
+] }
 memory-stats = "1.2"
+aes = "0.9.3"
+hex = "0.4.3"
+png = "0.18.1"
+texture2ddecoder = "0.1.2"
+byteorder = "1.5.0"
+pico-args = "0.5.0"
+steamlocate = "2.1.1"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+ab_glyph = "0.2.32"
+font8x8 = "0.3.1"
+textwrap = "0.16.4"
+libc = "0.2.191"
+tracing-subscriber = "0.3.23"
+
+[workspace.lints.cargo]
+unused_dependencies = "allow"
+
+[workspace.lints.rust]
+unreachable_pub = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
 
 [profile.release]
 opt-level = 2
@@ -46,4 +76,3 @@ opt-level = 3
 
 [profile.release.package.tartarus-scan]
 opt-level = 3
-

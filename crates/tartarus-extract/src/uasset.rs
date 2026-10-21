@@ -6,6 +6,7 @@ use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 use serde::Serialize;
 
 use crate::bc::{PixelFormat, decode_mip_to_rgba8, encode_png_rgba8};
+use crate::error::ExtractError;
 
 pub const PACKAGE_FILE_TAG: u32 = 0x9E2A_83C1;
 
@@ -193,7 +194,7 @@ pub fn decode_texture2d(
     uasset: &[u8],
     uexp: &[u8],
     ubulk: Option<&[u8]>,
-) -> Result<DecodedTexture, String> {
+) -> Result<DecodedTexture, ExtractError> {
     let names = parse_uasset_names(uasset);
 
     // 1. Primary path: locate `FTexturePlatformData`'s `PixelFormatString` (`"PF_..."` FString) inside `.uexp`.
@@ -207,7 +208,11 @@ pub fn decode_texture2d(
         .find_map(|n| PixelFormat::from_name(n))
         .or_else(|| find_ascii_pixel_format(uexp))
         .or_else(|| find_ascii_pixel_format(uasset))
-        .ok_or_else(|| "Could not determine texture PixelFormat (no PF_* found)".to_string())?;
+        .ok_or_else(|| {
+            ExtractError::UassetFormat(
+                "Could not determine texture PixelFormat (no PF_* found)".to_string(),
+            )
+        })?;
 
     try_scan_mip_in_uexp(uexp, ubulk, format, &names)
 }
@@ -355,7 +360,7 @@ fn try_scan_mip_in_uexp(
     ubulk: Option<&[u8]>,
     format: PixelFormat,
     names: &[String],
-) -> Result<DecodedTexture, String> {
+) -> Result<DecodedTexture, ExtractError> {
     for off in 0..uexp.len().saturating_sub(36) {
         if LittleEndian::read_i32(&uexp[off..off + 4]) == 1
             && let Some((w, h, mip_bytes)) = parse_single_mip(uexp, ubulk, off, format, 0, 0)
@@ -372,8 +377,8 @@ fn try_scan_mip_in_uexp(
         }
     }
 
-    Err(format!(
+    Err(ExtractError::UassetFormat(format!(
         "Failed to locate valid {format:?} mipmap payload inside .uexp ({} bytes)",
         uexp.len()
-    ))
+    )))
 }

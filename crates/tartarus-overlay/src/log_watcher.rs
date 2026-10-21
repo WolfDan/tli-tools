@@ -100,6 +100,22 @@ impl LogWatcher {
         }
     }
 
+    pub fn new_isolated() -> Self {
+        Self {
+            path: None,
+            file: None,
+            buf: vec![0u8; 1024],
+            offset: 0,
+            carry: String::new(),
+            events: Vec::new(),
+            initialized: true,
+            last_action_at: None,
+            last_eat_at: None,
+            last_gift_confirm_at: None,
+            saw_cur_zero: false,
+        }
+    }
+
     pub fn discover_log_path() -> Option<PathBuf> {
         const TLI_STEAM_APP_ID: u32 = 1_974_050;
 
@@ -253,8 +269,7 @@ impl LogWatcher {
         &self.events
     }
 
-    #[cfg(test)]
-    fn process_line(&mut self, line: &str, out: &mut Vec<LogEvent>) {
+    pub fn process_line(&mut self, line: &str, out: &mut Vec<LogEvent>) {
         self.process_line_internal(line, out, false);
     }
 
@@ -394,70 +409,5 @@ impl LogWatcher {
                 treasure_view: false,
             });
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_s16_log_triggers() {
-        let mut lw = LogWatcher {
-            path: None,
-            file: None,
-            buf: vec![0u8; 1024],
-            offset: 0,
-            carry: String::new(),
-            events: Vec::new(),
-            initialized: true,
-            last_action_at: None,
-            last_eat_at: None,
-            last_gift_confirm_at: None,
-            saw_cur_zero: false,
-        };
-        let mut evs = Vec::new();
-        lw.process_line("[2026.10.17] S16BoardTaskPop Run", &mut evs);
-        assert!(evs.contains(&LogEvent::ObjectivePopup));
-        assert!(evs.contains(&LogEvent::RunNew));
-
-        evs.clear();
-        lw.process_line("[2026.10.17] [S16LastDay] check cur=0 max=12", &mut evs);
-        assert!(evs.contains(&LogEvent::DayCheck { cur: 0, max: 12 }));
-        lw.process_line("[2026.10.17] S16BoardRelicPop Run", &mut evs);
-        assert!(evs.contains(&LogEvent::InstrumentsPopup { fresh: true }));
-        assert!(evs.contains(&LogEvent::RelicPopState(true)));
-
-        evs.clear();
-        lw.process_line(
-            "[2026.10.17] [S16BGM] board Begin runId=425a86a4-c923-11f1-8fcd-00000000005b IsSettled=false Result=-1",
-            &mut evs,
-        );
-        assert!(evs.iter().any(|e| matches!(
-            e,
-            LogEvent::RunBegin {
-                is_settled: false,
-                ..
-            }
-        )));
-
-        evs.clear();
-        lw.process_line("[2026.10.17] S16BoardNewDayPop Destory", &mut evs);
-        assert!(evs.contains(&LogEvent::BoardTrigger {
-            settle_ms: 450,
-            treasure_view: false
-        }));
-
-        evs.clear();
-        lw.process_line("[2026.10.17] S16GamePlayCheckOut Run", &mut evs);
-        assert!(evs.contains(&LogEvent::Riot(true)));
-        assert!(evs.contains(&LogEvent::RelicPopState(false)));
-
-        evs.clear();
-        lw.process_line(
-            "[2026.10.17] Btn_S16GamePlay_CheckOut_AbandonChallenge",
-            &mut evs,
-        );
-        assert!(evs.contains(&LogEvent::RunOver));
     }
 }

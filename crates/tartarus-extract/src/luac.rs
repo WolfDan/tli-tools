@@ -7,6 +7,8 @@ use std::io::Cursor;
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 use serde::{Deserialize, Serialize};
 
+use crate::error::ExtractError;
+
 /// Xindong Lua 5.3 bytecode magic after decryption (`\x01XDI\x11\r\n\x1a\n\x01`).
 pub const XDI_LUA_HEADER: &[u8; 10] = b"\x01XDI\x11\r\n\x1a\n\x01";
 
@@ -74,15 +76,17 @@ pub struct LuaConfigTable {
 }
 
 /// Reads an XDI Lua 5.3 string where the length prefix has `+ 10` added to the byte length.
-fn read_xdi_string(cur: &mut Cursor<&[u8]>) -> Result<String, String> {
+fn read_xdi_string(cur: &mut Cursor<&[u8]>) -> Result<String, ExtractError> {
     let lb = cur.read_u8().map_err(|_| {
-        format!(
+        ExtractError::LuacFormat(format!(
             "Unexpected EOF reading string length at 0x{:x}",
             cur.position()
-        )
+        ))
     })?;
     let slen = if lb == 0xFF {
-        let raw = cur.read_u64::<LittleEndian>().map_err(|e| e.to_string())? as usize;
+        let raw = cur
+            .read_u64::<LittleEndian>()
+            .map_err(|e| ExtractError::LuacFormat(e.to_string()))? as usize;
         raw.saturating_sub(10)
     } else if lb == 0 {
         0
@@ -92,12 +96,12 @@ fn read_xdi_string(cur: &mut Cursor<&[u8]>) -> Result<String, String> {
     let pos = cur.position() as usize;
     let buf = *cur.get_ref();
     let slice = buf.get(pos..pos + slen).ok_or_else(|| {
-        format!(
+        ExtractError::LuacFormat(format!(
             "String length {} exceeds buffer at 0x{:x} (len={})",
             slen,
             pos,
             buf.len()
-        )
+        ))
     })?;
     cur.set_position((pos + slen) as u64);
     Ok(String::from_utf8_lossy(slice).into_owned())
@@ -106,10 +110,12 @@ fn read_xdi_string(cur: &mut Cursor<&[u8]>) -> Result<String, String> {
 /// Parses a decrypted `\x01XDI` Lua 5.3 `DataCfg/config_*.out` file by decoding its constant pool
 /// and executing the top-level table-construction instructions (`NEWTABLE`, `LOADK`, `SETTABLE`, `SETLIST`),
 /// merging the metatable `default_values` (`__index`) into every row.
-pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, String> {
+pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, ExtractError> {
     let dec = decrypt_luac_bytes(raw_or_dec);
     if dec.len() < 16 || &dec[..10] != XDI_LUA_HEADER {
-        return Err("Buffer does not start with valid \\x01XDI Lua 5.3 header".to_string());
+        return Err(ExtractError::LuacFormat(
+            "Buffer does not start with valid \\x01XDI Lua 5.3 header".to_string(),
+        ));
     }
     let mut cur = Cursor::new(dec.as_slice());
     cur.set_position(10);
@@ -117,46 +123,59 @@ pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, Strin
 
     // Skip linedefined (4), lastlinedefined (4), numparams (1), is_vararg (1), maxstacksize (1)
     if (cur.position() as usize) + 11 > dec.len() {
-        return Err("Unexpected EOF in Lua proto header".to_string());
+        return Err(ExtractError::LuacFormat(
+            "Unexpected EOF in Lua proto header".to_string(),
+        ));
     }
     cur.set_position(cur.position() + 11);
 
-    let sizecode = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
+    let sizecode = cur
+        .read_u32::<LittleEndian>()
+        .map_err(|e| ExtractError::LuacFormat(e.to_string()))? as usize;
     if (cur.position() as usize) + sizecode * 4 > dec.len() {
-        return Err("Unexpected EOF in Lua code section".to_string());
+        return Err(ExtractError::LuacFormat(
+            "Unexpected EOF in Lua code section".to_string(),
+        ));
     }
     let mut code = Vec::with_capacity(sizecode);
     for _ in 0..sizecode {
-        code.push(cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())?);
+        code.push(
+            cur.read_u32::<LittleEndian>()
+                .map_err(|e| ExtractError::LuacFormat(e.to_string()))?,
+        );
     }
 
-    let sizek = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
+    let sizek = cur
+        .read_u32::<LittleEndian>()
+        .map_err(|e| ExtractError::LuacFormat(e.to_string()))? as usize;
     let mut consts = Vec::with_capacity(sizek);
     for _ in 0..sizek {
-        let tag = cur
-            .read_u8()
-            .map_err(|_| "Unexpected EOF in Lua constant pool".to_string())?;
+        let tag = cur.read_u8().map_err(|_| {
+            ExtractError::LuacFormat("Unexpected EOF in Lua constant pool".to_string())
+        })?;
         match tag {
             0x00 => consts.push(LuaValue::Nil),
             0x01 => {
-                let b = cur
-                    .read_u8()
-                    .map_err(|_| "Unexpected EOF reading bool constant".to_string())?;
+                let b = cur.read_u8().map_err(|_| {
+                    ExtractError::LuacFormat("Unexpected EOF reading bool constant".to_string())
+                })?;
                 consts.push(LuaValue::Bool(b != 0));
             }
             0x03 => consts.push(LuaValue::Float(
-                cur.read_f64::<LittleEndian>().map_err(|e| e.to_string())?,
+                cur.read_f64::<LittleEndian>()
+                    .map_err(|e| ExtractError::LuacFormat(e.to_string()))?,
             )),
             0x13 => consts.push(LuaValue::Int(
-                cur.read_i64::<LittleEndian>().map_err(|e| e.to_string())?,
+                cur.read_i64::<LittleEndian>()
+                    .map_err(|e| ExtractError::LuacFormat(e.to_string()))?,
             )),
             0x04 | 0x14 => consts.push(LuaValue::Str(read_xdi_string(&mut cur)?)),
             other => {
-                return Err(format!(
+                return Err(ExtractError::LuacFormat(format!(
                     "Unsupported Lua constant tag 0x{:02x} at 0x{:x}",
                     other,
                     cur.position() - 1
-                ));
+                )));
             }
         }
     }
@@ -244,10 +263,12 @@ pub fn parse_xdi_config_table(raw_or_dec: &[u8]) -> Result<LuaConfigTable, Strin
 
 /// Recursively walks all function protos inside a decrypted `\x01XDI` Lua 5.3 bytecode buffer
 /// and returns `(source_name, all_string_constants)`.
-pub fn extract_xdi_strings(raw_or_dec: &[u8]) -> Result<(String, Vec<String>), String> {
+pub fn extract_xdi_strings(raw_or_dec: &[u8]) -> Result<(String, Vec<String>), ExtractError> {
     let dec = decrypt_luac_bytes(raw_or_dec);
     if dec.len() < 16 || &dec[..10] != XDI_LUA_HEADER {
-        return Err("Buffer does not start with valid \\x01XDI Lua 5.3 header".to_string());
+        return Err(ExtractError::LuacFormat(
+            "Buffer does not start with valid \\x01XDI Lua 5.3 header".to_string(),
+        ));
     }
     let mut cur = Cursor::new(dec.as_slice());
     cur.set_position(10);
@@ -259,18 +280,22 @@ pub fn extract_xdi_strings(raw_or_dec: &[u8]) -> Result<(String, Vec<String>), S
 fn parse_proto_strings(
     cur: &mut Cursor<&[u8]>,
     out_strings: &mut Vec<String>,
-) -> Result<String, String> {
+) -> Result<String, ExtractError> {
     let src = read_xdi_string(cur)?;
     let dec_len = cur.get_ref().len();
     if (cur.position() as usize) + 11 > dec_len {
-        return Err("EOF in proto header".to_string());
+        return Err(ExtractError::LuacFormat("EOF in proto header".to_string()));
     }
     cur.set_position(cur.position() + 11); // linedefined (4), lastlinedefined (4), numparams (1), is_vararg (1), maxstacksize (1)
 
-    let sizecode = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
+    let sizecode = cur
+        .read_u32::<LittleEndian>()
+        .map_err(|e| ExtractError::LuacFormat(e.to_string()))? as usize;
     cur.set_position(cur.position() + (sizecode * 4) as u64);
 
-    let sizek = cur.read_u32::<LittleEndian>().map_err(|e| e.to_string())? as usize;
+    let sizek = cur
+        .read_u32::<LittleEndian>()
+        .map_err(|e| ExtractError::LuacFormat(e.to_string()))? as usize;
     for _ in 0..sizek {
         let Ok(tag) = cur.read_u8() else {
             break;

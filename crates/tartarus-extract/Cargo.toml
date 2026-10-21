@@ -12,13 +12,17 @@ flate2.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 memchr.workspace = true
 regex.workspace = true
+aes.workspace = true
+hex.workspace = true
+png.workspace = true
+texture2ddecoder.workspace = true
+byteorder.workspace = true
+pico-args.workspace = true
+steamlocate.workspace = true
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
-aes = "0.9.3"
-hex = "0.4.3"
-png = "0.18.1"
-texture2ddecoder = "0.1.2"
-byteorder = "1.5.0"
-pico-args = "0.5.0"
-steamlocate = "2.1.1"
+
+[lints]
+workspace = true

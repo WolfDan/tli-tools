@@ -3,6 +3,7 @@ name = "tartarus-scan"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 tartarus-core = { path = "../tartarus-core" }
@@ -14,4 +15,7 @@ palette.workspace = true
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]
-png = "0.18"
+png.workspace = true
+
+[lints]
+workspace = true
