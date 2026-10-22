@@ -25,6 +25,16 @@ pub struct PaperSpriteInfo {
     pub height: u32,
 }
 
+/// Entry from a cooked `.uasset` `FObjectImport` table (`28` bytes per entry).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UassetImportEntry {
+    pub class_package: String,
+    pub class_name: String,
+    pub outer_index: i32,
+    pub object_name: String,
+    pub package_path: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct DecodedTexture {
     pub width: usize,
@@ -207,6 +217,127 @@ pub fn parse_uasset_names(uasset: &[u8]) -> Vec<String> {
     }
 
     Vec::new()
+}
+
+fn format_fname_idx(names: &[String], idx: u32, number: u32) -> String {
+    assert!(!names.is_empty());
+    let base = names
+        .get(idx as usize)
+        .map(String::as_str)
+        .unwrap_or("None");
+    if number == 0 {
+        base.to_string()
+    } else {
+        format!("{base}_{}", number - 1)
+    }
+}
+
+fn find_import_table_bounds(uasset: &[u8], names_len: usize) -> Option<(usize, usize)> {
+    assert!(uasset.len() >= 8);
+    assert!(names_len <= 65_536);
+    for scan_off in (24..uasset.len().min(256)).step_by(1) {
+        let Some(hdr) = uasset.get(scan_off..scan_off + 32) else {
+            break;
+        };
+        let nc = LittleEndian::read_i32(&hdr[0..4]);
+        let no = LittleEndian::read_i32(&hdr[4..8]);
+        let ec = LittleEndian::read_i32(&hdr[16..20]);
+        let eo = LittleEndian::read_i32(&hdr[20..24]);
+        let ic = LittleEndian::read_i32(&hdr[24..28]);
+        let io = LittleEndian::read_i32(&hdr[28..32]);
+        if nc as usize == names_len
+            && (64..=uasset.len() as i32).contains(&no)
+            && (1..=4096).contains(&ec)
+            && (64..=uasset.len() as i32).contains(&eo)
+            && (1..=4096).contains(&ic)
+            && (64..=uasset.len() as i32).contains(&io)
+            && (io as usize) + (ic as usize) * 28 <= uasset.len()
+        {
+            return Some((ic as usize, io as usize));
+        }
+    }
+    None
+}
+
+/// Parses the `FObjectImport` table from a cooked UE 4.27 `.uasset` header and resolves
+/// each import's outer package path.
+pub fn parse_uasset_imports(uasset: &[u8], names: &[String]) -> Vec<UassetImportEntry> {
+    assert!(uasset.len() <= 256 * 1024 * 1024);
+    assert!(names.len() <= 65_536);
+    if uasset.len() < 64 || names.is_empty() {
+        return Vec::new();
+    }
+    let Some((import_count, import_offset)) = find_import_table_bounds(uasset, names.len()) else {
+        return Vec::new();
+    };
+    assert!(import_count <= 4096);
+
+    let mut raw_imports = Vec::with_capacity(import_count);
+    for i in 0..import_count {
+        let off = import_offset + i * 28;
+        let Some(slice) = uasset.get(off..off + 28) else {
+            return Vec::new();
+        };
+        let cp_idx = LittleEndian::read_u32(&slice[0..4]);
+        let cp_num = LittleEndian::read_u32(&slice[4..8]);
+        let cn_idx = LittleEndian::read_u32(&slice[8..12]);
+        let cn_num = LittleEndian::read_u32(&slice[12..16]);
+        let outer_index = LittleEndian::read_i32(&slice[16..20]);
+        let on_idx = LittleEndian::read_u32(&slice[20..24]);
+        let on_num = LittleEndian::read_u32(&slice[24..28]);
+        if cp_idx as usize >= names.len()
+            || cn_idx as usize >= names.len()
+            || on_idx as usize >= names.len()
+        {
+            return Vec::new();
+        }
+        raw_imports.push((
+            format_fname_idx(names, cp_idx, cp_num),
+            format_fname_idx(names, cn_idx, cn_num),
+            outer_index,
+            format_fname_idx(names, on_idx, on_num),
+        ));
+    }
+
+    let mut out = Vec::with_capacity(raw_imports.len());
+    for (class_package, class_name, outer_index, object_name) in &raw_imports {
+        let mut pkg_path = object_name.clone();
+        let mut cur_outer = *outer_index;
+        for _ in 0..16 {
+            if cur_outer >= 0 {
+                break;
+            }
+            let oidx = (-cur_outer - 1) as usize;
+            let Some((_, _, next_outer, outer_name)) = raw_imports.get(oidx) else {
+                break;
+            };
+            if *next_outer == 0 {
+                pkg_path = outer_name.clone();
+                break;
+            }
+            cur_outer = *next_outer;
+        }
+        out.push(UassetImportEntry {
+            class_package: class_package.clone(),
+            class_name: class_name.clone(),
+            outer_index: *outer_index,
+            object_name: object_name.clone(),
+            package_path: pkg_path,
+        });
+    }
+    assert_eq!(out.len(), import_count);
+    out
+}
+
+/// Resolves a UE4 `FPackageIndex` (`< 0` for `ImportTable[-idx - 1]`) to its package path.
+pub fn resolve_package_index(imports: &[UassetImportEntry], pkg_index: i32) -> Option<String> {
+    assert!(imports.len() <= 4096);
+    if pkg_index >= 0 {
+        return None;
+    }
+    let idx = (-pkg_index - 1) as usize;
+    assert!(idx < 65_536);
+    imports.get(idx).map(|imp| imp.package_path.clone())
 }
 
 /// Decodes a cooked UE 4.27 `UTexture2D` from its `.uasset`, `.uexp`, and optional

@@ -34,6 +34,9 @@ pub enum ExtractError {
 
     #[error("Lua decompilation error: {0}")]
     LuacDecompile(String),
+
+    #[error("shader archive or DXBC format error: {0}")]
+    ShaderFormat(String),
 }
 
 const _: () = {

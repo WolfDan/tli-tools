@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
+use serde::Serialize;
 use tartarus_extract::{
-    DEFAULT_AES_KEY_HEX, PakEntryMeta, PakVfs, PaperSpriteInfo, decompile_luac_bytes,
-    discover_game_dir, parse_aes_key_hex, parse_uasset_names, parse_xdi_config_table,
-    xdi_to_lua53_bytes,
+    DEFAULT_AES_KEY_HEX, MaterialInfo, PakEntryMeta, PakVfs, PaperSpriteInfo, ShaderArchiveIndex,
+    decompile_dxbc_to_hlsl, decompile_luac_bytes, disassemble_dxbc, discover_game_dir,
+    parse_aes_key_hex, parse_dxbc, parse_uasset_names, parse_xdi_config_table, xdi_to_lua53_bytes,
 };
 
 const _: () = {
@@ -17,7 +18,7 @@ const _: () = {
 
 fn print_usage() {
     let usage = "\
-tartarus-extract — Torchlight: Infinite UE 4.27 Pak v12 + Oodle + BC7/DXT + Lua/Lang Extractor
+tartarus-extract — Torchlight: Infinite UE 4.27 Pak v12 + Oodle + BC7/DXT + Lua/Shader Extractor
 
 USAGE:
   tartarus-extract <COMMAND> [OPTIONS]
@@ -27,8 +28,9 @@ COMMANDS:
   raw     <FILTER> <OUT_DIR>    Extract raw decrypted + Oodle-decompressed files (.uasset/.uexp/...)
   png     <FILTER> <OUT_DIR>    Decode matching cooked UTexture2D & UPaperSprite assets to .png
   luac    <FILTER> <OUT_DIR>    Decrypt & decompile matching .out Lua bytecode (.luac/.lua/.json)
+  shader  <FILTER> <OUT_DIR>    Extract & decompile materials/permutations or .ushaderbytecode (.dxbc/.asm/.hlsl/.mat.json)
   lang    [LANG] [PREFIX]       Dump localization pairs from config_multi_language_<LANG>.bin
-  inspect <VIRTUAL_PATH>        Inspect a .uasset/.uexp pair (FName table, sizes, texture format)
+  inspect <VIRTUAL_PATH>        Inspect a .uasset/.uexp pair or .ushaderbytecode archive
 
 OPTIONS:
   --game-dir <PATH>             Game root or .pak path (auto-discovered via Steam or $TLI_GAME_DIR)
@@ -345,11 +347,302 @@ fn cmd_lang(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct ExportedShaderRecord {
+    shader_index: usize,
+    shader_hash: String,
+    stage: String,
+    compressed_size: usize,
+    uncompressed_size: usize,
+    dxbc_file: String,
+    asm_file: String,
+    hlsl_file: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MaterialManifest {
+    material: MaterialInfo,
+    shader_archive: String,
+    shader_map_index: usize,
+    shaders: Vec<ExportedShaderRecord>,
+}
+
+fn write_shader_triple(
+    vfs: &PakVfs,
+    arch_meta: &PakEntryMeta,
+    arch: &ShaderArchiveIndex,
+    shader_idx: usize,
+    shader_dir: &Path,
+    mat_opt: Option<&MaterialInfo>,
+) -> Result<ExportedShaderRecord, String> {
+    assert!(shader_idx < arch.shader_entries.len());
+    assert!(!shader_dir.as_os_str().is_empty());
+    let blob = vfs
+        .extract_shader_entry(arch_meta, arch, shader_idx)
+        .map_err(|e| e.to_string())?;
+    let parsed = parse_dxbc(&blob.dxbc_bytes).map_err(|e| e.to_string())?;
+    let asm_text = disassemble_dxbc(&parsed);
+    let hlsl_text = decompile_dxbc_to_hlsl(&parsed, mat_opt);
+
+    let hash8 = &blob.shader_hash_hex[..8.min(blob.shader_hash_hex.len())];
+    let stem = format!("{}_{shader_idx:06}_{hash8}", blob.stage.short_prefix());
+    fs::create_dir_all(shader_dir).map_err(|e| e.to_string())?;
+
+    let dxbc_name = format!("{stem}.dxbc");
+    let asm_name = format!("{stem}.asm");
+    let hlsl_name = format!("{stem}.hlsl");
+    fs::write(shader_dir.join(&dxbc_name), &blob.dxbc_bytes).map_err(|e| e.to_string())?;
+    fs::write(shader_dir.join(&asm_name), &asm_text).map_err(|e| e.to_string())?;
+    fs::write(shader_dir.join(&hlsl_name), &hlsl_text).map_err(|e| e.to_string())?;
+
+    Ok(ExportedShaderRecord {
+        shader_index: shader_idx,
+        shader_hash: blob.shader_hash_hex,
+        stage: blob.stage.display_name().to_string(),
+        compressed_size: blob.compressed_size,
+        uncompressed_size: blob.uncompressed_size,
+        dxbc_file: dxbc_name,
+        asm_file: asm_name,
+        hlsl_file: hlsl_name,
+    })
+}
+
+fn extract_single_material_shaders(
+    vfs: &PakVfs,
+    archives: &[(PakEntryMeta, ShaderArchiveIndex)],
+    vpath: &str,
+    out_dir: &Path,
+) -> Result<Option<usize>, String> {
+    assert!(!vpath.is_empty());
+    assert!(!out_dir.as_os_str().is_empty());
+    let Ok(mat) = vfs.read_material_info(vpath) else {
+        return Ok(None);
+    };
+    let Some(smap_hash) = mat.shader_map_hash else {
+        return Ok(None);
+    };
+    let Some((arch_meta, arch, smap_idx)) = archives.iter().find_map(|(m, a)| {
+        a.map_hash_to_index
+            .get(&smap_hash)
+            .copied()
+            .map(|idx| (m, a, idx))
+    }) else {
+        return Ok(None);
+    };
+
+    let base_rel = Path::new(vpath).with_extension("");
+    let shader_dir = out_dir.join(format!("{}_shaders", base_rel.display()));
+    let shader_indices = arch.shader_indices_for_map(smap_idx);
+    let mut records = Vec::with_capacity(shader_indices.len());
+    for si in shader_indices {
+        records.push(write_shader_triple(
+            vfs,
+            arch_meta,
+            arch,
+            si,
+            &shader_dir,
+            Some(&mat),
+        )?);
+    }
+
+    let manifest = MaterialManifest {
+        material: mat,
+        shader_archive: arch.archive_virtual_path.clone(),
+        shader_map_index: smap_idx,
+        shaders: records,
+    };
+    let json_dest = out_dir.join(base_rel.with_extension("mat.json"));
+    if let Some(parent) = json_dest.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json_str = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    fs::write(&json_dest, json_str).map_err(|e| e.to_string())?;
+    Ok(Some(manifest.shaders.len()))
+}
+
+fn extract_archive_shaders_by_filter(
+    vfs: &PakVfs,
+    archives: &[(PakEntryMeta, ShaderArchiveIndex)],
+    filter: &str,
+    out_dir: &Path,
+) -> Result<(usize, usize), String> {
+    assert!(!filter.is_empty());
+    assert!(!out_dir.as_os_str().is_empty());
+    let mut map_count = 0usize;
+    let mut shader_count = 0usize;
+
+    for (arch_meta, arch) in archives {
+        let arch_matches = arch.archive_virtual_path.to_lowercase().contains(filter);
+        let arch_stem = Path::new(&arch.archive_virtual_path).with_extension("");
+        for (smap_idx, smap_hash) in arch.shader_map_hashes.iter().enumerate() {
+            let smap_hex = hex::encode(smap_hash);
+            if arch_matches || smap_hex.contains(filter) {
+                let s_dir = out_dir
+                    .join(&arch_stem)
+                    .join(format!("smap_{smap_idx:05}_{}", &smap_hex[..12]));
+                for si in arch.shader_indices_for_map(smap_idx) {
+                    write_shader_triple(vfs, arch_meta, arch, si, &s_dir, None)?;
+                    shader_count += 1;
+                }
+                map_count += 1;
+            }
+        }
+        if map_count == 0 {
+            for (si, sh_hash) in arch.shader_hashes.iter().enumerate() {
+                let sh_hex = hex::encode(sh_hash);
+                if sh_hex.contains(filter) {
+                    let s_dir = out_dir.join(&arch_stem).join("shaders");
+                    write_shader_triple(vfs, arch_meta, arch, si, &s_dir, None)?;
+                    shader_count += 1;
+                }
+            }
+        }
+    }
+    Ok((map_count, shader_count))
+}
+
+fn cmd_shader(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
+    assert!(!pos_args.is_empty());
+    let usage = "Usage: tartarus-extract shader <FILTER> <OUT_DIR>";
+    let filter = pos_args.get(1).ok_or(usage)?.to_lowercase();
+    let out_dir = PathBuf::from(pos_args.get(2).ok_or(usage)?);
+
+    let archives = vfs
+        .load_shader_archive_indices()
+        .map_err(|e| e.to_string())?;
+    let uassets: Vec<&PakEntryMeta> = vfs
+        .entries
+        .values()
+        .filter(|m| {
+            m.virtual_path.ends_with(".uasset") && m.virtual_path.to_lowercase().contains(&filter)
+        })
+        .collect();
+    assert!(uassets.len() <= vfs.entries.len());
+
+    let ok_mats = AtomicUsize::new(0);
+    let ok_shaders = AtomicUsize::new(0);
+    uassets.par_iter().for_each(|meta| {
+        if let Ok(Some(n)) =
+            extract_single_material_shaders(vfs, &archives, &meta.virtual_path, &out_dir)
+        {
+            ok_mats.fetch_add(1, Ordering::Relaxed);
+            ok_shaders.fetch_add(n, Ordering::Relaxed);
+        }
+    });
+
+    let mut mats_done = ok_mats.load(Ordering::Relaxed);
+    let mut shaders_done = ok_shaders.load(Ordering::Relaxed);
+    if mats_done == 0 {
+        let (mc, sc) = extract_archive_shaders_by_filter(vfs, &archives, &filter, &out_dir)?;
+        mats_done = mc;
+        shaders_done = sc;
+    }
+
+    eprintln!(
+        "Done: {} material/shadermap manifests and {} decompiled shaders (.dxbc/.asm/.hlsl) written to {}.",
+        mats_done,
+        shaders_done,
+        out_dir.display()
+    );
+    Ok(())
+}
+
+fn print_material_inspection(vfs: &PakVfs, mat: &MaterialInfo) {
+    assert!(!mat.virtual_path.is_empty());
+    println!("  Material / Permutation Info:");
+    if !mat.parent_chain.is_empty() {
+        println!("    Parent Chain : {}", mat.parent_chain.join(" -> "));
+    }
+    println!(
+        "    Blend/Shading: {:?} / {:?} (bHasStaticPermutationResource={})",
+        mat.blend_mode.as_deref().unwrap_or("Default"),
+        mat.shading_model.as_deref().unwrap_or("Default"),
+        mat.has_static_permutation_resource
+    );
+    for sw in &mat.static_switches {
+        println!("    [StaticSwitch] {:<28} = {}", sw.name, sw.value);
+    }
+    for m in &mat.static_component_masks {
+        println!(
+            "    [StaticMask]   {:<28} = RGBA({}, {}, {}, {})",
+            m.name, m.r as u8, m.g as u8, m.b as u8, m.a as u8
+        );
+    }
+    for s in &mat.scalar_params {
+        println!("    [ScalarParam]  {:<28} = {:.5}", s.name, s.value);
+    }
+    for v in &mat.vector_params {
+        println!(
+            "    [VectorParam]  {:<28} = ({:.4}, {:.4}, {:.4}, {:.4})",
+            v.name, v.rgba[0], v.rgba[1], v.rgba[2], v.rgba[3]
+        );
+    }
+    for t in &mat.texture_params {
+        println!("    [TextureParam] {:<28} = {}", t.name, t.texture_path);
+    }
+    if !mat.uniform_expression_names.is_empty() {
+        println!(
+            "    Uniform Expressions ({}): {}",
+            mat.uniform_expression_names.len(),
+            mat.uniform_expression_names.join(", ")
+        );
+    }
+    if let Some(smap_hash) = mat.shader_map_hash {
+        println!(
+            "    ShaderMapHash: {} (source: {})",
+            hex::encode(smap_hash),
+            mat.resolved_shader_source_path
+        );
+        if let Ok(archives) = vfs.load_shader_archive_indices() {
+            for (_, arch) in &archives {
+                if let Some(&smap_idx) = arch.map_hash_to_index.get(&smap_hash) {
+                    let indices = arch.shader_indices_for_map(smap_idx);
+                    println!(
+                        "    Resolved in {} -> ShaderMap[{}] ({} unique shaders):",
+                        arch.archive_virtual_path,
+                        smap_idx,
+                        indices.len()
+                    );
+                    for si in indices {
+                        let e = &arch.shader_entries[si];
+                        println!(
+                            "      shader[{si:6}] {:<7} hash={} comp={:>5} -> uncomp={:>5}",
+                            e.frequency.display_name(),
+                            hex::encode(arch.shader_hashes[si]),
+                            e.size,
+                            e.uncompressed_size
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn cmd_inspect(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     assert!(!pos_args.is_empty());
     let vpath = pos_args
         .get(1)
         .ok_or("Usage: tartarus-extract inspect <VIRTUAL_PATH>")?;
+    if vpath.ends_with(".ushaderbytecode") {
+        let clean = vpath.trim_start_matches('/');
+        let meta = vfs
+            .entries
+            .get(clean)
+            .ok_or_else(|| format!("Not found: {clean}"))?;
+        let arch =
+            tartarus_extract::read_shader_archive_index_from_pak(meta, || vfs.read_entry(meta))
+                .map_err(|e| e.to_string())?;
+        println!("ShaderArchive: {}", arch.archive_virtual_path);
+        println!("  Version           : {}", arch.version);
+        println!("  Payload Offset    : {} bytes", arch.payload_offset);
+        println!("  ShaderMaps        : {}", arch.shader_map_entries.len());
+        println!("  Unique Shaders    : {}", arch.shader_entries.len());
+        println!("  Shader Index Refs : {}", arch.shader_indices.len());
+        println!("  Stage Breakdown   : {:?}", arch.stage_counts());
+        return Ok(());
+    }
+
     let base = vpath
         .trim_start_matches('/')
         .trim_end_matches(".uasset")
@@ -380,6 +673,13 @@ fn cmd_inspect(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
             "  PaperSprite: atlas={} uv=({}, {}) size={}x{}",
             sprite.atlas_virtual_path, sprite.uv_x, sprite.uv_y, sprite.width, sprite.height
         );
+    }
+    if let Ok(mat) = vfs.read_material_info(base)
+        && (mat.shader_map_hash.is_some()
+            || mat.parent_path.is_some()
+            || !mat.static_switches.is_empty())
+    {
+        print_material_inspection(vfs, &mat);
     }
     Ok(())
 }
@@ -424,6 +724,7 @@ fn run() -> Result<(), String> {
         "raw" => cmd_raw(&vfs, &pos_args),
         "png" => cmd_png(&vfs, &pos_args),
         "luac" => cmd_luac(&vfs, &pos_args),
+        "shader" => cmd_shader(&vfs, &pos_args),
         "lang" => cmd_lang(&vfs, &pos_args),
         "inspect" => cmd_inspect(&vfs, &pos_args),
         other => Err(format!("Unknown command '{other}'")),
