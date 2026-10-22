@@ -11,6 +11,7 @@ pub mod error;
 pub mod luac;
 pub mod material;
 pub mod pak;
+pub mod particle;
 pub mod shader_archive;
 pub mod uasset;
 pub mod umg;
@@ -32,11 +33,17 @@ pub use luac::{
     parse_xdi_config_table, strip_rich_text, xdi_to_lua53_bytes,
 };
 pub use material::{
-    MaterialInfo, ScalarParam, StaticComponentMaskParam, StaticSwitchParam, TextureParam,
-    VectorParam, game_path_to_virtual_path, parse_material_asset,
+    MaterialInfo, MaterialUniformExpressionSet, PreshaderHeader, ScalarParam,
+    StaticComponentMaskParam, StaticSwitchParam, TextureParam, UniformScalarParamInfo,
+    UniformTexture2DParamInfo, UniformVectorParamInfo, VectorParam, game_path_to_virtual_path,
+    parse_material_asset,
 };
 pub use pak::{
     CompressionKind, PakEntryMeta, PakVfs, discover_game_dir, extract_pak_entry, read_pak_index,
+};
+pub use particle::{
+    LinearColorCurve, RichCurveKey, SimulatedUiParticle, UiParticleEmitterAsset,
+    parse_ui_particle_asset,
 };
 pub use shader_archive::{
     DecompressedShaderBlob, SHADER_ARCHIVE_VERSION_UE427, ShaderArchiveIndex, ShaderCodeEntry,
@@ -44,10 +51,13 @@ pub use shader_archive::{
     read_shader_archive_index_from_pak,
 };
 pub use uasset::{
-    DecodedTexture, PaperSpriteInfo, UassetImportEntry, decode_texture2d, parse_paper_sprite,
-    parse_uasset_imports, parse_uasset_names, resolve_package_index,
+    DecodedTexture, PaperSpriteInfo, UassetExportEntry, UassetImportEntry, decode_texture2d,
+    format_fname_idx, parse_paper_sprite, parse_uasset_exports, parse_uasset_imports,
+    parse_uasset_names, resolve_package_index,
 };
-pub use umg::{UmgAnchorData, UmgBlueprint, parse_umg_blueprint};
+pub use umg::{
+    UmgAnchorData, UmgAnimationStateT0, UmgBlueprint, UmgWidgetNode, parse_umg_blueprint,
+};
 
 impl PakVfs {
     /// Reads `.uasset`, `.uexp`, and optional `.ubulk` for a virtual asset path
@@ -156,6 +166,22 @@ impl PakVfs {
         parse_umg_blueprint(&uasset, &uexp)
     }
 
+    /// Reads `.uasset` and `.uexp` for a cooked `UIParticleEmitterAsset` (`UI_P_V2_S16BoardCell_*`).
+    pub fn read_ui_particle_asset(
+        &self,
+        asset_path: &str,
+    ) -> Result<UiParticleEmitterAsset, ExtractError> {
+        assert!(!asset_path.is_empty());
+        let base = asset_path
+            .trim_start_matches('/')
+            .trim_end_matches(".uasset")
+            .trim_end_matches(".uexp");
+        assert!(!base.is_empty());
+        let uasset = self.read_path(&format!("{base}.uasset"))?;
+        let uexp = self.read_path(&format!("{base}.uexp"))?;
+        parse_ui_particle_asset(base, &uasset, &uexp)
+    }
+
     /// Reads a cooked `UMaterial` or `UMaterialInstanceConstant` (`.uasset` + `.uexp`) and
     /// resolves its `Parent` material chain (up to 8 hops) when the child instance inherits
     /// its `ShaderMapHash` from a parent material.
@@ -187,23 +213,9 @@ impl PakVfs {
             let Ok(p_info) = parse_material_asset(&parent_vpath, &p_uasset, &p_uexp) else {
                 break;
             };
-            if info.shader_map_hash.is_none() && p_info.shader_map_hash.is_some() {
-                info.shader_map_hash = p_info.shader_map_hash;
-                info.shader_map_hash_hex = p_info.shader_map_hash_hex;
-                info.resolved_shader_source_path = parent_vpath;
-            }
-            if info.uniform_expression_names.is_empty()
-                && !p_info.uniform_expression_names.is_empty()
-            {
-                info.uniform_expression_names = p_info.uniform_expression_names;
-            }
-            if info.blend_mode.is_none() {
-                info.blend_mode = p_info.blend_mode;
-            }
-            if info.shading_model.is_none() {
-                info.shading_model = p_info.shading_model;
-            }
-            cur_parent = p_info.parent_path;
+            let next_parent = p_info.parent_path.clone();
+            info.merge_parent(p_info);
+            cur_parent = next_parent;
         }
         assert!(info.parent_chain.len() <= 8);
         Ok(info)

@@ -1,0 +1,24 @@
+[package]
+name = "tartarus-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "1:1 CPU UMG and DirectX SM5 shader renderer for Torchlight: Infinite Season 16 (Tartarus) monster portraits and rarities"
+
+[dependencies]
+tartarus-extract = { path = "../tartarus-extract" }
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+png.workspace = true
+pico-args.workspace = true
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
+tartarus-core = { version = "0.3.0", path = "../tartarus-core" }
+tartarus-data = { version = "0.3.0", path = "../tartarus-data" }
+ab_glyph.workspace = true
+textwrap.workspace = true
+
+[lints]
+workspace = true

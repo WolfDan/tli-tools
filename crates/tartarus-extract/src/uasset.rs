@@ -35,12 +35,30 @@ pub struct UassetImportEntry {
     pub package_path: String,
 }
 
+/// Entry from a cooked `.uasset` `FObjectExport` table (`104` bytes per entry in UE 4.27).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UassetExportEntry {
+    pub export_index: usize,
+    pub class_index: i32,
+    pub class_name: String,
+    pub super_index: i32,
+    pub template_index: i32,
+    pub outer_index: i32,
+    pub object_name: String,
+    pub serial_size: usize,
+    pub serial_offset: usize,
+    pub uexp_offset: usize,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct DecodedTexture {
     pub width: usize,
     pub height: usize,
     pub format: PixelFormat,
     pub num_mips: usize,
+    pub srgb: bool,
+    pub clamp_x: bool,
+    pub clamp_y: bool,
     pub names: Vec<String>,
     #[serde(skip)]
     pub rgba8: Vec<u8>,
@@ -219,8 +237,10 @@ pub fn parse_uasset_names(uasset: &[u8]) -> Vec<String> {
     Vec::new()
 }
 
-fn format_fname_idx(names: &[String], idx: u32, number: u32) -> String {
+/// Formats an `(index, number)` `FName` pair using UE4's `number - 1` suffix rule.
+pub fn format_fname_idx(names: &[String], idx: u32, number: u32) -> String {
     assert!(!names.is_empty());
+    assert!(names.len() <= 65_536);
     let base = names
         .get(idx as usize)
         .map(String::as_str)
@@ -232,7 +252,7 @@ fn format_fname_idx(names: &[String], idx: u32, number: u32) -> String {
     }
 }
 
-fn find_import_table_bounds(uasset: &[u8], names_len: usize) -> Option<(usize, usize)> {
+fn find_table_bounds(uasset: &[u8], names_len: usize) -> Option<(usize, usize, usize, usize)> {
     assert!(uasset.len() >= 8);
     assert!(names_len <= 65_536);
     for scan_off in (24..uasset.len().min(256)).step_by(1) {
@@ -247,13 +267,13 @@ fn find_import_table_bounds(uasset: &[u8], names_len: usize) -> Option<(usize, u
         let io = LittleEndian::read_i32(&hdr[28..32]);
         if nc as usize == names_len
             && (64..=uasset.len() as i32).contains(&no)
-            && (1..=4096).contains(&ec)
+            && (1..=65_536).contains(&ec)
             && (64..=uasset.len() as i32).contains(&eo)
-            && (1..=4096).contains(&ic)
+            && (1..=65_536).contains(&ic)
             && (64..=uasset.len() as i32).contains(&io)
             && (io as usize) + (ic as usize) * 28 <= uasset.len()
         {
-            return Some((ic as usize, io as usize));
+            return Some((ec as usize, eo as usize, ic as usize, io as usize));
         }
     }
     None
@@ -267,10 +287,10 @@ pub fn parse_uasset_imports(uasset: &[u8], names: &[String]) -> Vec<UassetImport
     if uasset.len() < 64 || names.is_empty() {
         return Vec::new();
     }
-    let Some((import_count, import_offset)) = find_import_table_bounds(uasset, names.len()) else {
+    let Some((_, _, import_count, import_offset)) = find_table_bounds(uasset, names.len()) else {
         return Vec::new();
     };
-    assert!(import_count <= 4096);
+    assert!(import_count <= 65_536);
 
     let mut raw_imports = Vec::with_capacity(import_count);
     for i in 0..import_count {
@@ -329,9 +349,107 @@ pub fn parse_uasset_imports(uasset: &[u8], names: &[String]) -> Vec<UassetImport
     out
 }
 
+fn detect_export_stride(
+    uasset: &[u8],
+    export_offset: usize,
+    export_count: usize,
+    names_len: usize,
+) -> Option<usize> {
+    assert!(export_count > 0);
+    for stride in [104usize, 96, 100, 92, 108, 88] {
+        if export_offset + export_count * stride > uasset.len() {
+            continue;
+        }
+        let mut ok = true;
+        for i in 0..export_count {
+            let off = export_offset + i * stride;
+            let Some(s) = uasset.get(off..off + 44) else {
+                ok = false;
+                break;
+            };
+            let on_idx = LittleEndian::read_u32(&s[16..20]) as usize;
+            let on_num = LittleEndian::read_u32(&s[20..24]);
+            let serial_size = LittleEndian::read_i64(&s[28..36]);
+            let serial_offset = LittleEndian::read_i64(&s[36..44]);
+            if on_idx >= names_len
+                || on_num > 65_536
+                || !(0..=256 * 1024 * 1024).contains(&serial_size)
+                || serial_offset < (uasset.len() as i64)
+            {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            return Some(stride);
+        }
+    }
+    None
+}
+
+/// Parses the `FObjectExport` table from a cooked UE 4.26/4.27 `.uasset` header.
+pub fn parse_uasset_exports(
+    uasset: &[u8],
+    names: &[String],
+    imports: &[UassetImportEntry],
+) -> Vec<UassetExportEntry> {
+    assert!(uasset.len() <= 256 * 1024 * 1024);
+    assert!(names.len() <= 65_536);
+    if uasset.len() < 64 || names.is_empty() {
+        return Vec::new();
+    }
+    let Some((export_count, export_offset, _, _)) = find_table_bounds(uasset, names.len()) else {
+        return Vec::new();
+    };
+    let Some(stride) = detect_export_stride(uasset, export_offset, export_count, names.len())
+    else {
+        return Vec::new();
+    };
+    assert!(export_count <= 65_536);
+
+    let mut out = Vec::with_capacity(export_count);
+    let base_serial_offset = uasset.len();
+    for i in 0..export_count {
+        let off = export_offset + i * stride;
+        let Some(slice) = uasset.get(off..off + 44) else {
+            return Vec::new();
+        };
+        let class_index = LittleEndian::read_i32(&slice[0..4]);
+        let super_index = LittleEndian::read_i32(&slice[4..8]);
+        let template_index = LittleEndian::read_i32(&slice[8..12]);
+        let outer_index = LittleEndian::read_i32(&slice[12..16]);
+        let on_idx = LittleEndian::read_u32(&slice[16..20]);
+        let on_num = LittleEndian::read_u32(&slice[20..24]);
+        let serial_size = LittleEndian::read_i64(&slice[28..36]).max(0) as usize;
+        let serial_offset = LittleEndian::read_i64(&slice[36..44]).max(0) as usize;
+        let class_name = if class_index < 0 {
+            imports
+                .get((-class_index - 1) as usize)
+                .map(|imp| imp.object_name.clone())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        out.push(UassetExportEntry {
+            export_index: i + 1,
+            class_index,
+            class_name,
+            super_index,
+            template_index,
+            outer_index,
+            object_name: format_fname_idx(names, on_idx, on_num),
+            serial_size,
+            serial_offset,
+            uexp_offset: serial_offset.saturating_sub(base_serial_offset),
+        });
+    }
+    assert_eq!(out.len(), export_count);
+    out
+}
+
 /// Resolves a UE4 `FPackageIndex` (`< 0` for `ImportTable[-idx - 1]`) to its package path.
 pub fn resolve_package_index(imports: &[UassetImportEntry], pkg_index: i32) -> Option<String> {
-    assert!(imports.len() <= 4096);
+    assert!(imports.len() <= 65_536);
     if pkg_index >= 0 {
         return None;
     }
@@ -391,12 +509,74 @@ fn find_ascii_pixel_format(buf: &[u8]) -> Option<PixelFormat> {
     None
 }
 
+fn detect_texture_srgb(uexp: &[u8], names: &[String]) -> bool {
+    assert!(uexp.len() <= 256 * 1024 * 1024);
+    assert!(names.len() <= 65_536);
+    if names.iter().any(|n| {
+        matches!(
+            n.as_str(),
+            "TC_Masks"
+                | "TC_Normalmap"
+                | "TC_Grayscale"
+                | "TC_Alpha"
+                | "TC_Displacementmap"
+                | "TC_VectorDisplacementmap"
+                | "TC_HDR"
+        )
+    }) {
+        return false;
+    }
+    if let (Some(srgb_idx), Some(bool_idx)) = (
+        names.iter().position(|n| n == "SRGB"),
+        names.iter().position(|n| n == "BoolProperty"),
+    ) {
+        let mut pat = [0u8; 24];
+        LittleEndian::write_i32(&mut pat[0..4], srgb_idx as i32);
+        LittleEndian::write_i32(&mut pat[8..12], bool_idx as i32);
+        let head = &uexp[..uexp.len().min(1024)];
+        if let Some(pos) = memchr::memmem::find(head, &pat)
+            && let Some(&val) = head.get(pos + 24)
+        {
+            return val != 0;
+        }
+    }
+    true
+}
+
+fn detect_texture_address_clamp(uexp: &[u8], names: &[String], prop_name: &str) -> bool {
+    assert!(uexp.len() <= 256 * 1024 * 1024);
+    assert!(names.len() <= 65_536);
+    let (Some(prop_idx), Some(byte_idx)) = (
+        names.iter().position(|n| n == prop_name),
+        names.iter().position(|n| n == "ByteProperty"),
+    ) else {
+        return false;
+    };
+    let mut pat = [0u8; 24];
+    LittleEndian::write_i32(&mut pat[0..4], prop_idx as i32);
+    LittleEndian::write_i32(&mut pat[8..12], byte_idx as i32);
+    LittleEndian::write_i32(&mut pat[16..20], 8);
+    let head = &uexp[..uexp.len().min(1024)];
+    if let Some(pos) = memchr::memmem::find(head, &pat)
+        && let Some(val_slice) = head.get(pos + 33..pos + 37)
+    {
+        let val_idx = LittleEndian::read_i32(val_slice) as usize;
+        if let Some(val_name) = names.get(val_idx) {
+            return val_name.ends_with("TA_Clamp");
+        }
+    }
+    false
+}
+
 fn try_parse_platform_data(
     uexp: &[u8],
     ubulk: Option<&[u8]>,
     names: &[String],
 ) -> Option<DecodedTexture> {
     assert!(uexp.len() <= 256 * 1024 * 1024);
+    let srgb = detect_texture_srgb(uexp, names);
+    let clamp_x = detect_texture_address_clamp(uexp, names, "AddressX");
+    let clamp_y = detect_texture_address_clamp(uexp, names, "AddressY");
     for i in memchr::memmem::find_iter(uexp, b"PF_") {
         if i < 16 || i + 16 > uexp.len() {
             continue;
@@ -446,6 +626,9 @@ fn try_parse_platform_data(
                     height,
                     format,
                     num_mips: num_mips as usize,
+                    srgb,
+                    clamp_x,
+                    clamp_y,
                     names: names.to_vec(),
                     rgba8,
                 });
@@ -523,6 +706,9 @@ fn try_scan_mip_in_uexp(
     names: &[String],
 ) -> Result<DecodedTexture, ExtractError> {
     assert!(uexp.len() <= 256 * 1024 * 1024);
+    let srgb = detect_texture_srgb(uexp, names);
+    let clamp_x = detect_texture_address_clamp(uexp, names, "AddressX");
+    let clamp_y = detect_texture_address_clamp(uexp, names, "AddressY");
     for off in 0..uexp.len().saturating_sub(36) {
         if LittleEndian::read_i32(&uexp[off..off + 4]) == 1
             && let Some((w, h, mip_bytes)) = parse_single_mip(uexp, ubulk, off, format, 0, 0)
@@ -534,6 +720,9 @@ fn try_scan_mip_in_uexp(
                 height: h,
                 format,
                 num_mips: 1,
+                srgb,
+                clamp_x,
+                clamp_y,
                 names: names.to_vec(),
                 rgba8,
             });

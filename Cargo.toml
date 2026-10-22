@@ -6,6 +6,7 @@ members = [
   "crates/tartarus-overlay",
   "crates/tartarus-extract",
   "crates/tartarus-data",
+  "crates/tartarus-render",
   "crates/workspace-hack",
 ]
 default-members = [

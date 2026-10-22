@@ -5860,6 +5860,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tartarus-render"
+version = "0.3.0"
+dependencies = [
+ "ab_glyph",
+ "pico-args",
+ "png",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tartarus-core",
+ "tartarus-data",
+ "tartarus-extract",
+ "textwrap 0.16.4",
+ "thiserror 2.0.21",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tartarus-scan"
 version = "0.3.0"
 dependencies = [
