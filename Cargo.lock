@@ -918,6 +918,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "chardetng"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13de944a44b5064ee5d3a5ceccc49a41bfec50f2580e66f82e87703acdb88b53"
+dependencies = [
+ "cfg-if",
+ "encoding_rs",
+ "memchr",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4236,6 +4247,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "owo-colors"
+version = "4.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c45bb4a6ae1280ec0803b1ef9d3455eb50f01efbbe1447ab020f1d54fba9d8"
+
+[[package]]
 name = "palette"
 version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5814,6 +5831,7 @@ dependencies = [
  "steamlocate",
  "texture2ddecoder",
  "thiserror 2.0.21",
+ "unluac",
  "workspace-hack",
 ]
 
@@ -6342,6 +6360,20 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "unluac"
+version = "1.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b2a1b9b54db514f461742055498f74e4bf2661b9839582318a6ca57fb5146ac"
+dependencies = [
+ "chardetng",
+ "encoding_rs",
+ "owo-colors",
+ "strum",
+ "strum_macros",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "url"
@@ -7456,6 +7488,7 @@ dependencies = [
  "slab",
  "smallvec",
  "stable_deref_trait",
+ "strum",
  "syn 2.0.119",
  "syn 3.0.9",
  "tinystr",

@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 use tartarus_extract::{
-    DEFAULT_AES_KEY_HEX, PakEntryMeta, PakVfs, PaperSpriteInfo, decrypt_luac_bytes,
+    DEFAULT_AES_KEY_HEX, PakEntryMeta, PakVfs, PaperSpriteInfo, decompile_luac_bytes,
     discover_game_dir, parse_aes_key_hex, parse_uasset_names, parse_xdi_config_table,
+    xdi_to_lua53_bytes,
 };
 
 const _: () = {
@@ -25,7 +26,7 @@ COMMANDS:
   list    [FILTER]              List virtual files in all .pak archives matching FILTER
   raw     <FILTER> <OUT_DIR>    Extract raw decrypted + Oodle-decompressed files (.uasset/.uexp/...)
   png     <FILTER> <OUT_DIR>    Decode matching cooked UTexture2D & UPaperSprite assets to .png
-  luac    <FILTER> <OUT_DIR>    Decrypt matching .out Lua bytecode (.luac) and DataCfg (.json)
+  luac    <FILTER> <OUT_DIR>    Decrypt & decompile matching .out Lua bytecode (.luac/.lua/.json)
   lang    [LANG] [PREFIX]       Dump localization pairs from config_multi_language_<LANG>.bin
   inspect <VIRTUAL_PATH>        Inspect a .uasset/.uexp pair (FName table, sizes, texture format)
 
@@ -247,6 +248,39 @@ fn cmd_png(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn extract_single_luac_entry(
+    vfs: &PakVfs,
+    meta: &PakEntryMeta,
+    out_dir: &Path,
+) -> Result<bool, String> {
+    assert!(!meta.virtual_path.is_empty());
+    assert!(!out_dir.as_os_str().is_empty());
+
+    let vpath = &meta.virtual_path;
+    let raw = vfs.read_entry(meta).map_err(|e| format!("{vpath}: {e}"))?;
+    let lua53 = xdi_to_lua53_bytes(&raw).map_err(|e| format!("{vpath}: {e}"))?;
+    let lua_src = decompile_luac_bytes(&lua53).map_err(|e| format!("{vpath}: {e}"))?;
+
+    let dest_luac = out_dir.join(vpath).with_extension("luac");
+    if let Some(parent) = dest_luac.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    fs::write(&dest_luac, &lua53).map_err(|e| format!("{}: {e}", dest_luac.display()))?;
+
+    let dest_lua = dest_luac.with_extension("lua");
+    fs::write(&dest_lua, &lua_src).map_err(|e| format!("{}: {e}", dest_lua.display()))?;
+
+    if vpath.contains("/DataCfg/config_") {
+        let tbl = parse_xdi_config_table(&lua53).map_err(|e| format!("{vpath}: {e}"))?;
+        let json_str = serde_json::to_string_pretty(&tbl).map_err(|e| format!("{vpath}: {e}"))?;
+        let dest_json = dest_luac.with_extension("json");
+        fs::write(&dest_json, json_str).map_err(|e| format!("{}: {e}", dest_json.display()))?;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
 fn cmd_luac(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     assert!(!pos_args.is_empty());
     let filter = pos_args
@@ -269,7 +303,7 @@ fn cmd_luac(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     assert!(matched.len() <= vfs.entries.len());
 
     eprintln!(
-        "Decrypting {} .out Lua bytecode files matching '{}' to {}...",
+        "Decrypting and decompiling {} .out Lua bytecode files matching '{}' to {}...",
         matched.len(),
         filter,
         out_dir.display()
@@ -278,30 +312,17 @@ fn cmd_luac(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     let ok_luac = AtomicUsize::new(0);
     let ok_json = AtomicUsize::new(0);
 
-    matched.par_iter().for_each(|meta| {
-        if let Ok(raw) = vfs.read_entry(meta) {
-            let dec = decrypt_luac_bytes(&raw);
-            let dest_luac = out_dir.join(&meta.virtual_path).with_extension("luac");
-            if let Some(parent) = dest_luac.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            if fs::write(&dest_luac, &dec).is_ok() {
-                ok_luac.fetch_add(1, Ordering::Relaxed);
-            }
-            if meta.virtual_path.contains("/DataCfg/config_")
-                && let Ok(tbl) = parse_xdi_config_table(&dec)
-                && let Ok(json_str) = serde_json::to_string_pretty(&tbl)
-            {
-                let dest_json = dest_luac.with_extension("json");
-                if fs::write(&dest_json, json_str).is_ok() {
-                    ok_json.fetch_add(1, Ordering::Relaxed);
-                }
-            }
+    matched.par_iter().try_for_each(|meta| {
+        let wrote_json = extract_single_luac_entry(vfs, meta, &out_dir)?;
+        ok_luac.fetch_add(1, Ordering::Relaxed);
+        if wrote_json {
+            ok_json.fetch_add(1, Ordering::Relaxed);
         }
-    });
+        Ok::<(), String>(())
+    })?;
 
     eprintln!(
-        "Done: {} .luac files decrypted, {} DataCfg tables exported to .json.",
+        "Done: {} .luac/.lua pairs written, {} DataCfg tables exported to .json.",
         ok_luac.load(Ordering::Relaxed),
         ok_json.load(Ordering::Relaxed)
     );

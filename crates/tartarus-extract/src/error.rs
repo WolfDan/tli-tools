@@ -31,6 +31,9 @@ pub enum ExtractError {
 
     #[error("Lua bytecode format error: {0}")]
     LuacFormat(String),
+
+    #[error("Lua decompilation error: {0}")]
+    LuacDecompile(String),
 }
 
 const _: () = {

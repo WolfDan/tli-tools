@@ -20,8 +20,9 @@ pub use aes::{
 pub use bc::{PixelFormat, crop_rgba8, decode_mip_to_rgba8, decode_png_rgba8, encode_png_rgba8};
 pub use error::ExtractError;
 pub use luac::{
-    LuaConfigTable, LuaValue, XDI_LUA_HEADER, decrypt_luac_bytes, extract_xdi_strings,
-    parse_multi_language_bin, parse_xdi_config_table, strip_rich_text,
+    LUA53_HEADER_PREFIX, LuaConfigTable, LuaValue, XDI_LUA_HEADER, XDI_TO_LUA53_OPCODE,
+    decompile_luac_bytes, decrypt_luac_bytes, extract_xdi_strings, parse_multi_language_bin,
+    parse_xdi_config_table, strip_rich_text, xdi_to_lua53_bytes,
 };
 pub use pak::{
     CompressionKind, PakEntryMeta, PakVfs, discover_game_dir, extract_pak_entry, read_pak_index,
@@ -79,6 +80,24 @@ impl PakVfs {
         let dec = decrypt_luac_bytes(&raw);
         assert_eq!(dec.len(), raw.len());
         Ok(dec)
+    }
+
+    /// Reads, decrypts, and transpiles a `.out` UnLua bytecode file into standard 64-bit
+    /// PUC-Lua 5.3 (`\x1bLua\x53`) bytecode.
+    pub fn read_luac_lua53(&self, virtual_path: &str) -> Result<Vec<u8>, ExtractError> {
+        assert!(!virtual_path.is_empty());
+        let raw = self.read_path(virtual_path)?;
+        assert!(!raw.is_empty());
+        xdi_to_lua53_bytes(&raw)
+    }
+
+    /// Reads, decrypts, transpiles, and decompiles a `.out` UnLua bytecode file into
+    /// formatted Lua 5.3 source code using `unluac` (`unluac-rs`).
+    pub fn read_luac_decompiled(&self, virtual_path: &str) -> Result<String, ExtractError> {
+        assert!(!virtual_path.is_empty());
+        let raw = self.read_path(virtual_path)?;
+        assert!(!raw.is_empty());
+        decompile_luac_bytes(&raw)
     }
 
     /// Reads, decrypts, and evaluates a `DataCfg/config_*.out` Lua table file into structured rows.

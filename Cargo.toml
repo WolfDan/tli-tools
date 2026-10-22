@@ -55,6 +55,7 @@ font8x8 = "0.3.1"
 textwrap = "0.16.4"
 libc = "0.2.191"
 tracing-subscriber = "0.3.23"
+unluac = "1.4.4"
 
 [workspace.lints.cargo]
 unused_dependencies = "allow"
