@@ -116,7 +116,9 @@ pub enum VmOp {
     FAdd,
     FSub,
     FMul,
+    FMul3,
     FMad,
+    FNmad,
     FDiv,
     FMin,
     FMax,
@@ -315,6 +317,9 @@ pub struct CompiledSm5Shader {
     pub has_control_flow: bool,
     /// True if any instruction in `kernel` uses dynamic indexable temporary arrays (`x#`).
     pub uses_indexable_temps: bool,
+    /// Optional `(slot_idx, kill_ch)` when `kernel[0]` samples undistorted quad `(u, v)` and
+    /// `kernel[1]` is `EarlyOutZero` on channel `kill_ch`, enabling $O(1)$ UV bounding-box trimming.
+    pub uv_kill_slot_ch: Option<(u8, u8)>,
 }
 
 /// Compile-time metadata for a bound `LinearTexture2D` slot.

@@ -301,6 +301,7 @@
             nixd
             vulkan-tools
             wayland-utils
+            ripgrep
           ];
 
           LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;

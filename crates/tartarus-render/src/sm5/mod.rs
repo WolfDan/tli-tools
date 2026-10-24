@@ -335,8 +335,8 @@ mod tests {
 
         let compiled = compile_sm5_shader(&shader);
         assert!(!compiled.preamble.is_empty());
-        // Kernel should only contain the 4 scalar FAdd instructions for o0.xyzw (trailing Ret stripped).
-        assert_eq!(compiled.kernel.len(), 4);
+        // Kernel only contains the 2 varying FAdd instructions for o0.xy (o0.zw are uniform and hoisted to preamble).
+        assert_eq!(compiled.kernel.len(), 2);
 
         let cb2 = [[1.0f32, 2.0, 3.0, 0.0], [2.0, -1.0, 4.0, 0.0]];
         // dp3([1,2,3], -|[2,-1,4]|) = 1*(-2) + 2*(-1) + 3*(-4) = -16.0
@@ -353,6 +353,8 @@ mod tests {
         .unwrap();
         assert!((px[0] - (-15.5)).abs() < 1e-5);
         assert!((px[1] - (-15.75)).abs() < 1e-5);
+        assert!((px[2] - (-16.0)).abs() < 1e-5);
+        assert!((px[3] - (-16.0)).abs() < 1e-5);
     }
 
     #[test]
@@ -453,5 +455,33 @@ mod tests {
                 pow_v[i]
             );
         }
+    }
+
+    #[test]
+    fn test_npot_wrap_guard_and_uv_bounds() {
+        let mut rgba = vec![0u8; 6 * 5 * 4];
+        // Non-zero texel at (2, 2) inside a 6x5 NPOT texture -> interior non-zero UV bounds.
+        let idx = (2 * 6 + 2) * 4;
+        rgba[idx] = 255;
+        rgba[idx + 3] = 255;
+        let dec = tartarus_extract::DecodedTexture {
+            width: 6,
+            height: 5,
+            format: tartarus_extract::PixelFormat::B8G8R8A8,
+            num_mips: 1,
+            srgb: false,
+            clamp_x: false,
+            clamp_y: false,
+            names: Vec::new(),
+            rgba8: rgba,
+        };
+        let tex = LinearTexture2D::from_decoded(&dec);
+        assert_eq!(tex.stride, 7);
+        assert!(tex.nonzero_uv_bounds[0][0] > 0.0);
+        assert!(tex.nonzero_uv_bounds[0][2] < 1.0);
+        // Verify wrap-around at seam u = 0.0 and u = 1.0 matches across wrap guard.
+        let s0 = tex.sample_bilinear(0.0, 0.0, false, false);
+        let s1 = tex.sample_bilinear(1.0, 1.0, false, false);
+        assert!((s0[0] - s1[0]).abs() < 1e-6);
     }
 }

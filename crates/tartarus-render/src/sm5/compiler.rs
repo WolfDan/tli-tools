@@ -880,7 +880,9 @@ fn eval_const_op(op: VmOp, ua: u32, ub: u32, uc: u32) -> Option<u32> {
         VmOp::FAdd => clean(fa + fb),
         VmOp::FSub => clean(fa - fb),
         VmOp::FMul => clean(fa * fb),
+        VmOp::FMul3 => clean((fa * fb) * fc),
         VmOp::FMad => clean(fa * b_or_zero(fb) + fc),
+        VmOp::FNmad => clean(fc - fa * b_or_zero(fb)),
         VmOp::FDiv => clean(if fb.abs() > 1e-20 { fa / fb } else { 0.0 }),
         VmOp::FMin => clean(fa.min(fb)),
         VmOp::FMax => clean(fa.max(fb)),
@@ -896,7 +898,7 @@ fn eval_const_op(op: VmOp, ua: u32, ub: u32, uc: u32) -> Option<u32> {
         VmOp::FLog2 => clean(fa.max(1.175_494_4e-38).log2()),
         VmOp::FPow => clean((fa.max(1.175_494_4e-38).log2() * fb).exp2()),
         VmOp::FAtan2 => clean(super::texture::fxc_atan2_scalar(fa, fb)),
-        VmOp::LinearToSrgb => clean(super::texture::linear_to_srgb_channel(fa)),
+        VmOp::LinearToSrgb => clean(super::texture::linear_to_srgb_channel((fa * fb) * fc)),
         VmOp::FSin => clean(fa.sin()),
         VmOp::FCos => clean(fa.cos()),
         VmOp::FCmpEq => {
@@ -1073,7 +1075,8 @@ fn try_fold_movc_patterns(
         && is_approx_f32(known_const[hi_inst.src1 as usize], 1.055, 1e-3)
         && is_approx_f32(known_const[hi_inst.src2 as usize], -0.055, 1e-3)
     {
-        *inst = RawInst::new(VmOp::LinearToSrgb, inst.dst, cond_inst.src0, 0, 0);
+        let one = u16::from(REG_ONE);
+        *inst = RawInst::new(VmOp::LinearToSrgb, inst.dst, cond_inst.src0, one, one);
     }
 }
 
@@ -1200,12 +1203,14 @@ fn try_cancel_neg_and_lerp(
         } else {
             None
         };
-        if let Some((a, b)) = neg_pair
-            && let Some(&(_, _, _, _, p)) = cse_table.iter().find(|&&(op, s0, s1, _, _)| {
+        if let Some((a, b)) = neg_pair {
+            if let Some(&(_, _, _, _, p)) = cse_table.iter().find(|&&(op, s0, s1, _, _)| {
                 op == VmOp::FMul && ((s0 == a && s1 == b) || (s0 == b && s1 == a))
-            })
-        {
-            *inst = RawInst::new(VmOp::FSub, inst.dst, inst.src2, p, 0);
+            }) {
+                *inst = RawInst::new(VmOp::FSub, inst.dst, inst.src2, p, 0);
+            } else {
+                *inst = RawInst::new(VmOp::FNmad, inst.dst, a, b, inst.src2);
+            }
         }
     }
 
@@ -1303,6 +1308,15 @@ fn simplify_algebraic_peephole(
                 *inst = RawInst::new(VmOp::FAdd, inst.dst, inst.src0, inst.src2, 0);
             }
         }
+        VmOp::FNmad => {
+            if is_zero_bits(c0) || is_zero_bits(c1) {
+                *inst = RawInst::new(VmOp::Mov, inst.dst, inst.src2, 0, 0);
+            } else if is_one_bits(c0) {
+                *inst = RawInst::new(VmOp::FSub, inst.dst, inst.src2, inst.src1, 0);
+            } else if is_one_bits(c1) {
+                *inst = RawInst::new(VmOp::FSub, inst.dst, inst.src2, inst.src0, 0);
+            }
+        }
         VmOp::FExp2 => {
             if let Some(orig_x) = log2_arg[inst.src0 as usize] {
                 if is_non_neg[orig_x as usize] {
@@ -1354,7 +1368,7 @@ fn eval_non_neg_op(op: VmOp, n0: bool, n1: bool, n2: bool) -> bool {
         | VmOp::LinearToSrgb => true,
         VmOp::FMax => n0 || n1,
         VmOp::FMin | VmOp::FAdd | VmOp::FMul => n0 && n1,
-        VmOp::FMad => n0 && n1 && n2,
+        VmOp::FMul3 | VmOp::FMad => n0 && n1 && n2,
         VmOp::Movc => n1 && n2,
         _ => false,
     }
@@ -1441,6 +1455,37 @@ fn init_ssa_value_tables(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn get_or_emit_fmul(
+    b: &mut CompilerBuilder<'_>,
+    lhs: u16,
+    rhs: u16,
+    out_insts: &mut Vec<RawInst>,
+    is_non_neg: &mut [bool],
+    is_unit: &mut [bool],
+    is_uniform: &mut [bool],
+    def_inst: &mut [Option<RawInst>],
+    cse_table: &mut Vec<(VmOp, u16, u16, u16, u16)>,
+) -> u16 {
+    assert!((lhs as usize) < is_uniform.len());
+    assert!((rhs as usize) < is_uniform.len());
+    if let Some(&(_, _, _, _, prev_dst)) = cse_table.iter().find(|&&(op, s0, s1, _, _)| {
+        op == VmOp::FMul && ((s0 == lhs && s1 == rhs) || (s0 == rhs && s1 == lhs))
+    }) {
+        return prev_dst;
+    }
+    let v = b.alloc_vreg(1);
+    let p_inst = RawInst::new(VmOp::FMul, v, lhs, rhs, 0);
+    let idx = v as usize;
+    is_non_neg[idx] = is_non_neg[lhs as usize] && is_non_neg[rhs as usize];
+    is_unit[idx] = is_unit[lhs as usize] && is_unit[rhs as usize];
+    is_uniform[idx] = is_uniform[lhs as usize] && is_uniform[rhs as usize];
+    def_inst[idx] = Some(p_inst);
+    cse_table.push((VmOp::FMul, lhs, rhs, 0, v));
+    out_insts.push(p_inst);
+    v
+}
+
+#[allow(clippy::too_many_arguments)]
 fn try_reassociate_uniform_fmul(
     b: &mut CompilerBuilder<'_>,
     inst: &mut RawInst,
@@ -1449,6 +1494,7 @@ fn try_reassociate_uniform_fmul(
     is_unit: &mut [bool],
     is_uniform: &mut [bool],
     def_inst: &mut [Option<RawInst>],
+    cse_table: &mut Vec<(VmOp, u16, u16, u16, u16)>,
 ) {
     assert_eq!(inst.op, VmOp::FMul);
     if is_uniform[inst.src0 as usize] && !is_uniform[inst.src1 as usize] {
@@ -1457,34 +1503,43 @@ fn try_reassociate_uniform_fmul(
     if is_uniform[inst.src0 as usize] {
         return;
     }
+    let is_var_uni_fmul = |r: u16, is_uni: &[bool], defs: &[Option<RawInst>]| -> bool {
+        defs[r as usize].is_some_and(|d| {
+            d.op == VmOp::FMul && !is_uni[d.src0 as usize] && is_uni[d.src1 as usize]
+        })
+    };
+    if !is_var_uni_fmul(inst.src0, is_uniform, def_inst) {
+        if !is_uniform[inst.src1 as usize] && is_var_uni_fmul(inst.src1, is_uniform, def_inst) {
+            std::mem::swap(&mut inst.src0, &mut inst.src1);
+        } else {
+            return;
+        }
+    }
     let Some(d0) = def_inst[inst.src0 as usize] else {
         return;
     };
-    if d0.op != VmOp::FMul || is_uniform[d0.src0 as usize] || !is_uniform[d0.src1 as usize] {
-        return;
-    }
-    // `d0` is `FMul(varying_x, uniform_u1)`.
     if is_uniform[inst.src1 as usize] {
         // `(varying_x * u1) * u2 -> varying_x * (u1 * u2)` where `u1 * u2` hoists to preamble!
-        let u12 = b.alloc_vreg(1);
-        let u_inst = RawInst::new(VmOp::FMul, u12, d0.src1, inst.src1, 0);
-        let idx = u12 as usize;
-        is_non_neg[idx] = is_non_neg[d0.src1 as usize] && is_non_neg[inst.src1 as usize];
-        is_unit[idx] = is_unit[d0.src1 as usize] && is_unit[inst.src1 as usize];
-        is_uniform[idx] = true;
-        def_inst[idx] = Some(u_inst);
-        out_insts.push(u_inst);
+        let u12 = get_or_emit_fmul(
+            b, d0.src1, inst.src1, out_insts, is_non_neg, is_unit, is_uniform, def_inst, cse_table,
+        );
         *inst = RawInst::new(VmOp::FMul, inst.dst, d0.src0, u12, 0);
+    } else if is_var_uni_fmul(inst.src1, is_uniform, def_inst)
+        && let Some(d1) = def_inst[inst.src1 as usize]
+    {
+        // `(varying_x * u1) * (varying_y * u2) -> (varying_x * varying_y) * (u1 * u2)`.
+        let xy = get_or_emit_fmul(
+            b, d0.src0, d1.src0, out_insts, is_non_neg, is_unit, is_uniform, def_inst, cse_table,
+        );
+        let u12 = get_or_emit_fmul(
+            b, d0.src1, d1.src1, out_insts, is_non_neg, is_unit, is_uniform, def_inst, cse_table,
+        );
+        *inst = RawInst::new(VmOp::FMul, inst.dst, xy, u12, 0);
     } else {
         // `(varying_x * u1) * varying_y -> (varying_x * varying_y) * u1`.
-        let xy = b.alloc_vreg(1);
-        let xy_inst = RawInst::new(VmOp::FMul, xy, d0.src0, inst.src1, 0);
-        let idx = xy as usize;
-        is_non_neg[idx] = is_non_neg[d0.src0 as usize] && is_non_neg[inst.src1 as usize];
-        is_unit[idx] = is_unit[d0.src0 as usize] && is_unit[inst.src1 as usize];
-        is_uniform[idx] = false;
-        def_inst[idx] = Some(xy_inst);
-        out_insts.push(xy_inst);
+        let xy = get_or_emit_fmul(
+            b, d0.src0, inst.src1, out_insts, is_non_neg, is_unit, is_uniform, def_inst, cse_table,
+        );
         *inst = RawInst::new(VmOp::FMul, inst.dst, xy, d0.src1, 0);
     }
 }
@@ -1594,6 +1649,7 @@ fn fold_ssa_constants_and_cse(b: &mut CompilerBuilder<'_>) {
                         &mut is_unit,
                         &mut is_uniform,
                         &mut def_inst,
+                        &mut cse_table,
                     );
                 }
             }
@@ -1611,10 +1667,23 @@ fn fold_ssa_constants_and_cse(b: &mut CompilerBuilder<'_>) {
                 continue;
             }
 
+            let is_comm = matches!(
+                inst.op,
+                VmOp::FAdd
+                    | VmOp::FMul
+                    | VmOp::FMin
+                    | VmOp::FMax
+                    | VmOp::BitAnd
+                    | VmOp::BitOr
+                    | VmOp::BitXor
+            );
             if inst.dst >= u16::from(REG_DYNAMIC_BASE)
                 && let Some(&(_, _, _, _, prev_dst)) =
                     cse_table.iter().find(|&&(op, s0, s1, s2, _)| {
-                        op == inst.op && s0 == inst.src0 && s1 == inst.src1 && s2 == inst.src2
+                        op == inst.op
+                            && s2 == inst.src2
+                            && ((s0 == inst.src0 && s1 == inst.src1)
+                                || (is_comm && s0 == inst.src1 && s1 == inst.src0))
                     })
             {
                 let d = inst.dst as usize;
@@ -1785,6 +1854,14 @@ fn split_preamble_and_kernel(
         is_uniform[r as usize] = false;
     }
 
+    let mut out_writes = [0u16; 4];
+    for inst in &insts {
+        if (u16::from(REG_OUT_R)..=u16::from(REG_OUT_A)).contains(&inst.dst) {
+            let idx = (inst.dst - u16::from(REG_OUT_R)) as usize;
+            out_writes[idx] = out_writes[idx].saturating_add(1);
+        }
+    }
+
     let mut preamble = Vec::new();
     let mut kernel = Vec::with_capacity(insts.len());
 
@@ -1797,10 +1874,12 @@ fn split_preamble_and_kernel(
             VmOp::Sample2D | VmOp::TexLoad2D | VmOp::ResInfo2D | VmOp::Gather4
         );
         let is_deriv = matches!(inst.op, VmOp::FDdx | VmOp::FDdy);
+        let is_single_out_write = (u16::from(REG_OUT_R)..=u16::from(REG_OUT_A)).contains(&inst.dst)
+            && out_writes[(inst.dst - u16::from(REG_OUT_R)) as usize] == 1;
         let can_hoist = !is_control_flow_or_side_effect(inst.op)
             && !is_tex
             && !is_deriv
-            && inst.dst >= u16::from(REG_DYNAMIC_BASE)
+            && (inst.dst >= u16::from(REG_DYNAMIC_BASE) || is_single_out_write)
             && is_uniform[inst.src0 as usize]
             && is_uniform[inst.src1 as usize]
             && is_uniform[inst.src2 as usize];
@@ -1821,52 +1900,74 @@ fn split_preamble_and_kernel(
             kernel.push(inst);
         }
     }
+    let is_additive = preamble.iter().chain(kernel.iter()).any(|inst| {
+        inst.dst == u16::from(REG_OUT_A) && inst.op == VmOp::Mov && inst.src0 == u16::from(REG_ZERO)
+    });
+    hoist_zero_annihilator_mask(&mut kernel, num_vregs, is_additive, tex_meta);
+    fuse_kernel_superinstructions(&mut kernel, num_vregs);
     coalesce_kernel_output_moves(&mut kernel, num_vregs);
-    hoist_zero_annihilator_mask(&mut kernel, num_vregs, tex_meta);
     assert!(kernel.len() <= MAX_STAGE_INSTS * 4);
     (preamble, kernel)
 }
 
-fn propagate_channel_zero_kills(kernel: &[RawInst], root_reg: u8, num_vregs: usize) -> Vec<bool> {
-    assert!((root_reg as usize) < num_vregs);
-    let mut kills = vec![false; num_vregs + 8];
-    kills[root_reg as usize] = true;
-    for inst in kernel.iter().rev() {
-        let d = inst.dst as usize;
-        if d < kills.len() && kills[d] {
-            match inst.op {
-                VmOp::Mov
-                | VmOp::MovSat
-                | VmOp::LinearToSrgb
-                | VmOp::FSqrt
-                | VmOp::FExp2
-                | VmOp::FLog2
-                | VmOp::FPow => {
-                    kills[inst.src0 as usize] = true;
-                }
-                VmOp::FMul | VmOp::FMin => {
-                    kills[inst.src0 as usize] = true;
-                    kills[inst.src1 as usize] = true;
-                }
-                _ => {}
-            }
-        }
-    }
-    kills
-}
+fn does_zero_reg_kill_pixel(
+    kernel: &[RawInst],
+    sample_pc: usize,
+    cand_reg: u16,
+    is_additive: bool,
+    num_vregs: usize,
+) -> bool {
+    assert!((cand_reg as usize) < num_vregs + 8);
+    assert!(sample_pc < kernel.len());
+    let mut is_zero = vec![false; num_vregs + 8];
+    is_zero[REG_ZERO as usize] = true;
+    is_zero[cand_reg as usize] = true;
 
-fn compute_pixel_zero_kills(kernel: &[RawInst], num_vregs: usize) -> Vec<bool> {
-    assert!(num_vregs >= REG_DYNAMIC_BASE as usize);
-    let is_additive = kernel.iter().any(|inst| {
-        inst.dst == u16::from(REG_OUT_A) && inst.op == VmOp::Mov && inst.src0 == u16::from(REG_ZERO)
-    });
-    if !is_additive {
-        return propagate_channel_zero_kills(kernel, REG_OUT_A, num_vregs);
+    for inst in &kernel[(sample_pc + 1)..] {
+        if matches!(
+            inst.op,
+            VmOp::Sample2D | VmOp::TexLoad2D | VmOp::ResInfo2D | VmOp::Gather4
+        ) {
+            for c in 0..4usize {
+                is_zero[(inst.dst as usize) + c] = false;
+            }
+            continue;
+        }
+        let d = inst.dst as usize;
+        if d >= is_zero.len() || is_control_flow_or_side_effect(inst.op) {
+            continue;
+        }
+        let z0 = is_zero[inst.src0 as usize];
+        let z1 = is_zero[inst.src1 as usize];
+        let z2 = is_zero[inst.src2 as usize];
+        is_zero[d] = match inst.op {
+            VmOp::Mov
+            | VmOp::MovSat
+            | VmOp::FAbs
+            | VmOp::FNeg
+            | VmOp::FNegAbs
+            | VmOp::FSqrt
+            | VmOp::FFrc
+            | VmOp::FRoundNe
+            | VmOp::FFloor
+            | VmOp::FCeil
+            | VmOp::FTrunc
+            | VmOp::FSin
+            | VmOp::FDiv
+            | VmOp::FPow => z0,
+            VmOp::FMul | VmOp::FMin => z0 || z1,
+            VmOp::FMul3 | VmOp::LinearToSrgb => z0 || z1 || z2,
+            VmOp::FAdd | VmOp::FSub | VmOp::FMax => z0 && z1,
+            VmOp::FMad | VmOp::FNmad => (z0 || z1) && z2,
+            _ => false,
+        };
     }
-    let kr = propagate_channel_zero_kills(kernel, REG_OUT_R, num_vregs);
-    let kg = propagate_channel_zero_kills(kernel, REG_OUT_G, num_vregs);
-    let kb = propagate_channel_zero_kills(kernel, REG_OUT_B, num_vregs);
-    (0..kr.len()).map(|i| kr[i] && kg[i] && kb[i]).collect()
+
+    if is_additive {
+        is_zero[REG_OUT_R as usize] && is_zero[REG_OUT_G as usize] && is_zero[REG_OUT_B as usize]
+    } else {
+        is_zero[REG_OUT_A as usize]
+    }
 }
 
 type HoistCandidate = (usize, u16, Vec<bool>, (u8, usize, usize));
@@ -1874,10 +1975,23 @@ type HoistCandidate = (usize, u16, Vec<bool>, (u8, usize, usize));
 fn hoist_zero_annihilator_mask(
     kernel: &mut Vec<RawInst>,
     num_vregs: usize,
+    is_additive: bool,
     tex_meta: Option<&[TexSlotMeta]>,
 ) {
     assert!(kernel.len() <= MAX_STAGE_INSTS * 4);
-    let zero_kills = compute_pixel_zero_kills(kernel, num_vregs);
+    let mut zero_kills = vec![false; num_vregs + 8];
+    for sample_pc in 0..kernel.len() {
+        let s_inst = kernel[sample_pc];
+        if s_inst.op == VmOp::Sample2D && s_inst.dst >= u16::from(REG_DYNAMIC_BASE) {
+            for c in 0..4u16 {
+                if (s_inst.aux >> c) & 1 != 0 {
+                    let reg = s_inst.dst + c;
+                    zero_kills[reg as usize] =
+                        does_zero_reg_kill_pixel(kernel, sample_pc, reg, is_additive, num_vregs);
+                }
+            }
+        }
+    }
     let mut best_cand: Option<HoistCandidate> = None;
 
     for sample_pc in 0..kernel.len() {
@@ -1963,6 +2077,134 @@ fn hoist_zero_annihilator_mask(
             }
         }
         *kernel = reordered;
+    }
+}
+
+fn fuse_kernel_superinstructions(kernel: &mut Vec<RawInst>, num_vregs: usize) {
+    assert!(kernel.len() <= MAX_STAGE_INSTS * 4);
+    assert!(num_vregs >= REG_DYNAMIC_BASE as usize);
+    let mut read_count = vec![0u16; num_vregs + 8];
+    let mut def_pc: Vec<Option<usize>> = vec![None; num_vregs + 8];
+
+    for (pc, inst) in kernel.iter().enumerate() {
+        read_count[inst.src0 as usize] = read_count[inst.src0 as usize].saturating_add(1);
+        read_count[inst.src1 as usize] = read_count[inst.src1 as usize].saturating_add(1);
+        if !matches!(
+            inst.op,
+            VmOp::Sample2D | VmOp::TexLoad2D | VmOp::ResInfo2D | VmOp::Gather4
+        ) {
+            read_count[inst.src2 as usize] = read_count[inst.src2 as usize].saturating_add(1);
+        }
+        if is_pure_ssa_alu(inst.op) && inst.dst >= u16::from(REG_DYNAMIC_BASE) {
+            def_pc[inst.dst as usize] = Some(pc);
+        }
+    }
+
+    let one = u16::from(REG_ONE);
+    let dyn_base = u16::from(REG_DYNAMIC_BASE);
+    let mut drop_inst = vec![false; kernel.len()];
+    let mut shared_ac: Vec<(u16, u16, u16)> = Vec::new();
+
+    for pc in 0..kernel.len() {
+        let inst = kernel[pc];
+        if inst.op == VmOp::FMul {
+            let (s0, s1) = (inst.src0, inst.src1);
+            if s0 >= dyn_base
+                && read_count[s0 as usize] == 1
+                && let Some(d_pc) = def_pc[s0 as usize]
+                && !drop_inst[d_pc]
+                && kernel[d_pc].op == VmOp::FMul
+            {
+                let d = kernel[d_pc];
+                kernel[pc] = RawInst::new(VmOp::FMul3, inst.dst, d.src0, d.src1, s1);
+                drop_inst[d_pc] = true;
+            } else if s1 >= dyn_base
+                && read_count[s1 as usize] == 1
+                && let Some(d_pc) = def_pc[s1 as usize]
+                && !drop_inst[d_pc]
+                && kernel[d_pc].op == VmOp::FMul
+            {
+                let d = kernel[d_pc];
+                kernel[pc] = RawInst::new(VmOp::FMul3, inst.dst, d.src0, d.src1, s0);
+                drop_inst[d_pc] = true;
+            }
+        } else if inst.op == VmOp::LinearToSrgb && inst.src1 == one && inst.src2 == one {
+            try_fuse_srgb_product(
+                pc,
+                inst,
+                kernel,
+                &read_count,
+                &def_pc,
+                &mut drop_inst,
+                &mut shared_ac,
+            );
+        }
+    }
+
+    let mut idx = 0usize;
+    kernel.retain(|_| {
+        let keep = !drop_inst[idx];
+        idx += 1;
+        keep
+    });
+}
+
+fn try_fuse_srgb_product(
+    pc: usize,
+    inst: RawInst,
+    kernel: &mut [RawInst],
+    read_count: &[u16],
+    def_pc: &[Option<usize>],
+    drop_inst: &mut [bool],
+    shared_ac: &mut Vec<(u16, u16, u16)>,
+) {
+    assert!(pc < kernel.len());
+    assert_eq!(inst.op, VmOp::LinearToSrgb);
+    let dyn_base = u16::from(REG_DYNAMIC_BASE);
+    if inst.src0 < dyn_base || read_count[inst.src0 as usize] != 1 {
+        return;
+    }
+    let Some(d_pc) = def_pc[inst.src0 as usize] else {
+        return;
+    };
+    if drop_inst[d_pc] {
+        return;
+    }
+    let d = kernel[d_pc];
+    if d.op == VmOp::FMul {
+        if d.src0 >= dyn_base
+            && read_count[d.src0 as usize] == 1
+            && let Some(g_pc) = def_pc[d.src0 as usize]
+            && !drop_inst[g_pc]
+            && kernel[g_pc].op == VmOp::FMul3
+        {
+            let g = kernel[g_pc];
+            let ac_reg = if let Some(&(_, _, prev_ac)) = shared_ac
+                .iter()
+                .find(|&&(a, c, _)| a == g.src0 && c == g.src2)
+            {
+                drop_inst[g_pc] = true;
+                prev_ac
+            } else {
+                kernel[g_pc] = RawInst::new(VmOp::FMul, g.dst, g.src0, g.src2, 0);
+                shared_ac.push((g.src0, g.src2, g.dst));
+                g.dst
+            };
+            kernel[pc] = RawInst::new(VmOp::LinearToSrgb, inst.dst, ac_reg, g.src1, d.src1);
+            drop_inst[d_pc] = true;
+        } else {
+            kernel[pc] = RawInst::new(
+                VmOp::LinearToSrgb,
+                inst.dst,
+                d.src0,
+                d.src1,
+                u16::from(REG_ONE),
+            );
+            drop_inst[d_pc] = true;
+        }
+    } else if d.op == VmOp::FMul3 {
+        kernel[pc] = RawInst::new(VmOp::LinearToSrgb, inst.dst, d.src0, d.src1, d.src2);
+        drop_inst[d_pc] = true;
     }
 }
 
@@ -2336,6 +2578,27 @@ pub fn compile_sm5_shader_specialized(
     link_control_flow_jumps(&mut kernel);
     assert!(num_regs_used <= REG_FILE_SIZE);
 
+    let uv_kill_slot_ch = if !builder.has_control_flow
+        && kernel.len() >= 2
+        && kernel[0].op == VmOp::Sample2D
+        && kernel[0].imm16 == 228
+        && matches!(
+            kernel[0].src0,
+            super::ir::REG_V3_U | super::ir::REG_V4_X | super::ir::REG_V4_Z
+        )
+        && matches!(
+            kernel[0].src1,
+            super::ir::REG_V3_V | super::ir::REG_V4_Y | super::ir::REG_V4_W
+        )
+        && kernel[1].op == VmOp::EarlyOutZero
+        && kernel[1].src0 >= kernel[0].dst
+        && kernel[1].src0 < kernel[0].dst + 4
+    {
+        Some((kernel[0].src2, kernel[1].src0 - kernel[0].dst))
+    } else {
+        None
+    };
+
     CompiledSm5Shader {
         preamble,
         kernel,
@@ -2346,6 +2609,7 @@ pub fn compile_sm5_shader_specialized(
         num_regs_used,
         has_control_flow: builder.has_control_flow,
         uses_indexable_temps: builder.uses_indexable_temps,
+        uv_kill_slot_ch,
     }
 }
 

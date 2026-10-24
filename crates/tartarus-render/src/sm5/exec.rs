@@ -131,7 +131,9 @@ fn eval_scalar_float_op(op: VmOp, a: f32, b: f32, c: f32) -> Option<(f32, bool)>
         VmOp::FAdd => (a + b, false),
         VmOp::FSub => (a - b, false),
         VmOp::FMul => (a * b, false),
+        VmOp::FMul3 => ((a * b) * c, false),
         VmOp::FMad => (a * b + c, false),
+        VmOp::FNmad => (c - a * b, false),
         VmOp::FDiv => (if b.abs() > 1e-20 { a / b } else { 0.0 }, false),
         VmOp::FMin => (a.min(fb_clean(b)), false),
         VmOp::FMax => (a.max(fb_clean(b)), false),
@@ -147,7 +149,7 @@ fn eval_scalar_float_op(op: VmOp, a: f32, b: f32, c: f32) -> Option<(f32, bool)>
         VmOp::FLog2 => (a.max(1.175_494_4e-38).log2(), false),
         VmOp::FPow => (a.max(1.175_494_4e-38).powf(b), false),
         VmOp::FAtan2 => (fxc_atan2_scalar(a, b), false),
-        VmOp::LinearToSrgb => (linear_to_srgb_channel(a), false),
+        VmOp::LinearToSrgb => (linear_to_srgb_channel((a * b) * c), false),
         VmOp::FSin => (a.sin(), false),
         VmOp::FCos => (a.cos(), false),
         _ => return None,
@@ -359,7 +361,9 @@ fn eval_simd_alu_value(regs: &[u32x8; REG_FILE_SIZE], inst: &VmInst) -> u32x8 {
         VmOp::FAdd => (a + b).to_bits(),
         VmOp::FSub => (a - b).to_bits(),
         VmOp::FMul => (a * b).to_bits(),
+        VmOp::FMul3 => ((a * b) * c).to_bits(),
         VmOp::FMad => (a * b + c).to_bits(),
+        VmOp::FNmad => (c - a * b).to_bits(),
         VmOp::Mov => ua,
         VmOp::MovSat => a.simd_max(zero).simd_min(one).to_bits(),
         VmOp::FNeg => ua ^ u32x8::splat(0x8000_0000),
@@ -384,7 +388,7 @@ fn eval_simd_alu_value(regs: &[u32x8; REG_FILE_SIZE], inst: &VmInst) -> u32x8 {
         VmOp::FLog2 => fast_log2_x8(a).to_bits(),
         VmOp::FPow => fast_pow_x8(a, b).to_bits(),
         VmOp::FAtan2 => fast_atan2_x8(a, b).to_bits(),
-        VmOp::LinearToSrgb => linear_to_srgb_x8(a).to_bits(),
+        VmOp::LinearToSrgb => linear_to_srgb_x8((a * b) * c).to_bits(),
         VmOp::FSin => fast_sin_x8(a).to_bits(),
         VmOp::FCos => fast_cos_x8(a).to_bits(),
         VmOp::FDdx => ddx_quad_x8(a).to_bits(),
@@ -744,19 +748,29 @@ fn exec_simd_tex_or_mem(
     }
 }
 
+#[inline(always)]
+fn set_tile_y_regs(regs: &mut [u32x8; REG_FILE_SIZE], fy: f32x8, v: f32x8) {
+    assert_eq!(SIMD_LANES, 8);
+    let fy_b = fy.to_bits();
+    let v_b = v.to_bits();
+    regs[REG_V0_Y as usize] = fy_b;
+    regs[REG_V2_Y as usize] = fy_b;
+    regs[REG_V3_V as usize] = v_b;
+    regs[REG_V4_Y as usize] = v_b;
+    regs[REG_V4_W as usize] = v_b;
+}
+
 /// Branchless straight-line fast path for `shader.kernel` when `!shader.has_control_flow` and
-/// `!shader.uses_indexable_temps`. Uniform registers (`0..shader.num_uniform_regs`) are never
-/// modified by `kernel`, so `regs` needs **zero `memcpy` per tile**.
+/// `!shader.uses_indexable_temps`. Uniform registers (`0..shader.num_uniform_regs`) and row-varying
+/// Y registers (`REG_V0_Y`, `REG_V2_Y`, `REG_V3_V`, `REG_V4_Y`, `REG_V4_W`) are never modified by
+/// `kernel`, so `regs` needs **zero `memcpy` per tile** and only 5 X register writes.
 /// Returns `None` when an `EarlyOutZero` instruction short-circuits the entire 8-pixel tile.
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
 fn exec_tile_branchless(
     shader: &CompiledSm5Shader,
     regs: &mut [u32x8; REG_FILE_SIZE],
     fx: f32x8,
-    fy: f32x8,
     u: f32x8,
-    v: f32x8,
     cb2: &[[f32; 4]],
     textures: &[&LinearTexture2D],
     tex_clamps: &[(bool, bool)],
@@ -765,19 +779,12 @@ fn exec_tile_branchless(
     assert!(!shader.uses_indexable_temps);
 
     let fx_b = fx.to_bits();
-    let fy_b = fy.to_bits();
     let u_b = u.to_bits();
-    let v_b = v.to_bits();
     regs[REG_V0_X as usize] = fx_b;
-    regs[REG_V0_Y as usize] = fy_b;
     regs[REG_V2_X as usize] = fx_b;
-    regs[REG_V2_Y as usize] = fy_b;
     regs[REG_V3_U as usize] = u_b;
-    regs[REG_V3_V as usize] = v_b;
     regs[REG_V4_X as usize] = u_b;
-    regs[REG_V4_Y as usize] = v_b;
     regs[REG_V4_Z as usize] = u_b;
-    regs[REG_V4_W as usize] = v_b;
 
     for inst in &shader.kernel {
         match inst.op {
@@ -858,7 +865,8 @@ pub fn execute_tile_x8(
 ) -> (u8, [f32x8; 4]) {
     let mut regs = *base_simd;
     if !shader.has_control_flow && !shader.uses_indexable_temps {
-        let rgba = exec_tile_branchless(shader, &mut regs, fx, fy, u, v, cb2, textures, tex_clamps)
+        set_tile_y_regs(&mut regs, fy, v);
+        let rgba = exec_tile_branchless(shader, &mut regs, fx, u, cb2, textures, tex_clamps)
             .unwrap_or([f32x8::splat(0.0); 4]);
         return (valid_lanes, rgba);
     }
@@ -896,7 +904,8 @@ fn execute_tile_x8_with_scratch(
 ) -> (u8, [f32x8; 4]) {
     assert!(shader.num_regs_used <= REG_FILE_SIZE);
     if !shader.has_control_flow && !shader.uses_indexable_temps {
-        let rgba = exec_tile_branchless(shader, regs, fx, fy, u, v, cb2, textures, tex_clamps)
+        set_tile_y_regs(regs, fy, v);
+        let rgba = exec_tile_branchless(shader, regs, fx, u, cb2, textures, tex_clamps)
             .unwrap_or([f32x8::splat(0.0); 4]);
         return (valid_lanes, rgba);
     }
@@ -1204,6 +1213,40 @@ fn blend_tile_x8(
     }
 }
 
+#[inline]
+fn narrow_quad_pixel_bounds(
+    rect_bounds: [f32; 4],
+    clip_bounds: [f32; 4],
+    uv_bounds: Option<[f32; 4]>,
+    width: u32,
+    height: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    assert!(width > 0 && height > 0);
+    let [x0, y0, x1, y1] = rect_bounds;
+    let [cx0, cy0, cx1, cy1] = clip_bounds;
+    let qw = x1 - x0;
+    let qh = y1 - y0;
+    if qw <= 1e-3 || qh <= 1e-3 {
+        return None;
+    }
+    let (mut rx0, mut ry0, mut rx1, mut ry1) = (x0.max(cx0), y0.max(cy0), x1.min(cx1), y1.min(cy1));
+    if let Some([u0, v0, u1, v1]) = uv_bounds {
+        if u0 > u1 || v0 > v1 {
+            return None;
+        }
+        rx0 = rx0.max(x0 + u0 * qw);
+        ry0 = ry0.max(y0 + v0 * qh);
+        rx1 = rx1.min(x0 + u1 * qw);
+        ry1 = ry1.min(y0 + v1 * qh);
+    }
+    let min_x = rx0.floor().max(0.0) as u32;
+    let max_x = rx1.ceil().min(width as f32) as u32;
+    let min_y = ry0.floor().max(0.0) as u32;
+    let max_y = ry1.ceil().min(height as f32) as u32;
+    assert!(max_x <= width && max_y <= height);
+    (min_x < max_x && min_y < max_y).then_some((min_x, max_x, min_y, max_y))
+}
+
 /// Rasterizes a compiled SM5 material quad across `canvas` using Stage 1 scalar uniform preamble
 /// evaluation + Stage 2 `4x2` dual-quad `f32x8` SIMD tiles.
 #[allow(clippy::too_many_arguments)]
@@ -1222,20 +1265,19 @@ pub fn rasterize_compiled_quad(
     is_additive: bool,
 ) {
     assert_eq!(canvas.len(), (width * height) as usize);
+    let uv_bounds = shader.uv_kill_slot_ch.and_then(|(slot, ch)| {
+        textures
+            .get(slot as usize)
+            .map(|t| t.nonzero_uv_bounds[(ch & 3) as usize])
+    });
+    let Some((min_x, max_x, min_y, max_y)) =
+        narrow_quad_pixel_bounds(rect_bounds, clip_bounds, uv_bounds, width, height)
+    else {
+        return;
+    };
     let [x0, y0, x1, y1] = rect_bounds;
-    let [cx0, cy0, cx1, cy1] = clip_bounds;
     let qw = x1 - x0;
     let qh = y1 - y0;
-    if qw <= 1e-3 || qh <= 1e-3 {
-        return;
-    }
-    let min_x = x0.max(cx0).floor().max(0.0) as u32;
-    let max_x = x1.min(cx1).ceil().min(width as f32) as u32;
-    let min_y = y0.max(cy0).floor().max(0.0) as u32;
-    let max_y = y1.min(cy1).ceil().min(height as f32) as u32;
-    if min_x >= max_x || min_y >= max_y {
-        return;
-    }
     assert!(max_x <= width && max_y <= height);
 
     let base_simd = eval_shader_preamble(shader, vertex_color_linear, cb2, real_time);
@@ -1260,7 +1302,13 @@ pub fn rasterize_compiled_quad(
         let fy = f32x8::splat((py as f32) + 0.5) + dy_v;
         let v = (fy - y0_v) * inv_qh;
         let py_lanes = u32x8::splat(py) + iy_v;
-        let y_valid = py_lanes.simd_lt(max_y_v) & v.simd_ge(zero_v) & v.simd_le(one_v);
+        let y_valid_mask =
+            (py_lanes.simd_lt(max_y_v) & v.simd_ge(zero_v) & v.simd_le(one_v)).to_bitmask() as u8;
+        if y_valid_mask == 0 {
+            py += 2;
+            continue;
+        }
+        set_tile_y_regs(&mut tile_regs, fy, v);
 
         let mut px = min_x;
         while px < max_x {
@@ -1268,7 +1316,7 @@ pub fn rasterize_compiled_quad(
             let u = (fx - x0_v) * inv_qw;
             let px_lanes = u32x8::splat(px) + ix_v;
             let x_valid = px_lanes.simd_lt(max_x_v) & u.simd_ge(zero_v) & u.simd_le(one_v);
-            let valid_mask = (x_valid & y_valid).to_bitmask() as u8;
+            let valid_mask = (x_valid.to_bitmask() as u8) & y_valid_mask;
 
             if valid_mask != 0 {
                 let (alive, out_opt) = if is_branchless {
@@ -1278,9 +1326,7 @@ pub fn rasterize_compiled_quad(
                             shader,
                             &mut tile_regs,
                             fx,
-                            fy,
                             u,
-                            v,
                             cb2,
                             textures,
                             tex_clamps,
@@ -1346,20 +1392,18 @@ pub fn rasterize_sprite_quad_simd(
     vertex_color_linear: [f32; 4],
 ) {
     assert_eq!(canvas.len(), (width * height) as usize);
+    let Some((min_x, max_x, min_y, max_y)) = narrow_quad_pixel_bounds(
+        rect_bounds,
+        clip_bounds,
+        Some(tex.nonzero_uv_bounds[3]),
+        width,
+        height,
+    ) else {
+        return;
+    };
     let [x0, y0, x1, y1] = rect_bounds;
-    let [cx0, cy0, cx1, cy1] = clip_bounds;
     let qw = x1 - x0;
     let qh = y1 - y0;
-    if qw <= 1e-3 || qh <= 1e-3 {
-        return;
-    }
-    let min_x = x0.max(cx0).floor().max(0.0) as u32;
-    let max_x = x1.min(cx1).ceil().min(width as f32) as u32;
-    let min_y = y0.max(cy0).floor().max(0.0) as u32;
-    let max_y = y1.min(cy1).ceil().min(height as f32) as u32;
-    if min_x >= max_x || min_y >= max_y {
-        return;
-    }
     assert!(max_x <= width && max_y <= height);
 
     let inv_qw = f32x8::splat(1.0 / qw);
@@ -1385,7 +1429,12 @@ pub fn rasterize_sprite_quad_simd(
         let fy = f32x8::splat((py as f32) + 0.5) + dy_v;
         let v = (fy - y0_v) * inv_qh;
         let py_lanes = u32x8::splat(py) + iy_v;
-        let y_valid = py_lanes.simd_lt(max_y_v) & v.simd_ge(zero_v) & v.simd_le(one_v);
+        let y_valid_mask =
+            (py_lanes.simd_lt(max_y_v) & v.simd_ge(zero_v) & v.simd_le(one_v)).to_bitmask() as u8;
+        if y_valid_mask == 0 {
+            py += 2;
+            continue;
+        }
 
         let mut px = min_x;
         while px < max_x {
@@ -1393,10 +1442,10 @@ pub fn rasterize_sprite_quad_simd(
             let u = (fx - x0_v) * inv_qw;
             let px_lanes = u32x8::splat(px) + ix_v;
             let x_valid = px_lanes.simd_lt(max_x_v) & u.simd_ge(zero_v) & u.simd_le(one_v);
-            let valid_mask = (x_valid & y_valid).to_bitmask() as u8;
+            let valid_mask = (x_valid.to_bitmask() as u8) & y_valid_mask;
 
             if valid_mask != 0 {
-                let t = tex.sample_bilinear_x8(u, v, true, true, 0x0F);
+                let t = tex.sample_bilinear_x8(u, v, true, true, 0x8F);
                 let sa = t[3] * vcol_a;
                 let write_mask = valid_mask & (sa.simd_gt(zero_v).to_bitmask() as u8);
                 if write_mask != 0 {

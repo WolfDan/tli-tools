@@ -3,22 +3,103 @@
 //! and 8-wide SIMD (`f32x8`) bilinear texture sampler.
 
 use std::simd::{StdFloat, prelude::*};
-use std::sync::LazyLock;
 
 use tartarus_extract::DecodedTexture;
 
 use super::ir::{SIMD_LANES, TexSlotMeta, f32x8, i32x8, u32x8};
 
-/// Exact 256-entry lookup table converting an 8-bit sRGB channel (`0..=255`) into Linear light.
-static SRGB8_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
+const fn const_ln64(x: f64) -> f64 {
+    assert!(x > 0.0);
+    let bits = x.to_bits();
+    let mut exp = ((bits >> 52) & 0x7ff) as i64 - 1023;
+    let mut m = f64::from_bits((bits & ((1u64 << 52) - 1)) | (1023u64 << 52));
+    if m > std::f64::consts::SQRT_2 {
+        m *= 0.5;
+        exp += 1;
+    }
+    let u = (m - 1.0) / (m + 1.0);
+    let u2 = u * u;
+    let mut term = u;
+    let mut sum = u;
+    let mut k = 1usize;
+    while k <= 14 {
+        term *= u2;
+        sum += term / ((2 * k + 1) as f64);
+        k += 1;
+    }
+    assert!(sum.is_finite());
+    2.0 * sum + (exp as f64) * std::f64::consts::LN_2
+}
+
+const fn const_exp64(x: f64) -> f64 {
+    assert!(x > -700.0 && x < 700.0);
+    let inv_ln2 = std::f64::consts::LOG2_E;
+    let k_f = x * inv_ln2;
+    let k = if k_f >= 0.0 {
+        (k_f + 0.5) as i64
+    } else {
+        (k_f - 0.5) as i64
+    };
+    let r = x - (k as f64) * std::f64::consts::LN_2;
+    let mut term = 1.0f64;
+    let mut sum = 1.0f64;
+    let mut n = 1usize;
+    while n <= 18 {
+        term *= r / (n as f64);
+        sum += term;
+        n += 1;
+    }
+    let scale = f64::from_bits(((1023 + k) as u64) << 52);
+    assert!(sum > 0.0);
+    sum * scale
+}
+
+const fn const_powf64(base: f64, exp: f64) -> f64 {
+    assert!(base >= 0.0);
+    assert!(exp.is_finite());
+    if base == 0.0 {
+        0.0
+    } else {
+        const_exp64(exp * const_ln64(base))
+    }
+}
+
+const fn const_cos64(theta: f64) -> f64 {
+    assert!(theta >= 0.0 && theta <= std::f64::consts::PI);
+    let t2 = theta * theta;
+    let mut term = 1.0f64;
+    let mut sum = 1.0f64;
+    let mut n = 1usize;
+    while n <= 16 {
+        let d = ((2 * n - 1) * (2 * n)) as f64;
+        term = -term * t2 / d;
+        sum += term;
+        n += 1;
+    }
+    assert!(sum >= -1.000_001 && sum <= 1.000_001);
+    sum
+}
+
+const fn build_srgb8_to_linear_lut() -> [f32; 256] {
     let mut lut = [0.0f32; 256];
-    for (b, slot) in lut.iter_mut().enumerate() {
-        *slot = srgb_to_linear_channel((b as f32) / 255.0);
+    let mut b = 0usize;
+    while b < 256 {
+        let c = (b as f64) / 255.0;
+        let lin = if c <= 0.04045 {
+            c / 12.92
+        } else {
+            const_powf64((c + 0.055) / 1.055, 2.4)
+        };
+        lut[b] = lin as f32;
+        b += 1;
     }
     assert!(lut[0] == 0.0);
     assert!((lut[255] - 1.0).abs() < 1e-6);
     lut
-});
+}
+
+/// Exact 256-entry compile-time lookup table converting an 8-bit sRGB channel (`0..=255`) into Linear light.
+const SRGB8_TO_LINEAR_LUT: [f32; 256] = build_srgb8_to_linear_lut();
 
 /// Pre-decoded 2D texture stored in Structure-of-Arrays (SoA) Linear RGBA32F channels
 /// (`channels: [Vec<f32>; 4]`) for transpose-free 8-wide SIMD bilinear filtering.
@@ -26,6 +107,11 @@ static SRGB8_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
 pub struct LinearTexture2D {
     pub width: usize,
     pub height: usize,
+    pub stride: usize,
+    pub width_f32: f32,
+    pub height_f32: f32,
+    pub width_m1_f32: f32,
+    pub height_m1_f32: f32,
     pub srgb: bool,
     pub clamp_x: bool,
     pub clamp_y: bool,
@@ -39,6 +125,7 @@ pub struct LinearTexture2D {
     pub zero_frac: [u8; 4],
     pub const_val: [Option<f32>; 4],
     pub eq_r: [bool; 4],
+    pub nonzero_uv_bounds: [[f32; 4]; 4],
     pub channels: [Vec<f32>; 4],
 }
 
@@ -206,40 +293,61 @@ pub fn fast_atan2_x8(y: f32x8, x: f32x8) -> f32x8 {
     flip.select(-angle, angle)
 }
 
-/// Degree-5 Chebyshev polynomial coefficients in `q = x^(1/4)` approximating
-/// `1.055 * q^(5/3) - 0.055` on `x in [0.0031308, 1.0]` (`q in [0.23654895, 1.0]`)
-/// to within `8e-6` max error using only 2 hardware `vsqrtps` + 5 FMA instructions.
-static SRGB_Q_POLY: LazyLock<[f32; 6]> = LazyLock::new(|| {
-    let a = 0.003_130_8f64.powf(0.25);
+const fn build_srgb_q_poly() -> [f32; 6] {
+    let a = const_powf64(0.003_130_8, 0.25);
     let b = 1.0f64;
     let mid = 0.5 * (a + b);
     let half = 0.5 * (b - a);
     let mut nodes = [0.0f64; 6];
     let mut vals = [0.0f64; 6];
-    for k in 0..6 {
+    let mut k = 0usize;
+    while k < 6 {
         let theta = ((2 * k + 1) as f64) * std::f64::consts::PI / 12.0;
-        let t = theta.cos();
+        let t = const_cos64(theta);
         let q = mid + half * t;
         nodes[k] = q;
-        vals[k] = 1.055 * q.powf(5.0 / 3.0) - 0.055;
+        vals[k] = 1.055 * const_powf64(q, 5.0 / 3.0) - 0.055;
+        k += 1;
     }
     // Newton divided differences -> standard monomial basis `c0 + c1*q + ... + c5*q^5`.
     let mut dd = vals;
-    for j in 1..6 {
-        for i in (j..6).rev() {
+    let mut j = 1usize;
+    while j < 6 {
+        let mut i = 5usize;
+        while i >= j {
             dd[i] = (dd[i] - dd[i - 1]) / (nodes[i] - nodes[i - j]);
+            i -= 1;
         }
+        j += 1;
     }
     let mut coeffs = [0.0f64; 6];
-    for i in (0..6).rev() {
-        for j in (1..6).rev() {
-            coeffs[j] = coeffs[j - 1] - nodes[i] * coeffs[j];
+    let mut i = 6usize;
+    while i > 0 {
+        i -= 1;
+        let mut m = 5usize;
+        while m >= 1 {
+            coeffs[m] = coeffs[m - 1] - nodes[i] * coeffs[m];
+            m -= 1;
         }
         coeffs[0] = dd[i] - nodes[i] * coeffs[0];
     }
-    assert!((coeffs.iter().sum::<f64>() - 1.0).abs() < 1e-4);
-    coeffs.map(|c| c as f32)
-});
+    let sum = coeffs[0] + coeffs[1] + coeffs[2] + coeffs[3] + coeffs[4] + coeffs[5];
+    assert!((sum - 1.0).abs() < 1e-4);
+    assert!(coeffs[5].is_finite());
+    [
+        coeffs[0] as f32,
+        coeffs[1] as f32,
+        coeffs[2] as f32,
+        coeffs[3] as f32,
+        coeffs[4] as f32,
+        coeffs[5] as f32,
+    ]
+}
+
+/// Degree-5 Chebyshev polynomial coefficients in `q = x^(1/4)` approximating
+/// `1.055 * q^(5/3) - 0.055` on `x in [0.0031308, 1.0]` (`q in [0.23654895, 1.0]`)
+/// to within `8e-6` max error using only 2 hardware `vsqrtps` + 5 FMA instructions.
+const SRGB_Q_POLY: [f32; 6] = build_srgb_q_poly();
 
 /// Converts 8 Linear light values (`[0.0, 1.0]`) to sRGB (`[0.0, 1.0]`) in AVX2 SIMD.
 #[inline(always)]
@@ -254,7 +362,7 @@ pub fn linear_to_srgb_x8(c: f32x8) -> f32x8 {
         return low;
     }
     let q = x.sqrt().sqrt();
-    let [c0, c1, c2, c3, c4, c5] = *SRGB_Q_POLY;
+    let [c0, c1, c2, c3, c4, c5] = SRGB_Q_POLY;
     let mut high = f32x8::splat(c5);
     high = high * q + f32x8::splat(c4);
     high = high * q + f32x8::splat(c3);
@@ -264,57 +372,122 @@ pub fn linear_to_srgb_x8(c: f32x8) -> f32x8 {
     is_low.select(low, high).simd_max(zero).simd_min(one)
 }
 
-#[allow(clippy::type_complexity)]
+type DecodedSoaData = (
+    [Vec<f32>; 4],
+    [Option<f32>; 4],
+    [bool; 4],
+    u8,
+    [u8; 4],
+    [[f32; 4]; 4],
+);
+
+fn compute_nonzero_uv_rect(
+    min_x: usize,
+    max_x: usize,
+    min_y: usize,
+    max_y: usize,
+    width: usize,
+    height: usize,
+) -> [f32; 4] {
+    assert!(width > 0 && height > 0);
+    if min_x > max_x {
+        return [1.0, 1.0, 0.0, 0.0];
+    }
+    let u0 = if min_x > 1 && max_x + 1 < width {
+        ((min_x as f32) - 0.5) / (width as f32)
+    } else {
+        0.0
+    };
+    let u1 = if min_x > 0 && max_x + 2 < width {
+        ((max_x as f32) + 1.5) / (width as f32)
+    } else {
+        1.0
+    };
+    let v0 = if min_y > 1 && max_y + 1 < height {
+        ((min_y as f32) - 0.5) / (height as f32)
+    } else {
+        0.0
+    };
+    let v1 = if min_y > 0 && max_y + 2 < height {
+        ((max_y as f32) + 1.5) / (height as f32)
+    } else {
+        1.0
+    };
+    [u0, v0, u1, v1]
+}
+
 fn decode_rgba8_to_soa(
     rgba8: &[u8],
+    width: usize,
+    height: usize,
     srgb: bool,
     padded_total: usize,
-) -> ([Vec<f32>; 4], [Option<f32>; 4], [bool; 4], u8, [u8; 4]) {
+) -> DecodedSoaData {
     assert!(!rgba8.is_empty());
+    assert_eq!(rgba8.len(), width * height * 4);
+    let stride = width + 1;
     let first = [rgba8[0], rgba8[1], rgba8[2], rgba8[3]];
     let mut is_const = [true; 4];
     let mut eq_r = [false, true, true, false];
     let mut has_zeros_mask = 0u8;
     let mut zero_count = [0usize; 4];
+    let (mut min_x, mut max_x) = ([width; 4], [0usize; 4]);
+    let (mut min_y, mut max_y) = ([height; 4], [0usize; 4]);
     let mut chans: [Vec<f32>; 4] = std::array::from_fn(|_| Vec::with_capacity(padded_total));
     let inv_255 = 1.0f32 / 255.0;
-    let lut = &*SRGB8_TO_LINEAR_LUT;
+    let lut = &SRGB8_TO_LINEAR_LUT;
     let px_slice = rgba8.as_chunks::<4>().0;
     let total_px = px_slice.len().max(1);
 
-    for px in px_slice {
-        for c in 0..4 {
-            is_const[c] &= px[c] == first[c];
-            if px[c] == 0 {
-                has_zeros_mask |= 1 << c;
-                zero_count[c] += 1;
+    for y in 0..height {
+        let row_px = &px_slice[y * width..(y + 1) * width];
+        for (x, px) in row_px.iter().enumerate() {
+            for c in 0..4 {
+                is_const[c] &= px[c] == first[c];
+                if px[c] == 0 {
+                    has_zeros_mask |= 1 << c;
+                    zero_count[c] += 1;
+                } else {
+                    min_x[c] = min_x[c].min(x);
+                    max_x[c] = max_x[c].max(x);
+                    min_y[c] = min_y[c].min(y);
+                    max_y[c] = max_y[c].max(y);
+                }
             }
+            eq_r[1] &= px[1] == px[0];
+            eq_r[2] &= px[2] == px[0];
+            for c in 0..3 {
+                let v = if srgb {
+                    lut[px[c] as usize]
+                } else {
+                    (px[c] as f32) * inv_255
+                };
+                chans[c].push(v);
+            }
+            chans[3].push((px[3] as f32) * inv_255);
         }
-        eq_r[1] &= px[1] == px[0];
-        eq_r[2] &= px[2] == px[0];
-        if srgb {
-            chans[0].push(lut[px[0] as usize]);
-            chans[1].push(lut[px[1] as usize]);
-            chans[2].push(lut[px[2] as usize]);
-        } else {
-            chans[0].push((px[0] as f32) * inv_255);
-            chans[1].push((px[1] as f32) * inv_255);
-            chans[2].push((px[2] as f32) * inv_255);
+        // Right wrap-guard column: `row[y][width] = row[y][0]`.
+        for ch in &mut chans {
+            let row0_val = ch[y * stride];
+            ch.push(row0_val);
         }
-        chans[3].push((px[3] as f32) * inv_255);
     }
     let mut const_val = [None; 4];
     let mut zero_frac = [0u8; 4];
+    let mut nz_bounds = [[0.0f32, 0.0, 1.0, 1.0]; 4];
     for c in 0..4 {
+        // Bottom wrap-guard row: `row[height][0..=width] = row[0][0..=width]`.
+        chans[c].extend_from_within(0..stride);
         zero_frac[c] = ((zero_count[c] * 255) / total_px).min(255) as u8;
         if is_const[c] {
             const_val[c] = Some(chans[c][0]);
             eq_r[c] = false;
         }
+        nz_bounds[c] =
+            compute_nonzero_uv_rect(min_x[c], max_x[c], min_y[c], max_y[c], width, height);
         chans[c].resize(padded_total, 0.0);
     }
-    assert!(!chans[0].is_empty());
-    (chans, const_val, eq_r, has_zeros_mask, zero_frac)
+    (chans, const_val, eq_r, has_zeros_mask, zero_frac, nz_bounds)
 }
 
 impl LinearTexture2D {
@@ -322,17 +495,23 @@ impl LinearTexture2D {
     /// `SRGB8_TO_LINEAR_LUT` when `tex.srgb` is true (zero `powf` calls).
     pub fn from_decoded(tex: &DecodedTexture) -> Self {
         assert!(tex.width > 0 && tex.height > 0);
-        let len = tex.width * tex.height;
-        let padded_len = len.next_power_of_two().max(1);
-        let padded_total = padded_len + tex.width + 2;
-        assert_eq!(tex.rgba8.len(), len * 4);
-        let (channels, const_val, eq_r, has_zeros_mask, zero_frac) =
-            decode_rgba8_to_soa(&tex.rgba8, tex.srgb, padded_total);
+        let stride = tex.width + 1;
+        let guarded_len = stride * (tex.height + 1);
+        let padded_len = guarded_len.next_power_of_two().max(1);
+        let padded_total = padded_len + stride + 2;
+        assert_eq!(tex.rgba8.len(), tex.width * tex.height * 4);
+        let (channels, const_val, eq_r, has_zeros_mask, zero_frac, nonzero_uv_bounds) =
+            decode_rgba8_to_soa(&tex.rgba8, tex.width, tex.height, tex.srgb, padded_total);
         let is_pot_x = tex.width.is_power_of_two();
         let is_pot_y = tex.height.is_power_of_two();
         Self {
             width: tex.width,
             height: tex.height,
+            stride,
+            width_f32: tex.width as f32,
+            height_f32: tex.height as f32,
+            width_m1_f32: (tex.width.saturating_sub(1)) as f32,
+            height_m1_f32: (tex.height.saturating_sub(1)) as f32,
             srgb: tex.srgb,
             clamp_x: tex.clamp_x,
             clamp_y: tex.clamp_y,
@@ -346,6 +525,7 @@ impl LinearTexture2D {
             zero_frac,
             const_val,
             eq_r,
+            nonzero_uv_bounds,
             channels,
         }
     }
@@ -365,6 +545,11 @@ impl LinearTexture2D {
         Self {
             width: 1,
             height: 1,
+            stride: 2,
+            width_f32: 1.0,
+            height_f32: 1.0,
+            width_m1_f32: 0.0,
+            height_m1_f32: 0.0,
             srgb: false,
             clamp_x: true,
             clamp_y: true,
@@ -373,12 +558,18 @@ impl LinearTexture2D {
             is_pot_y: true,
             width_mask: 0,
             height_mask: 0,
-            buf_mask: 0,
+            buf_mask: 3,
             has_zeros_mask,
             zero_frac,
             const_val: [Some(rgba[0]), Some(rgba[1]), Some(rgba[2]), Some(rgba[3])],
             eq_r: [false; 4],
-            channels: [vec![rgba[0]], vec![rgba[1]], vec![rgba[2]], vec![rgba[3]]],
+            nonzero_uv_bounds: [[0.0, 0.0, 1.0, 1.0]; 4],
+            channels: [
+                vec![rgba[0]; 8],
+                vec![rgba[1]; 8],
+                vec![rgba[2]; 8],
+                vec![rgba[3]; 8],
+            ],
         }
     }
 
@@ -400,7 +591,7 @@ impl LinearTexture2D {
         assert!(self.width > 0 && self.height > 0);
         let ix = x.clamp(0, (self.width as i32) - 1) as usize;
         let iy = y.clamp(0, (self.height as i32) - 1) as usize;
-        let idx = iy * self.width + ix;
+        let idx = iy * self.stride + ix;
         let out = [
             self.channels[0][idx],
             self.channels[1][idx],
@@ -437,9 +628,8 @@ impl LinearTexture2D {
         out
     }
 
-    /// Samples 8 pixels `(u, v)` simultaneously using 8-wide SIMD bilinear filtering,
-    /// evaluating **only** the channels enabled in `active_mask & 0x0F` (and short-circuiting
-    /// remaining channels when any channel in `active_mask >> 4` evaluates to all-zero).
+    /// Samples 8 pixels `(u, v)` simultaneously using 8-wide SIMD bilinear filtering over the
+    /// 2D wrap-guard padded SoA layout (`stride = width + 1`), evaluating only `active_mask & 0x0F`.
     #[inline(always)]
     pub fn sample_bilinear_x8(
         &self,
@@ -452,73 +642,107 @@ impl LinearTexture2D {
         assert!(self.width > 0 && self.height > 0);
         let dst_mask = active_mask & 0x0F;
         assert!(dst_mask <= 0x0F);
-        let (zero, one) = (f32x8::splat(0.0), f32x8::splat(1.0));
-        let (cu, cv) = (
-            self.clamp_x || clamp_u_override,
-            self.clamp_y || clamp_v_override,
+        let cu = self.clamp_x || clamp_u_override;
+        let cv = self.clamp_y || clamp_v_override;
+        let (ix0, tx) = coord_and_frac_x8(
+            u,
+            self.width_f32,
+            self.width_m1_f32,
+            self.width as i32,
+            self.width_mask,
+            self.is_pot_x,
+            cu,
         );
-        let uu = if cu {
-            u.simd_clamp(zero, one)
-        } else {
-            u - u.floor()
-        };
-        let vv = if cv {
-            v.simd_clamp(zero, one)
-        } else {
-            v - v.floor()
-        };
-        let fx = uu * f32x8::splat(self.width as f32) - f32x8::splat(0.5);
-        let fy = vv * f32x8::splat(self.height as f32) - f32x8::splat(0.5);
-        let (fl_x, fl_y) = (fx.floor(), fy.floor());
-        let (tx, ty) = (fx - fl_x, fy - fl_y);
-        let (x0, y0) = (fl_x.cast::<i32>(), fl_y.cast::<i32>());
-        let (w, wm, px) = (self.width, self.width_mask, self.is_pot_x);
-        let (h, hm, py) = (self.height, self.height_mask, self.is_pot_y);
-        let ix0 = wrap_or_clamp_x8(x0, w, wm, px, cu);
-        let ix1 = wrap_or_clamp_x8(x0 + i32x8::splat(1), w, wm, px, cu);
-        let iy0 = wrap_or_clamp_x8(y0, h, hm, py, cv);
-        let iy1 = wrap_or_clamp_x8(y0 + i32x8::splat(1), h, hm, py, cv);
-        let w_simd = i32x8::splat(w as i32);
-        let (r0, r1) = (iy0 * w_simd, iy1 * w_simd);
-        let i00 = (r0 + ix0).to_array();
-        let i10 = (r0 + ix1).to_array();
-        let i01 = (r1 + ix0).to_array();
-        let i11 = (r1 + ix1).to_array();
+        let (iy0, ty) = coord_and_frac_x8(
+            v,
+            self.height_f32,
+            self.height_m1_f32,
+            self.height as i32,
+            self.height_mask,
+            self.is_pot_y,
+            cv,
+        );
+        let stride = self.stride;
         let bmask = self.buf_mask;
-        let mut out = [zero; 4];
-        for (c, ch) in self.channels.iter().enumerate() {
-            if (dst_mask >> c) & 1 == 0 {
-                continue;
+        let i00 = (iy0 * i32x8::splat(stride as i32) + ix0).to_array();
+        let mut out = [f32x8::splat(0.0); 4];
+        if active_mask >= 16 {
+            let kc = ((active_mask >> 4).trailing_zeros() as usize) & 3;
+            let kv = sample_ch_x8(&self.channels[kc], &i00, tx, ty, stride, bmask);
+            if kv.to_bits() == u32x8::splat(0) {
+                return out;
             }
-            let s = &ch[..=bmask];
-            let c00 = f32x8::from_array(std::array::from_fn(|k| s[(i00[k] as usize) & bmask]));
-            let c10 = f32x8::from_array(std::array::from_fn(|k| s[(i10[k] as usize) & bmask]));
-            let c01 = f32x8::from_array(std::array::from_fn(|k| s[(i01[k] as usize) & bmask]));
-            let c11 = f32x8::from_array(std::array::from_fn(|k| s[(i11[k] as usize) & bmask]));
-            let top = c00 + (c10 - c00) * tx;
-            let bot = c01 + (c11 - c01) * tx;
-            out[c] = top + (bot - top) * ty;
+            out[kc] = kv;
+        }
+        let rem_mask = dst_mask & !(active_mask >> 4);
+        for (c, ch) in self.channels.iter().enumerate() {
+            if (rem_mask >> c) & 1 != 0 {
+                out[c] = sample_ch_x8(ch, &i00, tx, ty, stride, bmask);
+            }
         }
         out
     }
 }
 
 #[inline(always)]
-fn wrap_or_clamp_x8(idx: i32x8, dim: usize, mask: i32, is_pot: bool, clamp: bool) -> i32x8 {
-    assert!(dim > 0);
+fn sample_ch_x8(
+    ch: &[f32],
+    i00: &[i32; SIMD_LANES],
+    tx: f32x8,
+    ty: f32x8,
+    stride: usize,
+    bmask: usize,
+) -> f32x8 {
+    assert!(ch.len() > bmask);
     assert_eq!(SIMD_LANES, 8);
-    let d_i32 = dim as i32;
-    let zero_i = i32x8::splat(0);
-    let max_i = i32x8::splat(d_i32 - 1);
+    let s = &ch[..=bmask];
+    let c00 = f32x8::from_array(std::array::from_fn(|k| s[(i00[k] as usize) & bmask]));
+    let c10 = f32x8::from_array(std::array::from_fn(|k| {
+        s[(i00[k] as usize).wrapping_add(1) & bmask]
+    }));
+    let c01 = f32x8::from_array(std::array::from_fn(|k| {
+        s[(i00[k] as usize).wrapping_add(stride) & bmask]
+    }));
+    let c11 = f32x8::from_array(std::array::from_fn(|k| {
+        s[(i00[k] as usize).wrapping_add(stride + 1) & bmask]
+    }));
+    let top = c00 + (c10 - c00) * tx;
+    let bot = c01 + (c11 - c01) * tx;
+    top + (bot - top) * ty
+}
+
+#[inline(always)]
+fn coord_and_frac_x8(
+    coord: f32x8,
+    dim_f32: f32,
+    dim_m1_f32: f32,
+    dim_i32: i32,
+    mask: i32,
+    is_pot: bool,
+    clamp: bool,
+) -> (i32x8, f32x8) {
+    assert!(dim_i32 > 0);
+    assert_eq!(SIMD_LANES, 8);
+    let zero = f32x8::splat(0.0);
+    let half = f32x8::splat(0.5);
     if clamp {
-        idx.simd_max(zero_i).simd_min(max_i)
-    } else if is_pot {
-        idx & i32x8::splat(mask)
+        let uu = coord.simd_clamp(zero, f32x8::splat(1.0));
+        let fx = (uu * f32x8::splat(dim_f32) - half).simd_clamp(zero, f32x8::splat(dim_m1_f32));
+        let fl = fx.floor();
+        (fl.cast::<i32>(), fx - fl)
     } else {
-        // Because `uu = u - u.floor()` is already in `[0.0, 1.0)`, `idx` is always in `[-1, dim]`:
-        // `-1` wraps to `dim - 1`, and `dim` wraps to `0`, with zero integer division (`idiv`).
-        let d_v = i32x8::splat(d_i32);
-        let wrapped_lo = idx.simd_lt(zero_i).select(idx + d_v, idx);
-        wrapped_lo.simd_ge(d_v).select(wrapped_lo - d_v, wrapped_lo)
+        // Because `uu = coord - coord.floor()` is in `[0.0, 1.0)`, `x0` is in `[-1, dim - 1]`:
+        // `-1` wraps to `dim - 1`, and `ix0 + 1` reads the wrap-guard texel at `row[dim]`.
+        let uu = coord - coord.floor();
+        let fx = uu * f32x8::splat(dim_f32) - half;
+        let fl = fx.floor();
+        let x0 = fl.cast::<i32>();
+        let ix0 = if is_pot {
+            x0 & i32x8::splat(mask)
+        } else {
+            x0.simd_lt(i32x8::splat(0))
+                .select(x0 + i32x8::splat(dim_i32), x0)
+        };
+        (ix0, fx - fl)
     }
 }
