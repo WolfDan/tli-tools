@@ -25,44 +25,46 @@ fn load_standalone_s16_textures(
     map: &mut BTreeMap<String, DecodedAssetImage>,
 ) {
     assert!(!filters.is_empty());
-    for meta in vfs.entries.values() {
-        let vpath = &meta.virtual_path;
-        if !vpath.ends_with(".uasset")
-            || vpath.ends_with("_Sprite.uasset")
-            || vpath.ends_with("_Atlas.uasset")
-        {
+    let candidates = vfs.collect_entries(
+        |dir_lower| dir_lower.starts_with("ue_game/content/art/uiv2"),
+        |dir_lower, file_lower| {
+            file_lower.ends_with(".uasset")
+                && !file_lower.ends_with("_sprite.uasset")
+                && !file_lower.ends_with("_atlas.uasset")
+                && filters
+                    .iter()
+                    .any(|f| file_lower.contains(f) || dir_lower.contains(f))
+        },
+    );
+
+    for (vpath, _) in candidates {
+        let Ok(tex) = vfs.decode_texture(&vpath) else {
+            continue;
+        };
+        if !(16..=4096).contains(&tex.width) || !(16..=4096).contains(&tex.height) {
             continue;
         }
-        let lower = vpath.to_lowercase();
-        if !filters.iter().any(|f| lower.contains(f)) {
+        let short_name = Path::new(&vpath)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if map.get(&short_name).is_some_and(|prev| {
+            prev.virtual_path.contains("/NoAtlas/") && !vpath.contains("/NoAtlas/")
+        }) {
             continue;
         }
-        if let Ok(tex) = vfs.decode_texture(vpath)
-            && (16..=4096).contains(&tex.width)
-            && (16..=4096).contains(&tex.height)
-        {
-            let short_name = Path::new(vpath)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if map.get(&short_name).is_some_and(|prev| {
-                prev.virtual_path.contains("/NoAtlas/") && !vpath.contains("/NoAtlas/")
-            }) {
-                continue;
-            }
-            map.insert(
-                short_name.clone(),
-                DecodedAssetImage {
-                    virtual_path: vpath.clone(),
-                    short_name,
-                    width: tex.width,
-                    height: tex.height,
-                    rgba8: tex.rgba8,
-                },
-            );
-        }
+        map.insert(
+            short_name.clone(),
+            DecodedAssetImage {
+                virtual_path: vpath,
+                short_name,
+                width: tex.width,
+                height: tex.height,
+                rgba8: tex.rgba8,
+            },
+        );
     }
-    assert!(map.len() <= vfs.entries.len());
+    assert!(map.len() <= 65_536);
 }
 
 fn load_s16_paper_sprites(
@@ -71,18 +73,20 @@ fn load_s16_paper_sprites(
     map: &mut BTreeMap<String, DecodedAssetImage>,
 ) {
     assert!(!filters.is_empty());
-    let mut by_atlas: BTreeMap<String, Vec<(&str, tartarus_extract::PaperSpriteInfo)>> =
+    let sprite_entries = vfs.collect_entries(
+        |dir_lower| dir_lower.starts_with("ue_game/content/art/uiv2"),
+        |dir_lower, file_lower| {
+            file_lower.ends_with("_sprite.uasset")
+                && filters
+                    .iter()
+                    .any(|f| file_lower.contains(f) || dir_lower.contains(f))
+        },
+    );
+
+    let mut by_atlas: BTreeMap<String, Vec<(String, tartarus_extract::PaperSpriteInfo)>> =
         BTreeMap::new();
-    for meta in vfs.entries.values() {
-        let vpath = &meta.virtual_path;
-        if !vpath.ends_with("_Sprite.uasset") {
-            continue;
-        }
-        let lower = vpath.to_lowercase();
-        if !filters.iter().any(|f| lower.contains(f)) {
-            continue;
-        }
-        if let Ok(info) = vfs.read_paper_sprite(vpath) {
+    for (vpath, _) in sprite_entries {
+        if let Ok(info) = vfs.read_paper_sprite(&vpath) {
             by_atlas
                 .entry(info.atlas_virtual_path.clone())
                 .or_default()
@@ -100,7 +104,7 @@ fn load_s16_paper_sprites(
                 if cw < 12 || ch < 12 {
                     continue;
                 }
-                let short_name = Path::new(vpath)
+                let short_name = Path::new(&vpath)
                     .file_stem()
                     .map(|s| s.to_string_lossy().trim_end_matches("_Sprite").to_string())
                     .unwrap_or_default();
@@ -119,7 +123,7 @@ fn load_s16_paper_sprites(
                 map.insert(
                     short_name.clone(),
                     DecodedAssetImage {
-                        virtual_path: vpath.to_string(),
+                        virtual_path: vpath,
                         short_name,
                         width: cw,
                         height: ch,
@@ -129,7 +133,7 @@ fn load_s16_paper_sprites(
             }
         }
     }
-    assert!(map.len() <= vfs.entries.len());
+    assert!(map.len() <= 65_536);
 }
 
 /// Decodes all S16 textures and PaperSprites needed for the catalog and CV feature synthesis,
@@ -145,7 +149,7 @@ pub fn load_s16_textures_by_name(vfs: &PakVfs) -> BTreeMap<String, DecodedAssetI
     assert_eq!(filters.len(), 4);
     load_standalone_s16_textures(vfs, &filters, &mut map);
     load_s16_paper_sprites(vfs, &filters, &mut map);
-    assert!(map.len() <= vfs.entries.len());
+    assert!(map.len() <= 65_536);
     map
 }
 

@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
+use std::simd::prelude::*;
 
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 use serde::{Deserialize, Serialize};
@@ -82,7 +83,27 @@ const _: () = {
     assert!(PROTO_ITERATIONS_MAX >= 1024);
 };
 
+const LUAC_CIPHER_STEP: u64 = 0x2021_0507;
+
+fn decrypt_luac_scalar_byte(read_count: usize, b: u8) -> u8 {
+    assert!(read_count <= 256 * 1024 * 1024);
+    let rc = read_count as u64;
+    let v11 = rc.wrapping_mul(LUAC_CIPHER_STEP);
+    let dec = if read_count <= 1 {
+        b
+    } else if read_count.is_multiple_of(3) {
+        b ^ ((rc.wrapping_add(v11 & 1).wrapping_add(v11 >> 28)) as u8)
+    } else if read_count % 3 == 1 {
+        b ^ ((((v11 >> 16) & 0xFF).wrapping_sub(rc)) as u8)
+    } else {
+        b ^ ((rc | (v11 >> 21)) as u8)
+    };
+    assert!(read_count > 1 || dec == b);
+    dec
+}
+
 /// Decrypts a `.out` Lua bytecode buffer using *Torchlight: Infinite*'s `0x20210507` stream cipher.
+/// Vectorized with 8-lane `u64x8` SIMD (`24` bytes / 8 period-3 triples per iteration).
 /// If the buffer is already decrypted (`\x01XDI`) or normalized (`\x1bLua`), returns a clone.
 pub fn decrypt_luac_bytes(binary_data: &[u8]) -> Vec<u8> {
     assert!(binary_data.len() <= 256 * 1024 * 1024);
@@ -91,23 +112,52 @@ pub fn decrypt_luac_bytes(binary_data: &[u8]) -> Vec<u8> {
         assert_eq!(copy.len(), binary_data.len());
         return copy;
     }
-    let mut out = Vec::with_capacity(binary_data.len());
-    let mut v11: u64 = 0;
-    for (read_count, &b) in binary_data.iter().enumerate() {
-        let rc = read_count as u64;
-        let dec = if read_count <= 1 {
-            b
-        } else if read_count % 3 == 0 {
-            b ^ ((rc.wrapping_add(v11 & 1).wrapping_add(v11 >> 28)) as u8)
-        } else if read_count % 3 == 1 {
-            b ^ ((((v11 >> 16) & 0xFF).wrapping_sub(rc)) as u8)
-        } else {
-            b ^ ((rc | (v11 >> 21)) as u8)
-        };
-        out.push(dec);
-        v11 = v11.wrapping_add(0x2021_0507);
+    let len = binary_data.len();
+    let mut out = vec![0u8; len];
+    let head = len.min(3);
+    for i in 0..head {
+        out[i] = decrypt_luac_scalar_byte(i, binary_data[i]);
     }
-    assert_eq!(out.len(), binary_data.len());
+    if len <= 3 {
+        assert_eq!(out.len(), len);
+        return out;
+    }
+
+    let mut rc0 = u64x8::from_array([3, 6, 9, 12, 15, 18, 21, 24]);
+    let mut v0 = rc0 * Simd::splat(LUAC_CIPHER_STEP);
+    let step_rc = u64x8::splat(24);
+    let step_v = u64x8::splat(24u64.wrapping_mul(LUAC_CIPHER_STEP));
+    let mul1 = u64x8::splat(LUAC_CIPHER_STEP);
+    let mul2 = u64x8::splat(2u64.wrapping_mul(LUAC_CIPHER_STEP));
+
+    let mut pos = 3usize;
+    while pos + 24 <= len {
+        let rc1 = rc0 + u64x8::splat(1);
+        let rc2 = rc0 + u64x8::splat(2);
+        let v1 = v0 + mul1;
+        let v2 = v0 + mul2;
+        let k0 = (rc0 + (v0 & u64x8::splat(1)) + (v0 >> u64x8::splat(28)))
+            .cast::<u8>()
+            .to_array();
+        let k1 = (((v1 >> u64x8::splat(16)) & u64x8::splat(0xFF)) - rc1)
+            .cast::<u8>()
+            .to_array();
+        let k2 = (rc2 | (v2 >> u64x8::splat(21))).cast::<u8>().to_array();
+        for lane in 0..8 {
+            let off = pos + lane * 3;
+            out[off] = binary_data[off] ^ k0[lane];
+            out[off + 1] = binary_data[off + 1] ^ k1[lane];
+            out[off + 2] = binary_data[off + 2] ^ k2[lane];
+        }
+        rc0 += step_rc;
+        v0 += step_v;
+        pos += 24;
+    }
+    while pos < len {
+        out[pos] = decrypt_luac_scalar_byte(pos, binary_data[pos]);
+        pos += 1;
+    }
+    assert_eq!(out.len(), len);
     out
 }
 
@@ -322,6 +372,65 @@ fn transpile_proto_constants(
     Ok(())
 }
 
+fn transpile_xdi_code_simd(
+    cur: &mut Cursor<&[u8]>,
+    out: &mut Vec<u8>,
+    sizecode: usize,
+) -> Result<(), ExtractError> {
+    let buf = *cur.get_ref();
+    let pos = cur.position() as usize;
+    assert!(pos <= buf.len());
+    let byte_len = sizecode
+        .checked_mul(4)
+        .ok_or_else(|| ExtractError::LuacFormat("sizecode overflow".to_string()))?;
+    let end = pos
+        .checked_add(byte_len)
+        .ok_or_else(|| ExtractError::LuacFormat("code end overflow".to_string()))?;
+    let raw_code = buf.get(pos..end).ok_or_else(|| {
+        ExtractError::LuacFormat(format!("Unexpected EOF in Lua code section at 0x{pos:x}"))
+    })?;
+    cur.set_position(end as u64);
+
+    let before_out = out.len();
+    out.reserve(byte_len);
+    let (blocks32, tail_bytes) = raw_code.as_chunks::<32>();
+    for block in blocks32 {
+        let words = u32x8::from_array([
+            u32::from_le_bytes([block[0], block[1], block[2], block[3]]),
+            u32::from_le_bytes([block[4], block[5], block[6], block[7]]),
+            u32::from_le_bytes([block[8], block[9], block[10], block[11]]),
+            u32::from_le_bytes([block[12], block[13], block[14], block[15]]),
+            u32::from_le_bytes([block[16], block[17], block[18], block[19]]),
+            u32::from_le_bytes([block[20], block[21], block[22], block[23]]),
+            u32::from_le_bytes([block[24], block[25], block[26], block[27]]),
+            u32::from_le_bytes([block[28], block[29], block[30], block[31]]),
+        ]);
+        let ops = (words >> Simd::splat(26)).to_array();
+        let mut std_ops = [0u32; 8];
+        for lane in 0..8 {
+            let xdi_op = ops[lane] as usize;
+            let Some(&std_op) = XDI_TO_LUA53_OPCODE.get(xdi_op) else {
+                return Err(ExtractError::LuacFormat(format!(
+                    "Unknown XDI opcode {xdi_op} in instruction 0x{:08x}",
+                    words.to_array()[lane]
+                )));
+            };
+            std_ops[lane] = u32::from(std_op);
+        }
+        let std_words =
+            ((words & Simd::splat(0x03FF_FFFF)) << Simd::splat(6)) | u32x8::from_array(std_ops);
+        for w in std_words.to_array() {
+            out.extend_from_slice(&w.to_le_bytes());
+        }
+    }
+    for word_bytes in tail_bytes.as_chunks::<4>().0 {
+        let std_word = transpile_xdi_instruction(u32::from_le_bytes(*word_bytes))?;
+        out.extend_from_slice(&std_word.to_le_bytes());
+    }
+    assert_eq!(out.len() - before_out, byte_len);
+    Ok(())
+}
+
 fn transpile_proto_body_and_queue_children(
     cur: &mut Cursor<&[u8]>,
     out: &mut Vec<u8>,
@@ -339,13 +448,7 @@ fn transpile_proto_body_and_queue_children(
         .read_u32::<LittleEndian>()
         .map_err(|e| ExtractError::LuacFormat(e.to_string()))?;
     out.extend_from_slice(&sizecode.to_le_bytes());
-    for _ in 0..(sizecode as usize) {
-        let xdi_word = cur
-            .read_u32::<LittleEndian>()
-            .map_err(|e| ExtractError::LuacFormat(e.to_string()))?;
-        let std_word = transpile_xdi_instruction(xdi_word)?;
-        out.extend_from_slice(&std_word.to_le_bytes());
-    }
+    transpile_xdi_code_simd(cur, out, sizecode as usize)?;
 
     transpile_proto_constants(cur, out)?;
 
@@ -819,11 +922,50 @@ fn parse_proto_strings(
     root_src.ok_or_else(|| ExtractError::LuacFormat("Empty proto stream".to_string()))
 }
 
+fn try_parse_multi_language_record<'a>(
+    data: &'a [u8],
+    i: usize,
+    prefix_bytes: &[u8],
+) -> Option<(&'a str, &'a str, usize)> {
+    let n = data.len();
+    assert!(i + 16 <= n);
+    let klen = LittleEndian::read_u32(&data[i..i + 4]) as usize;
+    if !(4..=256).contains(&klen) || i + 8 + 2 * klen + 8 > n {
+        return None;
+    }
+    let k1_start = i + 4;
+    let k1_end = k1_start + klen;
+    if !prefix_bytes.is_empty() && !data[k1_start..k1_end].starts_with(prefix_bytes) {
+        return None;
+    }
+    let klen2 = LittleEndian::read_u32(&data[k1_end..k1_end + 4]) as usize;
+    if klen2 != klen {
+        return None;
+    }
+    let k2_start = k1_end + 4;
+    let k2_end = k2_start + klen;
+    if data[k1_start..k1_end] != data[k2_start..k2_end] {
+        return None;
+    }
+    let flag = LittleEndian::read_u32(&data[k2_end..k2_end + 4]);
+    let vlen = LittleEndian::read_u32(&data[k2_end + 4..k2_end + 8]) as usize;
+    let val_start = k2_end + 8;
+    let val_end = val_start.saturating_add(vlen);
+    if flag != 0 || vlen > 32768 || val_end > n {
+        return None;
+    }
+    let k = std::str::from_utf8(&data[k1_start..k1_end]).ok()?;
+    let v = std::str::from_utf8(&data[val_start..val_end]).ok()?;
+    assert!(val_end > i);
+    Some((k, v, val_end))
+}
+
 /// Parses `UE_game/Content/Script/Data/language/config_multi_language_*.bin`.
 ///
 /// Each record in the language binary has the layout:
 /// `<u32 klen><key_bytes><u32 klen><key_bytes><u32 0><u32 vlen><utf8_value_bytes>`.
-/// If `prefix_filter` is `Some(prefix)`, only keys starting with `prefix` are collected.
+/// If `prefix_filter` is `Some(prefix)`, SIMD `memchr::memmem::Finder` jumps directly to keys
+/// starting with `prefix`.
 pub fn parse_multi_language_bin(
     data: &[u8],
     prefix_filter: Option<&str>,
@@ -840,40 +982,41 @@ pub fn parse_multi_language_bin(
     let iterations_max = n + 1;
     let mut iterations = 0usize;
     let mut i = 0usize;
+
+    if !prefix_bytes.is_empty() {
+        let finder = memchr::memmem::Finder::new(prefix_bytes);
+        while i + 16 <= n {
+            iterations += 1;
+            assert!(iterations <= iterations_max);
+            let Some(rel) = finder.find(&data[i + 4..]) else {
+                break;
+            };
+            let cand_i = i + rel;
+            if cand_i + 16 > n {
+                break;
+            }
+            if let Some((k, v, val_end)) =
+                try_parse_multi_language_record(data, cand_i, prefix_bytes)
+            {
+                map.insert(k.to_string(), v.to_string());
+                i = val_end;
+            } else {
+                i = cand_i + 1;
+            }
+        }
+        assert!(i <= n);
+        return map;
+    }
+
     while i + 16 <= n {
         iterations += 1;
         assert!(iterations <= iterations_max);
-        let klen = LittleEndian::read_u32(&data[i..i + 4]) as usize;
-        if (4..=256).contains(&klen) && i + 8 + 2 * klen + 8 <= n {
-            let k1_start = i + 4;
-            let k1_end = k1_start + klen;
-            if prefix_bytes.is_empty() || data[k1_start..k1_end].starts_with(prefix_bytes) {
-                let klen2 = LittleEndian::read_u32(&data[k1_end..k1_end + 4]) as usize;
-                if klen2 == klen {
-                    let k2_start = k1_end + 4;
-                    let k2_end = k2_start + klen;
-                    if data[k1_start..k1_end] == data[k2_start..k2_end] {
-                        let flag = LittleEndian::read_u32(&data[k2_end..k2_end + 4]);
-                        let vlen = LittleEndian::read_u32(&data[k2_end + 4..k2_end + 8]) as usize;
-                        let val_start = k2_end + 8;
-                        let val_end = val_start.saturating_add(vlen);
-                        if flag == 0
-                            && vlen <= 32768
-                            && val_end <= n
-                            && let (Ok(k), Ok(v)) = (
-                                std::str::from_utf8(&data[k1_start..k1_end]),
-                                std::str::from_utf8(&data[val_start..val_end]),
-                            )
-                        {
-                            map.insert(k.to_string(), v.to_string());
-                            i = val_end;
-                            continue;
-                        }
-                    }
-                }
-            }
+        if let Some((k, v, val_end)) = try_parse_multi_language_record(data, i, prefix_bytes) {
+            map.insert(k.to_string(), v.to_string());
+            i = val_end;
+        } else {
+            i += 1;
         }
-        i += 1;
     }
 
     assert!(i <= n);

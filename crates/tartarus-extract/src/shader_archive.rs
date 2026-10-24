@@ -3,13 +3,13 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ExtractError;
-use crate::pak::{CompressionKind, PakEntryMeta};
+use crate::pak::{CompressionKind, PakEntryMeta, PakEntryRecord, PakVfs, read_exact_at_offset};
 
 pub const SHADER_ARCHIVE_VERSION_UE427: u32 = 2;
 const SHADER_MAPS_MAX: usize = 65_536;
@@ -23,6 +23,59 @@ const _: () = {
     assert!(SHADER_ARCHIVE_VERSION_UE427 == 2);
     assert!(PAK_INLINE_UNCOMP_HEADER_LEN == 54);
 };
+
+/// Lock-free positional `Read + Seek` adapter over an immutable `&File`.
+struct PositionalFileReader<'a> {
+    file: &'a File,
+    pos: u64,
+}
+
+impl Read for PositionalFileReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        assert!(self.pos <= i64::MAX as u64);
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        #[cfg(unix)]
+        let n = {
+            use std::os::unix::fs::FileExt;
+            self.file.read_at(buf, self.pos)?
+        };
+        #[cfg(windows)]
+        let n = {
+            use std::os::windows::fs::FileExt;
+            self.file.seek_read(buf, self.pos)?
+        };
+        self.pos = self.pos.saturating_add(n as u64);
+        assert!(self.pos <= i64::MAX as u64);
+        Ok(n)
+    }
+}
+
+impl Seek for PositionalFileReader<'_> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        assert!(self.pos <= i64::MAX as u64);
+        let next = match pos {
+            SeekFrom::Start(off) => off as i64,
+            SeekFrom::Current(delta) => (self.pos as i64).saturating_add(delta),
+            SeekFrom::End(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "SeekFrom::End unsupported on PositionalFileReader",
+                ));
+            }
+        };
+        if next < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Negative seek position",
+            ));
+        }
+        self.pos = next as u64;
+        assert!(self.pos <= i64::MAX as u64);
+        Ok(self.pos)
+    }
+}
 
 /// Direct3D 11 / UE4 shader stage (`EShaderFrequency`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -306,13 +359,12 @@ impl ShaderArchiveIndex {
     }
 }
 
-/// Decompresses a single `FShaderCodeEntry` slice (Oodle Kraken or uncompressed) and splits it
-/// into the UE4 header prefix, the `DXBC` container, and the UE4 resource counts trailer.
-pub fn decompress_shader_code_blob(
+pub(crate) fn decompress_shader_code_blob_with_oodle(
     shader_index: usize,
     shader_hash: &[u8; 20],
     entry: &ShaderCodeEntry,
     comp_slice: &[u8],
+    oodle: &mut oozextract::Extractor,
 ) -> Result<DecompressedShaderBlob, ExtractError> {
     assert_eq!(comp_slice.len(), entry.size as usize);
     let uncomp_len = entry.uncompressed_size as usize;
@@ -326,7 +378,6 @@ pub fn decompress_shader_code_blob(
     if entry.size == entry.uncompressed_size {
         raw.copy_from_slice(comp_slice);
     } else {
-        let mut oodle = oozextract::Extractor::new();
         let written = oodle.read_from_slice(comp_slice, &mut raw).map_err(|e| {
             ExtractError::Decompress(format!(
                 "Oodle decompress failed on shader[{shader_index}]: {e:?}"
@@ -374,6 +425,82 @@ pub fn decompress_shader_code_blob(
     })
 }
 
+/// Decompresses a single `FShaderCodeEntry` slice (Oodle Kraken or uncompressed) and splits it
+/// into the UE4 header prefix, the `DXBC` container, and the UE4 resource counts trailer.
+pub fn decompress_shader_code_blob(
+    shader_index: usize,
+    shader_hash: &[u8; 20],
+    entry: &ShaderCodeEntry,
+    comp_slice: &[u8],
+) -> Result<DecompressedShaderBlob, ExtractError> {
+    assert_eq!(comp_slice.len(), entry.size as usize);
+    assert_eq!(shader_hash.len(), 20);
+    let mut oodle = oozextract::Extractor::new();
+    decompress_shader_code_blob_with_oodle(shader_index, shader_hash, entry, comp_slice, &mut oodle)
+}
+
+/// Reads the `ShaderArchiveIndex` from a `PakEntryRecord` using the pre-opened `PakArchive`
+/// file handle without `File::open` or loading the 606 MB shader payload into memory.
+pub fn read_shader_archive_index_from_record(
+    vfs: &PakVfs,
+    vpath: &str,
+    record: &PakEntryRecord,
+) -> Result<ShaderArchiveIndex, ExtractError> {
+    let archive = vfs.record_archive(record);
+    assert!(!vpath.is_empty());
+    assert!(!archive.pak_name.is_empty());
+    if record.compression == CompressionKind::None && !record.is_encrypted() {
+        let file = archive.ensure_file()?;
+        let reader = PositionalFileReader {
+            file,
+            pos: record.offset + PAK_INLINE_UNCOMP_HEADER_LEN,
+        };
+        let mut buf_reader = BufReader::with_capacity(64 * 1024, reader);
+        return ShaderArchiveIndex::parse_from_reader(&mut buf_reader, vpath, &archive.pak_name);
+    }
+    let bytes = vfs.read_record(record)?;
+    assert!(!bytes.is_empty());
+    ShaderArchiveIndex::from_bytes(&bytes, vpath, &archive.pak_name)
+}
+
+/// Reads and Oodle-decompresses a single `shader_index` from `arch` using lock-free positional
+/// I/O on the pre-opened `PakArchive` handle when stored uncompressed.
+pub fn extract_shader_from_record(
+    vfs: &PakVfs,
+    record: &PakEntryRecord,
+    arch: &ShaderArchiveIndex,
+    shader_index: usize,
+) -> Result<DecompressedShaderBlob, ExtractError> {
+    assert!(shader_index < arch.shader_entries.len());
+    assert_eq!(arch.shader_entries.len(), arch.shader_hashes.len());
+    let entry = &arch.shader_entries[shader_index];
+    let hash = &arch.shader_hashes[shader_index];
+
+    if record.compression == CompressionKind::None && !record.is_encrypted() {
+        let archive = vfs.record_archive(record);
+        let file = archive.ensure_file()?;
+        let abs_off =
+            record.offset + PAK_INLINE_UNCOMP_HEADER_LEN + arch.payload_offset + entry.offset;
+        let comp_len = entry.size as usize;
+        return vfs.with_scratch(|scratch| {
+            scratch.io_buffer.resize(comp_len, 0);
+            read_exact_at_offset(file, &mut scratch.io_buffer[..comp_len], abs_off)?;
+            decompress_shader_code_blob_with_oodle(
+                shader_index,
+                hash,
+                entry,
+                &scratch.io_buffer[..comp_len],
+                &mut scratch.oodle,
+            )
+        });
+    }
+
+    Err(ExtractError::ShaderFormat(format!(
+        "Archive {} requires full-buffer extraction",
+        arch.archive_virtual_path
+    )))
+}
+
 /// Reads the `ShaderArchiveIndex` from a `PakEntryMeta` without loading the entire 606 MB
 /// shader payload into memory when the archive is stored uncompressed and unencrypted.
 pub fn read_shader_archive_index_from_pak(
@@ -384,8 +511,9 @@ pub fn read_shader_archive_index_from_pak(
     if meta.compression == CompressionKind::None && !meta.encrypted {
         let mut file = File::open(&meta.pak_path)?;
         file.seek(SeekFrom::Start(meta.offset + PAK_INLINE_UNCOMP_HEADER_LEN))?;
+        let mut buf_reader = BufReader::with_capacity(64 * 1024, file);
         return ShaderArchiveIndex::parse_from_reader(
-            &mut file,
+            &mut buf_reader,
             &meta.virtual_path,
             &meta.pak_name,
         );
@@ -408,12 +536,11 @@ pub fn extract_shader_from_pak_entry(
     let hash = &arch.shader_hashes[shader_index];
 
     if meta.compression == CompressionKind::None && !meta.encrypted {
-        let mut file = File::open(&meta.pak_path)?;
+        let file = File::open(&meta.pak_path)?;
         let abs_off =
             meta.offset + PAK_INLINE_UNCOMP_HEADER_LEN + arch.payload_offset + entry.offset;
-        file.seek(SeekFrom::Start(abs_off))?;
         let mut comp_buf = vec![0u8; entry.size as usize];
-        file.read_exact(&mut comp_buf)?;
+        read_exact_at_offset(&file, &mut comp_buf, abs_off)?;
         return decompress_shader_code_blob(shader_index, hash, entry, &comp_buf);
     }
 

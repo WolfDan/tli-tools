@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use tartarus_extract::{DEFAULT_AES_KEY, PakVfs, discover_game_dir, parse_aes_key_hex};
 use tartarus_render::{
@@ -89,13 +90,6 @@ fn run_cell_cmd(mut args: pico_args::Arguments) -> Result<(), Box<dyn std::error
         BackgroundMode::parse(&bg_str).ok_or_else(|| format!("Unknown --bg '{bg_str}'"))?;
     assert!(scale > 0.0);
 
-    let vfs = open_vfs(game_dir, aes_key)?;
-    let ctx = CellRenderContext::load(&vfs)?;
-    let show_eat_icon = if no_devour_badge {
-        false
-    } else {
-        eat_icon || quan
-    };
     let req = CellRenderRequest {
         portrait_selector: portrait,
         rarity,
@@ -104,26 +98,90 @@ fn run_cell_cmd(mut args: pico_args::Arguments) -> Result<(), Box<dyn std::error
         } else {
             RarityMode::Shao
         },
-        show_eat_icon,
+        show_eat_icon: !no_devour_badge && (eat_icon || quan),
         include_shadow: !no_shadow,
         include_particles: !no_particles,
         particle_seed,
         scale,
         background,
     };
-    let img = ctx.render_cell(&req)?;
+    exec_cell_render(game_dir, aes_key, &req, &out_path)
+}
+
+fn exec_cell_render(
+    game_dir: Option<PathBuf>,
+    aes_key: Option<String>,
+    req: &CellRenderRequest,
+    out_path: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    assert!(req.scale > 0.0);
+    assert!(!out_path.as_os_str().is_empty());
+    let t0 = Instant::now();
+    let vfs = open_vfs(game_dir, aes_key)?;
+    let t_mount = t0.elapsed();
+    let t1 = Instant::now();
+    let ctx = CellRenderContext::load(&vfs)?;
+    let t_ctx = t1.elapsed();
+    let t2 = Instant::now();
+    let img = ctx.render_cell(req)?;
+    let t_render = t2.elapsed();
     if let Some(parent) = out_path.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&out_path, img.to_png_bytes()?)?;
+    fs::write(out_path, img.to_png_bytes()?)?;
+    let t_total = t0.elapsed();
     println!(
-        "Rendered {}x{} PNG -> {}",
+        "Rendered {}x{} PNG -> {} \
+         [mount={:.3} ms, ctx_load={:.2} ms, render={:.2} ms, total={:.2} ms]",
         img.width,
         img.height,
-        out_path.display()
+        out_path.display(),
+        t_mount.as_secs_f64() * 1000.0,
+        t_ctx.as_secs_f64() * 1000.0,
+        t_render.as_secs_f64() * 1000.0,
+        t_total.as_secs_f64() * 1000.0,
     );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_12_portrait_cells(
+    ctx: &CellRenderContext,
+    portrait: &str,
+    no_devour_badge: bool,
+    no_particles: bool,
+    particle_seed: u64,
+    scale: f32,
+    background: BackgroundMode,
+    out_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    assert!(!portrait.is_empty());
+    assert!(scale > 0.0);
+    for mode in [RarityMode::Shao, RarityMode::Quan] {
+        for &rarity in &RarityTier::ALL {
+            let req = CellRenderRequest {
+                portrait_selector: portrait.to_string(),
+                rarity,
+                mode,
+                show_eat_icon: !no_devour_badge && mode == RarityMode::Quan,
+                include_shadow: true,
+                include_particles: !no_particles,
+                particle_seed,
+                scale,
+                background,
+            };
+            let img = ctx.render_cell(&req)?;
+            let fname = format!(
+                "{}_{}_{}.png",
+                portrait,
+                rarity.uasset_prefix().to_ascii_lowercase(),
+                mode.suffix().to_ascii_lowercase()
+            );
+            fs::write(out_dir.join(fname), img.to_png_bytes()?)?;
+        }
+    }
     Ok(())
 }
 
@@ -154,34 +212,26 @@ fn run_sheet_cmd(mut args: pico_args::Arguments) -> Result<(), Box<dyn std::erro
     assert!(scale > 0.0);
 
     fs::create_dir_all(&out_dir)?;
+    let t0 = Instant::now();
     let vfs = open_vfs(game_dir, aes_key)?;
+    let t_mount = t0.elapsed();
+    let t1 = Instant::now();
     let ctx = CellRenderContext::load(&vfs)?;
+    let t_ctx = t1.elapsed();
+    let t2 = Instant::now();
+    render_12_portrait_cells(
+        &ctx,
+        &portrait,
+        no_devour_badge,
+        no_particles,
+        particle_seed,
+        scale,
+        background,
+        &out_dir,
+    )?;
+    let t_cells12 = t2.elapsed();
 
-    for mode in [RarityMode::Shao, RarityMode::Quan] {
-        for &rarity in &RarityTier::ALL {
-            let req = CellRenderRequest {
-                portrait_selector: portrait.clone(),
-                rarity,
-                mode,
-                show_eat_icon: !no_devour_badge && mode == RarityMode::Quan,
-                include_shadow: true,
-                include_particles: !no_particles,
-                particle_seed,
-                scale,
-                background,
-            };
-            let img = ctx.render_cell(&req)?;
-            let fname = format!(
-                "{}_{}_{}.png",
-                portrait,
-                rarity.uasset_prefix().to_ascii_lowercase(),
-                mode.suffix().to_ascii_lowercase()
-            );
-            let fpath = out_dir.join(fname);
-            fs::write(&fpath, img.to_png_bytes()?)?;
-        }
-    }
-
+    let t3 = Instant::now();
     let quan_badge = !no_devour_badge;
     let rows = vec![
         (String::from("mammoth"), RarityMode::Shao, false),
@@ -189,16 +239,24 @@ fn run_sheet_cmd(mut args: pico_args::Arguments) -> Result<(), Box<dyn std::erro
         (String::from("lion"), RarityMode::Shao, false),
         (String::from("wolf"), RarityMode::Quan, quan_badge),
         (String::from("rat"), RarityMode::Shao, false),
-        (String::from("boss"), RarityMode::Quan, false),
+        (String::from("mystery"), RarityMode::Quan, quan_badge),
     ];
     let sheet = render_comparison_sheet(&ctx, &rows, scale, background)?;
+    let t_sheet = t3.elapsed();
     let sheet_path = out_dir.join("rarity_comparison_sheet.png");
     fs::write(&sheet_path, sheet.to_png_bytes()?)?;
+    let t_total = t0.elapsed();
     println!(
-        "Rendered 12 individual rarity PNGs + {}x{} comparison sheet -> {}",
+        "Rendered 12 individual rarity PNGs + {}x{} comparison sheet -> {}\n\
+         [mount={:.3} ms, ctx_load={:.2} ms, 12_cells={:.2} ms, sheet_36_cells={:.2} ms, total={:.2} ms]",
         sheet.width,
         sheet.height,
-        sheet_path.display()
+        sheet_path.display(),
+        t_mount.as_secs_f64() * 1000.0,
+        t_ctx.as_secs_f64() * 1000.0,
+        t_cells12.as_secs_f64() * 1000.0,
+        t_sheet.as_secs_f64() * 1000.0,
+        t_total.as_secs_f64() * 1000.0,
     );
     Ok(())
 }

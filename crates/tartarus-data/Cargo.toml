@@ -8,7 +8,6 @@ description = "Authoritative S16 Tartarus game database, visual asset catalog re
 
 [dependencies]
 tartarus-extract = { path = "../tartarus-extract" }
-rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

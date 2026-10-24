@@ -73,7 +73,7 @@ fn render_all_catalogs_and_codegen(
     assert!(!args.out_dir.as_os_str().is_empty());
     println!("3. Decoding S16 Gameplay UI textures from .pak...");
     let textures = load_s16_textures_by_name(vfs);
-    assert!(textures.len() <= vfs.entries.len());
+    assert!(!textures.is_empty());
     println!("   -> Decoded {} S16 UI textures", textures.len());
 
     println!("4. Rendering S16 visual catalog sheets...");

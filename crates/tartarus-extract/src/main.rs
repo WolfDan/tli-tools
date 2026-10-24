@@ -1,15 +1,16 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
-use rayon::prelude::*;
 use serde::Serialize;
 use tartarus_extract::{
-    DEFAULT_AES_KEY_HEX, MaterialInfo, PakEntryMeta, PakVfs, PaperSpriteInfo, ShaderArchiveIndex,
+    DEFAULT_AES_KEY_HEX, MaterialInfo, PakEntryRecord, PakVfs, PaperSpriteInfo, ShaderArchiveIndex,
     decompile_dxbc_to_hlsl, decompile_luac_bytes, disassemble_dxbc, discover_game_dir,
-    parse_aes_key_hex, parse_dxbc, parse_uasset_names, parse_xdi_config_table, xdi_to_lua53_bytes,
+    parse_aes_key_hex, parse_dxbc, parse_uasset_names, parse_xdi_config_table,
+    read_shader_archive_index_from_record, xdi_to_lua53_bytes,
 };
 
 const _: () = {
@@ -51,32 +52,67 @@ fn main() {
     }
 }
 
+/// Collects `(virtual_path, PakEntryRecord)` matching `lower_filter` and `file_check`.
+/// Uses hardware SIMD (`collect_substring_matches`) when `lower_filter` is non-empty.
+fn collect_filtered_entries<F>(
+    vfs: &PakVfs,
+    lower_filter: &str,
+    mut file_check: F,
+) -> Vec<(String, PakEntryRecord)>
+where
+    F: FnMut(&str) -> bool,
+{
+    assert!(lower_filter.len() <= 4096);
+    if lower_filter.is_empty() {
+        return vfs.collect_entries(|_| true, |_, file_lower| file_check(file_lower));
+    }
+    let mut matches = vfs.collect_substring_matches(lower_filter);
+    matches.retain(|(vpath, _)| {
+        let file_part = vpath.rsplit('/').next().unwrap_or(vpath.as_str());
+        file_check(&file_part.to_ascii_lowercase())
+    });
+    assert!(matches.len() <= 1_048_576);
+    matches
+}
+
 fn cmd_list(vfs: &PakVfs, pos_args: &[String]) {
     assert!(!pos_args.is_empty());
     let filter = pos_args
         .get(1)
-        .map(|s| s.to_lowercase())
+        .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
-    let mut count = 0usize;
-    for (vpath, meta) in &vfs.entries {
-        if filter.is_empty() || vpath.to_lowercase().contains(&filter) {
-            println!(
-                "{:<10} {:<7} {:>10} -> {:>10}  [{}] {}",
-                format!("{:?}", meta.compression),
-                if meta.encrypted { "AES256" } else { "PLAIN" },
-                meta.comp_size,
-                meta.uncomp_size,
-                meta.pak_name,
-                vpath
-            );
-            count += 1;
-        }
+    let matched = if filter.is_empty() {
+        vfs.collect_entries(|_| true, |_, _| true)
+    } else {
+        vfs.collect_substring_matches(&filter)
+    };
+    let stdout = io::stdout();
+    let mut out = BufWriter::with_capacity(128 * 1024, stdout.lock());
+    for (vpath, rec) in &matched {
+        let archive = vfs.record_archive(rec);
+        let comp_str = match rec.compression {
+            tartarus_extract::CompressionKind::None => "None",
+            tartarus_extract::CompressionKind::Oodle => "Oodle",
+            tartarus_extract::CompressionKind::Zlib => "Zlib",
+            tartarus_extract::CompressionKind::Unknown => "Unknown",
+        };
+        let _ = writeln!(
+            out,
+            "{:<10} {:<7} {:>10} -> {:>10}  [{}] {}",
+            comp_str,
+            if rec.is_encrypted() {
+                "AES256"
+            } else {
+                "PLAIN"
+            },
+            rec.size_compressed,
+            rec.size_uncompressed,
+            archive.pak_name,
+            vpath
+        );
     }
-    assert!(count <= vfs.entries.len());
-    eprintln!(
-        "Matched {count} / {} total indexed files.",
-        vfs.entries.len()
-    );
+    let _ = out.flush();
+    eprintln!("Matched {} files.", matched.len());
 }
 
 fn cmd_raw(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
@@ -84,76 +120,67 @@ fn cmd_raw(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     let filter = pos_args
         .get(1)
         .ok_or("Usage: tartarus-extract raw <FILTER> <OUT_DIR>")?
-        .to_lowercase();
+        .to_ascii_lowercase();
     let out_dir = PathBuf::from(
         pos_args
             .get(2)
             .ok_or("Usage: tartarus-extract raw <FILTER> <OUT_DIR>")?,
     );
 
-    let matched: Vec<&PakEntryMeta> = vfs
-        .entries
-        .values()
-        .filter(|m| m.virtual_path.to_lowercase().contains(&filter))
-        .collect();
-    assert!(matched.len() <= vfs.entries.len());
-
+    let matched = collect_filtered_entries(vfs, &filter, |_| true);
     eprintln!(
         "Extracting {} matching files to {}...",
         matched.len(),
         out_dir.display()
     );
-    let ok_count = AtomicUsize::new(0);
-    let err_count = AtomicUsize::new(0);
+    let mut ok_count = 0usize;
+    let mut err_count = 0usize;
 
-    matched
-        .par_iter()
-        .for_each(|meta| match vfs.read_entry(meta) {
+    for (vpath, rec) in &matched {
+        match vfs.read_record(rec) {
             Ok(bytes) => {
-                let dest = out_dir.join(&meta.virtual_path);
+                let dest = out_dir.join(vpath);
                 if let Some(parent) = dest.parent() {
                     let _ = fs::create_dir_all(parent);
                 }
                 if fs::write(&dest, &bytes).is_ok() {
-                    ok_count.fetch_add(1, Ordering::Relaxed);
+                    ok_count += 1;
                 } else {
-                    err_count.fetch_add(1, Ordering::Relaxed);
+                    err_count += 1;
                 }
             }
             Err(e) => {
-                eprintln!("WARN: {}: {e}", meta.virtual_path);
-                err_count.fetch_add(1, Ordering::Relaxed);
+                eprintln!("WARN: {vpath}: {e}");
+                err_count += 1;
             }
-        });
-
-    eprintln!(
-        "Done: {} extracted, {} failed.",
-        ok_count.load(Ordering::Relaxed),
-        err_count.load(Ordering::Relaxed)
-    );
-    Ok(())
-}
-
-fn slice_paper_sprites_to_png(vfs: &PakVfs, sprites: &[&PakEntryMeta], out_dir: &Path) -> usize {
-    assert!(!out_dir.as_os_str().is_empty());
-    let mut sprites_by_atlas: BTreeMap<String, Vec<(&PakEntryMeta, PaperSpriteInfo)>> =
-        BTreeMap::new();
-    for smeta in sprites {
-        if let Ok(info) = vfs.read_paper_sprite(&smeta.virtual_path) {
-            sprites_by_atlas
-                .entry(info.atlas_virtual_path.clone())
-                .or_default()
-                .push((*smeta, info));
         }
     }
 
-    let ok_sprites = AtomicUsize::new(0);
-    let atlas_groups: Vec<(&String, &Vec<(&PakEntryMeta, PaperSpriteInfo)>)> =
-        sprites_by_atlas.iter().collect();
+    assert_eq!(ok_count + err_count, matched.len());
+    eprintln!("Done: {ok_count} extracted, {err_count} failed.");
+    Ok(())
+}
 
-    atlas_groups.par_iter().for_each(|(atlas_path, list)| {
+fn slice_paper_sprites_to_png(
+    vfs: &PakVfs,
+    sprites: &[(String, PakEntryRecord)],
+    out_dir: &Path,
+) -> usize {
+    assert!(!out_dir.as_os_str().is_empty());
+    let mut sprites_by_atlas: BTreeMap<String, Vec<(&str, PaperSpriteInfo)>> = BTreeMap::new();
+    for (vpath, _) in sprites {
+        if let Ok(info) = vfs.read_paper_sprite(vpath) {
+            sprites_by_atlas
+                .entry(info.atlas_virtual_path.clone())
+                .or_default()
+                .push((vpath.as_str(), info));
+        }
+    }
+
+    let mut ok_sprites = 0usize;
+    for (atlas_path, list) in &sprites_by_atlas {
         if let Ok(atlas_tex) = vfs.decode_texture(atlas_path) {
-            for (smeta, info) in *list {
+            for (vpath, info) in list {
                 let cw =
                     (info.width as usize).min(atlas_tex.width.saturating_sub(info.uv_x as usize));
                 let ch =
@@ -173,93 +200,78 @@ fn slice_paper_sprites_to_png(vfs: &PakVfs, sprites: &[&PakEntryMeta], out_dir: 
                 if let Ok(png_bytes) =
                     tartarus_extract::encode_png_rgba8(cw as u32, ch as u32, &cropped)
                 {
-                    let rel_png = Path::new(&smeta.virtual_path).with_extension("png");
+                    let rel_png = Path::new(vpath).with_extension("png");
                     let dest = out_dir.join(rel_png);
                     if let Some(parent) = dest.parent() {
                         let _ = fs::create_dir_all(parent);
                     }
                     if fs::write(&dest, png_bytes).is_ok() {
-                        ok_sprites.fetch_add(1, Ordering::Relaxed);
+                        ok_sprites += 1;
                     }
                 }
             }
         }
-    });
+    }
 
-    let count = ok_sprites.load(Ordering::Relaxed);
-    assert!(count <= sprites.len());
-    count
+    assert!(ok_sprites <= sprites.len());
+    ok_sprites
 }
 
 fn cmd_png(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     assert!(!pos_args.is_empty());
     let usage = "Usage: tartarus-extract png <FILTER> <OUT_DIR>";
-    let filter = pos_args.get(1).ok_or(usage)?.to_lowercase();
+    let filter = pos_args.get(1).ok_or(usage)?.to_ascii_lowercase();
     let out_dir = PathBuf::from(pos_args.get(2).ok_or(usage)?);
 
-    let uassets: Vec<&PakEntryMeta> = vfs
-        .entries
-        .values()
-        .filter(|m| {
-            m.virtual_path.ends_with(".uasset")
-                && m.virtual_path.to_lowercase().contains(&filter)
-                && !m.virtual_path.ends_with("_Sprite.uasset")
-        })
-        .collect();
-    let sprites: Vec<&PakEntryMeta> = vfs
-        .entries
-        .values()
-        .filter(|m| {
-            m.virtual_path.ends_with("_Sprite.uasset")
-                && m.virtual_path.to_lowercase().contains(&filter)
-        })
-        .collect();
-    assert!(uassets.len() + sprites.len() <= vfs.entries.len());
+    let uassets = collect_filtered_entries(vfs, &filter, |file_lower| {
+        file_lower.ends_with(".uasset") && !file_lower.ends_with("_sprite.uasset")
+    });
+    let sprites = collect_filtered_entries(vfs, &filter, |file_lower| {
+        file_lower.ends_with("_sprite.uasset")
+    });
 
     eprintln!(
-        "Decoding {} UTexture2D assets and slicing {} UPaperSprite sprites ('{}') to {}...",
+        "Decoding {} UTexture2D candidates and slicing {} UPaperSprite sprites ('{}') to {}...",
         uassets.len(),
         sprites.len(),
         filter,
         out_dir.display()
     );
-    let ok_tex = AtomicUsize::new(0);
-    let skip_tex = AtomicUsize::new(0);
+    let mut ok_tex = 0usize;
+    let mut skip_tex = 0usize;
 
-    uassets.par_iter().for_each(|meta| {
-        if let Ok(tex) = vfs.decode_texture(&meta.virtual_path) {
-            let dest = out_dir.join(Path::new(&meta.virtual_path).with_extension("png"));
+    for (vpath, _) in &uassets {
+        if let Ok(tex) = vfs.decode_texture(vpath) {
+            let dest = out_dir.join(Path::new(vpath).with_extension("png"));
             if let Some(parent) = dest.parent() {
                 let _ = fs::create_dir_all(parent);
             }
             if fs::write(&dest, tex.to_png_bytes()).is_ok() {
-                ok_tex.fetch_add(1, Ordering::Relaxed);
+                ok_tex += 1;
             }
         } else {
-            skip_tex.fetch_add(1, Ordering::Relaxed);
+            skip_tex += 1;
         }
-    });
+    }
+    assert_eq!(ok_tex + skip_tex, uassets.len());
 
     let ok_sprites = slice_paper_sprites_to_png(vfs, &sprites, &out_dir);
     eprintln!(
-        "Done: {} textures decoded, {} Paper2D sprites sliced ({} non-texture/skipped).",
-        ok_tex.load(Ordering::Relaxed),
-        ok_sprites,
-        skip_tex.load(Ordering::Relaxed)
+        "Done: {ok_tex} textures decoded, {ok_sprites} Paper2D sprites sliced ({skip_tex} non-texture/skipped)."
     );
     Ok(())
 }
 
 fn extract_single_luac_entry(
     vfs: &PakVfs,
-    meta: &PakEntryMeta,
+    vpath: &str,
+    rec: &PakEntryRecord,
     out_dir: &Path,
 ) -> Result<bool, String> {
-    assert!(!meta.virtual_path.is_empty());
+    assert!(!vpath.is_empty());
     assert!(!out_dir.as_os_str().is_empty());
 
-    let vpath = &meta.virtual_path;
-    let raw = vfs.read_entry(meta).map_err(|e| format!("{vpath}: {e}"))?;
+    let raw = vfs.read_record(rec).map_err(|e| format!("{vpath}: {e}"))?;
     let lua53 = xdi_to_lua53_bytes(&raw).map_err(|e| format!("{vpath}: {e}"))?;
     let lua_src = decompile_luac_bytes(&lua53).map_err(|e| format!("{vpath}: {e}"))?;
 
@@ -288,21 +300,13 @@ fn cmd_luac(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     let filter = pos_args
         .get(1)
         .ok_or("Usage: tartarus-extract luac <FILTER> <OUT_DIR>")?
-        .to_lowercase();
+        .to_ascii_lowercase();
     let out_dir = PathBuf::from(
         pos_args
             .get(2)
             .ok_or("Usage: tartarus-extract luac <FILTER> <OUT_DIR>")?,
     );
-
-    let matched: Vec<&PakEntryMeta> = vfs
-        .entries
-        .values()
-        .filter(|m| {
-            m.virtual_path.ends_with(".out") && m.virtual_path.to_lowercase().contains(&filter)
-        })
-        .collect();
-    assert!(matched.len() <= vfs.entries.len());
+    let matched = collect_filtered_entries(vfs, &filter, |file_lower| file_lower.ends_with(".out"));
 
     eprintln!(
         "Decrypting and decompiling {} .out Lua bytecode files matching '{}' to {}...",
@@ -311,22 +315,20 @@ fn cmd_luac(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
         out_dir.display()
     );
 
-    let ok_luac = AtomicUsize::new(0);
-    let ok_json = AtomicUsize::new(0);
+    let mut ok_luac = 0usize;
+    let mut ok_json = 0usize;
 
-    matched.par_iter().try_for_each(|meta| {
-        let wrote_json = extract_single_luac_entry(vfs, meta, &out_dir)?;
-        ok_luac.fetch_add(1, Ordering::Relaxed);
+    for (vpath, rec) in &matched {
+        let wrote_json = extract_single_luac_entry(vfs, vpath, rec, &out_dir)?;
+        ok_luac += 1;
         if wrote_json {
-            ok_json.fetch_add(1, Ordering::Relaxed);
+            ok_json += 1;
         }
-        Ok::<(), String>(())
-    })?;
+    }
+    assert_eq!(ok_luac, matched.len());
 
     eprintln!(
-        "Done: {} .luac/.lua pairs written, {} DataCfg tables exported to .json.",
-        ok_luac.load(Ordering::Relaxed),
-        ok_json.load(Ordering::Relaxed)
+        "Done: {ok_luac} .luac/.lua pairs written, {ok_json} DataCfg tables exported to .json."
     );
     Ok(())
 }
@@ -337,9 +339,12 @@ fn cmd_lang(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     assert!(!lang.is_empty());
     let prefix = pos_args.get(2).map(String::as_str);
     let map = vfs.read_multi_language(lang, prefix)?;
+    let stdout = io::stdout();
+    let mut out = BufWriter::with_capacity(64 * 1024, stdout.lock());
     for (k, v) in &map {
-        println!("{k}\t{v}");
+        let _ = writeln!(out, "{k}\t{v}");
     }
+    let _ = out.flush();
     eprintln!(
         "Matched {} localization entries in config_multi_language_{lang}.bin.",
         map.len()
@@ -369,7 +374,7 @@ struct MaterialManifest {
 
 fn write_shader_triple(
     vfs: &PakVfs,
-    arch_meta: &PakEntryMeta,
+    arch_rec: &PakEntryRecord,
     arch: &ShaderArchiveIndex,
     shader_idx: usize,
     shader_dir: &Path,
@@ -378,7 +383,7 @@ fn write_shader_triple(
     assert!(shader_idx < arch.shader_entries.len());
     assert!(!shader_dir.as_os_str().is_empty());
     let blob = vfs
-        .extract_shader_entry(arch_meta, arch, shader_idx)
+        .extract_shader_entry(arch_rec, arch, shader_idx)
         .map_err(|e| e.to_string())?;
     let parsed = parse_dxbc(&blob.dxbc_bytes).map_err(|e| e.to_string())?;
     let asm_text = disassemble_dxbc(&parsed);
@@ -409,7 +414,7 @@ fn write_shader_triple(
 
 fn extract_single_material_shaders(
     vfs: &PakVfs,
-    archives: &[(PakEntryMeta, ShaderArchiveIndex)],
+    archives: &[(PakEntryRecord, ShaderArchiveIndex)],
     vpath: &str,
     out_dir: &Path,
 ) -> Result<Option<usize>, String> {
@@ -421,11 +426,11 @@ fn extract_single_material_shaders(
     let Some(smap_hash) = mat.shader_map_hash else {
         return Ok(None);
     };
-    let Some((arch_meta, arch, smap_idx)) = archives.iter().find_map(|(m, a)| {
+    let Some((arch_rec, arch, smap_idx)) = archives.iter().find_map(|(r, a)| {
         a.map_hash_to_index
             .get(&smap_hash)
             .copied()
-            .map(|idx| (m, a, idx))
+            .map(|idx| (r, a, idx))
     }) else {
         return Ok(None);
     };
@@ -437,7 +442,7 @@ fn extract_single_material_shaders(
     for si in shader_indices {
         records.push(write_shader_triple(
             vfs,
-            arch_meta,
+            arch_rec,
             arch,
             si,
             &shader_dir,
@@ -462,7 +467,7 @@ fn extract_single_material_shaders(
 
 fn extract_archive_shaders_by_filter(
     vfs: &PakVfs,
-    archives: &[(PakEntryMeta, ShaderArchiveIndex)],
+    archives: &[(PakEntryRecord, ShaderArchiveIndex)],
     filter: &str,
     out_dir: &Path,
 ) -> Result<(usize, usize), String> {
@@ -471,8 +476,11 @@ fn extract_archive_shaders_by_filter(
     let mut map_count = 0usize;
     let mut shader_count = 0usize;
 
-    for (arch_meta, arch) in archives {
-        let arch_matches = arch.archive_virtual_path.to_lowercase().contains(filter);
+    for (arch_rec, arch) in archives {
+        let arch_matches = arch
+            .archive_virtual_path
+            .to_ascii_lowercase()
+            .contains(filter);
         let arch_stem = Path::new(&arch.archive_virtual_path).with_extension("");
         for (smap_idx, smap_hash) in arch.shader_map_hashes.iter().enumerate() {
             let smap_hex = hex::encode(smap_hash);
@@ -481,7 +489,7 @@ fn extract_archive_shaders_by_filter(
                     .join(&arch_stem)
                     .join(format!("smap_{smap_idx:05}_{}", &smap_hex[..12]));
                 for si in arch.shader_indices_for_map(smap_idx) {
-                    write_shader_triple(vfs, arch_meta, arch, si, &s_dir, None)?;
+                    write_shader_triple(vfs, arch_rec, arch, si, &s_dir, None)?;
                     shader_count += 1;
                 }
                 map_count += 1;
@@ -492,7 +500,7 @@ fn extract_archive_shaders_by_filter(
                 let sh_hex = hex::encode(sh_hash);
                 if sh_hex.contains(filter) {
                     let s_dir = out_dir.join(&arch_stem).join("shaders");
-                    write_shader_triple(vfs, arch_meta, arch, si, &s_dir, None)?;
+                    write_shader_triple(vfs, arch_rec, arch, si, &s_dir, None)?;
                     shader_count += 1;
                 }
             }
@@ -504,34 +512,24 @@ fn extract_archive_shaders_by_filter(
 fn cmd_shader(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     assert!(!pos_args.is_empty());
     let usage = "Usage: tartarus-extract shader <FILTER> <OUT_DIR>";
-    let filter = pos_args.get(1).ok_or(usage)?.to_lowercase();
+    let filter = pos_args.get(1).ok_or(usage)?.to_ascii_lowercase();
     let out_dir = PathBuf::from(pos_args.get(2).ok_or(usage)?);
 
     let archives = vfs
         .load_shader_archive_indices()
         .map_err(|e| e.to_string())?;
-    let uassets: Vec<&PakEntryMeta> = vfs
-        .entries
-        .values()
-        .filter(|m| {
-            m.virtual_path.ends_with(".uasset") && m.virtual_path.to_lowercase().contains(&filter)
-        })
-        .collect();
-    assert!(uassets.len() <= vfs.entries.len());
+    let uassets =
+        collect_filtered_entries(vfs, &filter, |file_lower| file_lower.ends_with(".uasset"));
 
-    let ok_mats = AtomicUsize::new(0);
-    let ok_shaders = AtomicUsize::new(0);
-    uassets.par_iter().for_each(|meta| {
-        if let Ok(Some(n)) =
-            extract_single_material_shaders(vfs, &archives, &meta.virtual_path, &out_dir)
-        {
-            ok_mats.fetch_add(1, Ordering::Relaxed);
-            ok_shaders.fetch_add(n, Ordering::Relaxed);
+    let mut mats_done = 0usize;
+    let mut shaders_done = 0usize;
+    for (vpath, _) in &uassets {
+        if let Ok(Some(n)) = extract_single_material_shaders(vfs, &archives, vpath, &out_dir) {
+            mats_done += 1;
+            shaders_done += n;
         }
-    });
+    }
 
-    let mut mats_done = ok_mats.load(Ordering::Relaxed);
-    let mut shaders_done = ok_shaders.load(Ordering::Relaxed);
     if mats_done == 0 {
         let (mc, sc) = extract_archive_shaders_by_filter(vfs, &archives, &filter, &out_dir)?;
         mats_done = mc;
@@ -539,9 +537,7 @@ fn cmd_shader(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     }
 
     eprintln!(
-        "Done: {} material/shadermap manifests and {} decompiled shaders (.dxbc/.asm/.hlsl) written to {}.",
-        mats_done,
-        shaders_done,
+        "Done: {mats_done} material/shadermap manifests and {shaders_done} decompiled shaders (.dxbc/.asm/.hlsl) written to {}.",
         out_dir.display()
     );
     Ok(())
@@ -626,13 +622,11 @@ fn cmd_inspect(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
         .ok_or("Usage: tartarus-extract inspect <VIRTUAL_PATH>")?;
     if vpath.ends_with(".ushaderbytecode") {
         let clean = vpath.trim_start_matches('/');
-        let meta = vfs
-            .entries
-            .get(clean)
+        let rec = vfs
+            .get_record(clean)
             .ok_or_else(|| format!("Not found: {clean}"))?;
         let arch =
-            tartarus_extract::read_shader_archive_index_from_pak(meta, || vfs.read_entry(meta))
-                .map_err(|e| e.to_string())?;
+            read_shader_archive_index_from_record(vfs, clean, &rec).map_err(|e| e.to_string())?;
         println!("ShaderArchive: {}", arch.archive_virtual_path);
         println!("  Version           : {}", arch.version);
         println!("  Payload Offset    : {} bytes", arch.payload_offset);
@@ -651,30 +645,42 @@ fn cmd_inspect(vfs: &PakVfs, pos_args: &[String]) -> Result<(), String> {
     let uasset_vpath = format!("{base}.uasset");
     let uexp_vpath = format!("{base}.uexp");
 
-    let uasset = vfs.read_path(&uasset_vpath)?;
+    let uasset_rec = vfs
+        .get_record(&uasset_vpath)
+        .ok_or_else(|| format!("Not found: {uasset_vpath}"))?;
+    let uasset = vfs.read_record(&uasset_rec).map_err(|e| e.to_string())?;
     let names = parse_uasset_names(&uasset);
     println!("Asset: {base}");
     println!("  .uasset size: {} bytes", uasset.len());
-    if let Ok(uexp) = vfs.read_path(&uexp_vpath) {
+    if let Some(uexp_rec) = vfs.get_record_in_archive(uasset_rec.pak_index, &uexp_vpath)
+        && let Ok(uexp) = vfs.read_record(&uexp_rec)
+    {
         println!("  .uexp size:   {} bytes", uexp.len());
     }
     println!("  FNames ({}):", names.len());
     for (idx, n) in names.iter().enumerate() {
         println!("    [{idx:3}] {n}");
     }
-    if let Ok(tex) = vfs.decode_texture(base) {
+    if names.iter().any(|n| n == "Texture2D")
+        && let Ok(tex) = vfs.decode_texture(base)
+    {
         println!(
             "  Decoded Texture2D: {}x{} {:?} ({} mips)",
             tex.width, tex.height, tex.format, tex.num_mips
         );
     }
-    if let Ok(sprite) = vfs.read_paper_sprite(base) {
+    if names.iter().any(|n| n == "PaperSprite")
+        && let Ok(sprite) = vfs.read_paper_sprite(base)
+    {
         println!(
             "  PaperSprite: atlas={} uv=({}, {}) size={}x{}",
             sprite.atlas_virtual_path, sprite.uv_x, sprite.uv_y, sprite.width, sprite.height
         );
     }
-    if let Ok(mat) = vfs.read_material_info(base)
+    if names
+        .iter()
+        .any(|n| n == "Material" || n == "MaterialInstanceConstant")
+        && let Ok(mat) = vfs.read_material_info(base)
         && (mat.shader_map_hash.is_some()
             || mat.parent_path.is_some()
             || !mat.static_switches.is_empty())
@@ -714,9 +720,13 @@ fn run() -> Result<(), String> {
     let cmd = pos_args.first().map(String::as_str).unwrap_or("list");
     let key = parse_aes_key_hex(&key_hex)?;
     assert_eq!(key.len(), 32);
-    let vfs = PakVfs::open_game_dir(&game_dir, key)?;
 
-    match cmd {
+    let t0 = Instant::now();
+    let vfs = PakVfs::open_game_dir(&game_dir, key)?;
+    let t_mount = t0.elapsed();
+
+    let t1 = Instant::now();
+    let res = match cmd {
         "list" => {
             cmd_list(&vfs, &pos_args);
             Ok(())
@@ -728,5 +738,13 @@ fn run() -> Result<(), String> {
         "lang" => cmd_lang(&vfs, &pos_args),
         "inspect" => cmd_inspect(&vfs, &pos_args),
         other => Err(format!("Unknown command '{other}'")),
-    }
+    };
+    let t_cmd = t1.elapsed();
+    eprintln!(
+        "[tartarus-extract] mount={:.3} ms, exec={:.3} ms, total={:.3} ms",
+        t_mount.as_secs_f64() * 1000.0,
+        t_cmd.as_secs_f64() * 1000.0,
+        (t_mount + t_cmd).as_secs_f64() * 1000.0
+    );
+    res
 }

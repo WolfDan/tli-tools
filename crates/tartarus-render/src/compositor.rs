@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use tartarus_extract::{
     DxbcShader, ExtractError, MaterialInfo, PakVfs, UiParticleEmitterAsset, UmgAnimationStateT0,
@@ -164,10 +163,11 @@ pub fn resolve_portrait_virtual_path(selector: &str) -> String {
     let lower = s.to_ascii_lowercase();
     let jailed_code = match lower.as_str() {
         "mammoth" | "elephant" | "beast1" | "jail_mammoth" | "045" => Some("045"),
+        "empty" | "jail_empty" | "046" => Some("046"),
         "lion" | "beast2" | "jail_lion" | "047" => Some("047"),
-        "wolf" | "beast3" | "jail_wolf" | "048" => Some("048"),
-        "rat" | "mouse" | "beast4" | "jail_rat" | "049" => Some("049"),
-        "boss" | "jaws" | "jail_boss" | "050" => Some("050"),
+        "rat" | "mouse" | "beast4" | "jail_rat" | "048" => Some("048"),
+        "mystery" | "unknown" | "wenhao" | "boss" | "jaws" | "jail_boss" | "049" => Some("049"),
+        "wolf" | "beast3" | "jail_wolf" | "050" => Some("050"),
         _ => None,
     };
     if let Some(code) = jailed_code {
@@ -294,15 +294,33 @@ fn find_asset_base_in_vfs(vfs: &PakVfs, path_or_name: &str) -> String {
         .trim_end_matches(".uasset")
         .trim_end_matches(".uexp")
         .to_string();
-    if vfs.entries.contains_key(&format!("{base}.uasset")) {
+    assert!(!base.is_empty());
+    if vfs.contains_path(&format!("{base}.uasset")) {
         return base;
     }
+
     let fname = base.rsplit('/').next().unwrap_or(&base);
-    let suffix = format!("/{fname}.uasset");
-    for k in vfs.entries.keys() {
-        if k.ends_with(&suffix) {
-            return k.trim_end_matches(".uasset").to_string();
+    for prefix in [
+        "UE_game/Content/Art/UIV2/S16Gameplay/BluePrint",
+        "UE_game/Content/Art/UIV2/S16Gameplay/UI",
+        "UE_game/Content/Art/UIV2/S16Gameplay/UI/TexturesAtlas/Atlas",
+        "UE_game/Content/Art/UIV2/S16Gameplay/UIEffect/S16BoardCell/Material",
+        "UE_game/Content/Art/UIV2/S16Gameplay/UIEffect/S16BoardCell/Texture",
+        "UE_game/Content/Art/UIV2/S16Gameplay/UIEffect/S16BoardCell/Particle",
+    ] {
+        let candidate = format!("{prefix}/{fname}");
+        if vfs.contains_path(&format!("{candidate}.uasset")) {
+            return candidate;
         }
+    }
+
+    let target_file_lower = format!("{}.uasset", fname.to_ascii_lowercase());
+    let hits = vfs.collect_entries(
+        |dir_lower| dir_lower.contains("s16") || dir_lower.contains("uiv2"),
+        |_, file_lower| file_lower == target_file_lower,
+    );
+    if let Some((vpath, _)) = hits.first() {
+        return vpath.trim_end_matches(".uasset").to_string();
     }
     base
 }
@@ -342,13 +360,13 @@ fn load_texture_or_sprite(vfs: &PakVfs, vpath: &str) -> Result<LinearTexture2D, 
 fn extract_ps_shaders_for_hash(
     vfs: &PakVfs,
     archives: &[(
-        tartarus_extract::PakEntryMeta,
+        tartarus_extract::PakEntryRecord,
         tartarus_extract::ShaderArchiveIndex,
     )],
     hash: &[u8; 20],
 ) -> Result<Vec<DxbcShader>, ExtractError> {
     assert!(!archives.is_empty());
-    for (meta, arch) in archives {
+    for (rec, arch) in archives {
         let Some(&sm_idx) = arch.map_hash_to_index.get(hash) else {
             continue;
         };
@@ -360,7 +378,7 @@ fn extract_ps_shaders_for_hash(
             if entry.frequency != tartarus_extract::ShaderStage::Pixel {
                 continue;
             }
-            let blob = vfs.extract_shader_entry(meta, arch, shader_idx)?;
+            let blob = vfs.extract_shader_entry(rec, arch, shader_idx)?;
             if !blob.dxbc_bytes.is_empty()
                 && let Ok(parsed) = parse_dxbc(&blob.dxbc_bytes)
             {
@@ -406,7 +424,7 @@ impl CellRenderContext {
         &mut self,
         vfs: &PakVfs,
         archives: &[(
-            tartarus_extract::PakEntryMeta,
+            tartarus_extract::PakEntryRecord,
             tartarus_extract::ShaderArchiveIndex,
         )],
         vpath: &str,
@@ -459,7 +477,7 @@ impl CellRenderContext {
         &mut self,
         vfs: &PakVfs,
         archives: &[(
-            tartarus_extract::PakEntryMeta,
+            tartarus_extract::PakEntryRecord,
             tartarus_extract::ShaderArchiveIndex,
         )],
     ) -> Result<(), ExtractError> {
@@ -499,7 +517,7 @@ impl CellRenderContext {
 
     fn preload_portraits(&mut self, vfs: &PakVfs) -> Result<(), ExtractError> {
         for code in [
-            "045", "047", "048", "049", "050", "101", "102", "103", "104",
+            "045", "046", "047", "048", "049", "050", "101", "102", "103", "104",
         ] {
             let vpath = resolve_portrait_virtual_path(code);
             if let std::collections::btree_map::Entry::Vacant(e) = self.textures.entry(vpath) {
@@ -507,7 +525,7 @@ impl CellRenderContext {
                 e.insert(tex);
             }
         }
-        assert!(self.textures.len() >= 9);
+        assert!(self.textures.len() >= 10);
         Ok(())
     }
 
@@ -966,37 +984,38 @@ fn rasterize_material_quad(
     assert!(max_y <= height && max_x <= width);
 
     let w_usize = width as usize;
-    canvas
-        .par_chunks_exact_mut(w_usize)
+    let row_start = (min_y as usize) * w_usize;
+    let row_end = (max_y as usize) * w_usize;
+    for (dy, row) in canvas[row_start..row_end]
+        .chunks_exact_mut(w_usize)
         .enumerate()
-        .skip(min_y as usize)
-        .take((max_y - min_y) as usize)
-        .for_each(|(py, row)| {
-            let fy = (py as f32) + 0.5;
-            let v = (fy - rect.y0) / qh;
-            if !(0.0..=1.0).contains(&v) {
-                return;
+    {
+        let py = min_y + (dy as u32);
+        let fy = (py as f32) + 0.5;
+        let v = (fy - rect.y0) / qh;
+        if !(0.0..=1.0).contains(&v) {
+            continue;
+        }
+        for px in min_x..max_x {
+            let fx = (px as f32) + 0.5;
+            let u = (fx - rect.x0) / qw;
+            if !(0.0..=1.0).contains(&u) {
+                continue;
             }
-            for px in min_x..max_x {
-                let fx = (px as f32) + 0.5;
-                let u = (fx - rect.x0) / qw;
-                if !(0.0..=1.0).contains(&u) {
-                    continue;
-                }
-                if let Some(o0) = execute_sm5_ps(
-                    shader,
-                    [u, v],
-                    [fx, fy],
-                    vertex_color_linear,
-                    cb2,
-                    textures,
-                    tex_clamps,
-                    0.0,
-                ) {
-                    blend_pixel(&mut row[px as usize], o0, is_additive);
-                }
+            if let Some(o0) = execute_sm5_ps(
+                shader,
+                [u, v],
+                [fx, fy],
+                vertex_color_linear,
+                cb2,
+                textures,
+                tex_clamps,
+                0.0,
+            ) {
+                blend_pixel(&mut row[px as usize], o0, is_additive);
             }
-        });
+        }
+    }
 }
 
 fn rasterize_sprite_quad(

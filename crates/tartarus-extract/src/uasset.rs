@@ -255,7 +255,13 @@ pub fn format_fname_idx(names: &[String], idx: u32, number: u32) -> String {
 fn find_table_bounds(uasset: &[u8], names_len: usize) -> Option<(usize, usize, usize, usize)> {
     assert!(uasset.len() >= 8);
     assert!(names_len <= 65_536);
-    for scan_off in (24..uasset.len().min(256)).step_by(1) {
+    let search_end = uasset.len().min(256);
+    if search_end <= 24 {
+        return None;
+    }
+    let needle = (names_len as i32).to_le_bytes();
+    for rel_off in memchr::memmem::find_iter(&uasset[24..search_end], &needle) {
+        let scan_off = 24 + rel_off;
         let Some(hdr) = uasset.get(scan_off..scan_off + 32) else {
             break;
         };
@@ -456,6 +462,24 @@ pub fn resolve_package_index(imports: &[UassetImportEntry], pkg_index: i32) -> O
     let idx = (-pkg_index - 1) as usize;
     assert!(idx < 65_536);
     imports.get(idx).map(|imp| imp.package_path.clone())
+}
+
+/// Fast SIMD pre-check on a `.uasset` header buffer to reject non-texture assets
+/// (`UMaterialInstanceConstant`, `UWidgetBlueprint`, `UPaperSprite`, etc.) before reading or
+/// Oodle-decompressing `.uexp` and `.ubulk` payloads.
+pub fn uasset_is_texture2d(uasset: &[u8]) -> bool {
+    assert!(uasset.len() <= 256 * 1024 * 1024);
+    if uasset.len() < 32 {
+        return false;
+    }
+    let has_tex = memchr::memmem::find(uasset, b"Texture2D").is_some()
+        || memchr::memmem::find(uasset, b"PF_").is_some();
+    if !has_tex {
+        return false;
+    }
+    memchr::memmem::find(uasset, b"MaterialInstanceConstant").is_none()
+        && memchr::memmem::find(uasset, b"WidgetBlueprintGeneratedClass").is_none()
+        && memchr::memmem::find(uasset, b"BakedSourceDimension").is_none()
 }
 
 /// Decodes a cooked UE 4.27 `UTexture2D` from its `.uasset`, `.uexp`, and optional
@@ -709,9 +733,13 @@ fn try_scan_mip_in_uexp(
     let srgb = detect_texture_srgb(uexp, names);
     let clamp_x = detect_texture_address_clamp(uexp, names, "AddressX");
     let clamp_y = detect_texture_address_clamp(uexp, names, "AddressY");
-    for off in 0..uexp.len().saturating_sub(36) {
-        if LittleEndian::read_i32(&uexp[off..off + 4]) == 1
-            && let Some((w, h, mip_bytes)) = parse_single_mip(uexp, ubulk, off, format, 0, 0)
+    let limit = uexp.len().saturating_sub(36);
+    let cooked_tag = 1i32.to_le_bytes();
+    for off in memchr::memmem::find_iter(uexp, &cooked_tag) {
+        if off >= limit {
+            break;
+        }
+        if let Some((w, h, mip_bytes)) = parse_single_mip(uexp, ubulk, off, format, 0, 0)
             && let Ok(rgba8) = decode_mip_to_rgba8(mip_bytes, w, h, format)
         {
             assert_eq!(rgba8.len(), w * h * 4);

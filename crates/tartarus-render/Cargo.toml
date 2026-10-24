@@ -8,7 +8,6 @@ description = "1:1 CPU UMG and DirectX SM5 shader renderer for Torchlight: Infin
 
 [dependencies]
 tartarus-extract = { path = "../tartarus-extract" }
-rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

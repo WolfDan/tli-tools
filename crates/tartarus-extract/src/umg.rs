@@ -223,10 +223,11 @@ fn read_property_tag(buf: &[u8], start: usize, names: &[String]) -> Option<Optio
 fn strip_subobject_suffix(asset_path: &str) -> String {
     assert!(asset_path.len() <= 4096);
     let trimmed = asset_path.trim_end_matches('\0');
-    if let Some((pkg, obj)) = trimmed.rsplit_once('.')
-        && pkg.ends_with(obj)
-    {
-        return pkg.to_string();
+    let last_seg = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    if let Some((pkg_stem, _)) = last_seg.rsplit_once('.') {
+        let prefix_len = trimmed.len() - last_seg.len() + pkg_stem.len();
+        assert!(prefix_len <= trimmed.len());
+        return trimmed[..prefix_len].to_string();
     }
     trimmed.to_string()
 }

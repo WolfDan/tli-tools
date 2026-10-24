@@ -9,7 +9,6 @@ description = "Programmatic UE 4.27 Pak v12 & Oodle asset/texture extractor for 
 [dependencies]
 oozextract.workspace = true
 flate2.workspace = true
-rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
