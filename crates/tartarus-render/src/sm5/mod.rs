@@ -12,7 +12,8 @@ pub use compiler::{
     compile_sm5_shader, compile_sm5_shader_specialized, compile_sm5_shader_with_cb2,
 };
 pub use exec::{
-    eval_shader_preamble, execute_tile_x8, rasterize_compiled_quad, rasterize_sprite_quad_simd,
+    eval_shader_preamble, execute_tile_x8, rasterize_compiled_quad,
+    rasterize_compiled_quad_transformed, rasterize_sprite_quad_simd,
 };
 pub use ir::{
     CompiledSm5Shader, SIMD_LANES, ShaderSpecialization, TexSlotMeta, VmInst, VmOp, f32x8, i32x8,
@@ -23,22 +24,10 @@ pub use texture::{
     linear_to_srgb_channel, linear_to_srgb_x8, srgb_to_linear_channel,
 };
 
-fn is_candidate_slate_quad_ps(shader: &DxbcShader, expected_num_textures: usize) -> bool {
+fn count_sampled_textures(shader: &DxbcShader) -> usize {
     assert!(shader.instructions.len() <= 65_536);
-    if shader.program_type != 0
-        || shader.input_signature.len() != 5
-        || shader.output_signature.len() != 1
-    {
-        return false;
-    }
     let mut max_tex_reg: Option<u32> = None;
     for inst in &shader.instructions {
-        // Reject 9-slice box shaders that read `cb0[2]`.
-        for op in &inst.operands {
-            if op.op_type == 8 && op.indices.first() == Some(&0) && op.indices.get(1) == Some(&2) {
-                return false;
-            }
-        }
         if matches!(inst.opcode, 69..=74)
             && let Some(tex_op) = inst.operands.get(2)
             && tex_op.op_type == 7
@@ -47,29 +36,64 @@ fn is_candidate_slate_quad_ps(shader: &DxbcShader, expected_num_textures: usize)
             max_tex_reg = Some(max_tex_reg.map_or(t_idx, |m| m.max(t_idx)));
         }
     }
-    let actual_tex_count = max_tex_reg.map_or(0, |m| (m + 1) as usize);
-    actual_tex_count <= expected_num_textures
+    max_tex_reg.map_or(0, |m| (m + 1) as usize)
+}
+
+fn is_candidate_slate_quad_ps(shader: &DxbcShader, expected_num_textures: usize) -> bool {
+    assert!(shader.instructions.len() <= 65_536);
+    if shader.program_type != 0
+        || shader.input_signature.len() != 5
+        || shader.output_signature.len() != 1
+    {
+        return false;
+    }
+    for inst in &shader.instructions {
+        // Reject 9-slice box shaders that read `cb0[2]`.
+        for op in &inst.operands {
+            if op.op_type == 8 && op.indices.first() == Some(&0) && op.indices.get(1) == Some(&2) {
+                return false;
+            }
+        }
+    }
+    count_sampled_textures(shader) <= expected_num_textures
+}
+
+fn uses_v4_9slice_border(shader: &DxbcShader) -> bool {
+    assert!(shader.instructions.len() <= 65_536);
+    shader.instructions.iter().any(|inst| {
+        inst.opcode == 26
+            && inst
+                .operands
+                .get(1)
+                .is_some_and(|s| s.op_type == 1 && s.indices.first() == Some(&4))
+    })
 }
 
 fn uses_v4_border_or_box_tiling(shader: &DxbcShader) -> bool {
     assert!(shader.instructions.len() <= 65_536);
+    if shader
+        .input_signature
+        .iter()
+        .any(|s| s.register == 4 && (s.rw_mask & 0x0C) != 0)
+    {
+        return true;
+    }
     for inst in &shader.instructions {
-        if inst.opcode == 26
-            && let Some(src) = inst.operands.get(1)
-            && src.op_type == 1
-            && src.indices.first() == Some(&4)
+        if inst.opcode == 95
+            && let Some(op) = inst.operands.first()
+            && op.op_type == 1
+            && op.indices.first() == Some(&4)
+            && (op.mask & 0x0C) != 0
         {
             return true;
         }
-        if inst.opcode == 56
-            && let (Some(a), Some(b)) = (inst.operands.get(1), inst.operands.get(2))
-            && a.op_type == 1
-            && b.op_type == 1
-            && a.indices.first() == Some(&4)
-            && b.indices.first() == Some(&4)
-            && a.swizzle != b.swizzle
-        {
-            return true;
+        for op in inst.operands.iter().skip(1) {
+            if op.op_type == 1
+                && op.indices.first() == Some(&4)
+                && op.swizzle.iter().any(|&c| c >= 2)
+            {
+                return true;
+            }
         }
     }
     false
@@ -96,6 +120,58 @@ pub fn select_slate_default_ps(
         }
     }
     best_idx
+}
+
+/// Selects the Slate tiled brush UV pixel shader (`v4.xy * v4.zw`) from a material's `ShaderMap`.
+pub fn select_slate_tiled_ps(
+    shaders: &[DxbcShader],
+    expected_num_textures: usize,
+) -> Option<usize> {
+    assert!(shaders.len() <= 1024);
+    let mut best_idx = None;
+    let mut best_len = usize::MAX;
+    for (idx, sh) in shaders.iter().enumerate() {
+        if !is_candidate_slate_quad_ps(sh, expected_num_textures) {
+            continue;
+        }
+        if uses_v4_border_or_box_tiling(sh)
+            && !uses_v4_9slice_border(sh)
+            && sh.instructions.len() < best_len
+        {
+            best_len = sh.instructions.len();
+            best_idx = Some(idx);
+        }
+    }
+    best_idx
+}
+
+/// Selects the Slate FontAtlas pixel shader (`FSlateMaterialShaderPS<true>`) from a material's
+/// `ShaderMap`, where `t_{N}` is the font glyph atlas sampled at `v4.xy` and `t0..t_{N-1}` are
+/// the material textures sampled at `v4.zw`.
+pub fn select_slate_font_ps(
+    shaders: &[DxbcShader],
+    expected_num_textures: usize,
+    font_rgba: bool,
+) -> Option<usize> {
+    assert!(shaders.len() <= 1024);
+    let mut candidates = Vec::new();
+    for (idx, sh) in shaders.iter().enumerate() {
+        if !is_candidate_slate_quad_ps(sh, expected_num_textures + 1) {
+            continue;
+        }
+        if count_sampled_textures(sh) == expected_num_textures + 1
+            && uses_v4_border_or_box_tiling(sh)
+            && !uses_v4_9slice_border(sh)
+        {
+            candidates.push((sh.instructions.len(), idx));
+        }
+    }
+    candidates.sort_by_key(|&(len, idx)| (len, idx));
+    if font_rgba {
+        candidates.last().map(|&(_, idx)| idx)
+    } else {
+        candidates.first().map(|&(_, idx)| idx)
+    }
 }
 
 /// Executes a pre-compiled `CompiledSm5Shader` for a single pixel `(u, v)`.
@@ -483,5 +559,146 @@ mod tests {
         let s0 = tex.sample_bilinear(0.0, 0.0, false, false);
         let s1 = tex.sample_bilinear(1.0, 1.0, false, false);
         assert!((s0[0] - s1[0]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compile_and_execute_all_s16_mechanic_ui_shaders_if_game_installed() {
+        let Some(game_dir) = tartarus_extract::discover_game_dir() else {
+            return;
+        };
+        let Ok(vfs) =
+            tartarus_extract::PakVfs::open_game_dir(&game_dir, tartarus_extract::DEFAULT_AES_KEY)
+        else {
+            return;
+        };
+        let Ok(archives) = vfs.load_shader_archive_indices() else {
+            return;
+        };
+
+        let dummy_tex = LinearTexture2D::solid_rgba([0.5, 0.5, 0.5, 0.5]);
+        let tex_refs: [&LinearTexture2D; 12] = [&dummy_tex; 12];
+        let tex_clamps = [(false, false); 12];
+
+        let mut mat_paths: Vec<String> = vfs
+            .collect_entries(
+                |dir_lower| {
+                    dir_lower.contains("s16gameplay")
+                        || dir_lower.contains("uiv2")
+                        || dir_lower.contains("art/ui/")
+                },
+                |dir_lower, file_lower| {
+                    file_lower.ends_with(".uasset")
+                        && ((dir_lower.contains("s16gameplay")
+                            && (dir_lower.contains("/material")
+                                || file_lower.contains("_mi_")
+                                || file_lower.contains("_m_")))
+                            || dir_lower.contains("/fontmats")
+                            || file_lower.starts_with("ui_mi_v2_autoreward")
+                            || matches!(
+                                file_lower,
+                                "ui_m_v2_base.uasset"
+                                    | "ui_m_v2_highdissolve.uasset"
+                                    | "ui_m_v2_pageflip.uasset"
+                                    | "ui_m_v2_shieldprogress.uasset"
+                                    | "ui_m_v2_breatheuvbase.uasset"
+                                    | "ui_v2_mat_ptc01_lf.uasset"
+                                    | "ui_v2_mat_ptc02_lf.uasset"
+                                    | "ui_mat_basenew.uasset"
+                            ))
+                },
+            )
+            .into_iter()
+            .map(|(p, _)| p.trim_end_matches(".uasset").to_string())
+            .collect();
+        mat_paths.sort();
+        mat_paths.dedup();
+
+        let mut valid_mats = 0usize;
+        let mut seen_shadermaps = std::collections::BTreeSet::new();
+        let mut total_ps_tested = 0usize;
+        let mut saw_hermite = false;
+
+        for mat_path in &mat_paths {
+            let Ok(info) = vfs.read_material_info(mat_path) else {
+                continue;
+            };
+            let Some(sm_hash) = info.shader_map_hash else {
+                continue;
+            };
+            valid_mats += 1;
+            let cb2 = info.evaluate_uniform_buffer(&[], &[]);
+            let expected_tex = info.resolve_texture_slots(&[]).len();
+
+            if !seen_shadermaps.insert((sm_hash, expected_tex, cb2.len())) {
+                continue;
+            }
+            let mut shaders = Vec::new();
+            for (rec, arch) in &archives {
+                let Some(&sm_idx) = arch.map_hash_to_index.get(&sm_hash) else {
+                    continue;
+                };
+                let sm = &arch.shader_map_entries[sm_idx];
+                for k in 0..(sm.num_shaders as usize) {
+                    let s_idx =
+                        arch.shader_indices[(sm.shader_indices_offset as usize) + k] as usize;
+                    if arch.shader_entries[s_idx].frequency == tartarus_extract::ShaderStage::Pixel
+                    {
+                        let blob = vfs.extract_shader_entry(rec, arch, s_idx).unwrap();
+                        shaders.push(tartarus_extract::parse_dxbc(&blob.dxbc_bytes).unwrap());
+                    }
+                }
+                if !shaders.is_empty() {
+                    break;
+                }
+            }
+            assert!(!shaders.is_empty(), "No pixel shaders for {mat_path}");
+
+            let def_idx = select_slate_default_ps(&shaders, expected_tex).expect(mat_path);
+            assert!(
+                !uses_v4_border_or_box_tiling(&shaders[def_idx]),
+                "Expected non-tiling FSlateMaterialShaderPS<false> for {mat_path}"
+            );
+            assert!(select_slate_tiled_ps(&shaders, expected_tex).is_some());
+            assert!(select_slate_font_ps(&shaders, expected_tex, false).is_some());
+
+            for sh in &shaders {
+                let comp_dyn = compile_sm5_shader(sh);
+                let comp_spec = compile_sm5_shader_with_cb2(sh, Some(&cb2));
+                assert!(comp_dyn.num_regs_used <= super::ir::REG_FILE_SIZE);
+                assert!(comp_spec.num_regs_used <= super::ir::REG_FILE_SIZE);
+                if comp_dyn.kernel.iter().any(|i| i.op == VmOp::FHermite) {
+                    saw_hermite = true;
+                }
+                let base_simd = eval_shader_preamble(&comp_spec, [1.0; 4], &cb2, 0.5);
+                let (_, rgba) = execute_tile_x8(
+                    &comp_spec,
+                    &base_simd,
+                    f32x8::splat(16.5),
+                    f32x8::splat(16.5),
+                    f32x8::splat(0.5),
+                    f32x8::splat(0.5),
+                    0xFF,
+                    &cb2,
+                    &tex_refs,
+                    &tex_clamps,
+                );
+                for ch in &rgba {
+                    assert!(ch.to_array().iter().all(|v| v.is_finite()));
+                }
+                total_ps_tested += 1;
+            }
+        }
+        assert!(
+            valid_mats >= 312,
+            "Expected >= 312 S16 materials, got {valid_mats}"
+        );
+        assert!(
+            total_ps_tested >= 579,
+            "Expected >= 579 PS tested, got {total_ps_tested}"
+        );
+        assert!(
+            saw_hermite,
+            "Expected VmOp::FHermite fusion in UI_M_V2_HIghDissolve"
+        );
     }
 }

@@ -423,9 +423,12 @@ fn build_tex_slot_meta(
     assert!(slot_paths.len() <= 32);
     let mut out = Vec::with_capacity(slot_paths.len());
     for (i, path) in slot_paths.iter().enumerate() {
+        let clamp_i = slot_clamps.get(i).copied().unwrap_or((false, false));
         if dynamic_slots.contains(&i) {
             out.push(TexSlotMeta {
                 canonical_slot: i as u8,
+                clamp_u: clamp_i.0,
+                clamp_v: clamp_i.1,
                 has_zeros_mask: 0x0F,
                 zero_frac: [64; 4],
                 const_val: [None; 4],
@@ -433,17 +436,19 @@ fn build_tex_slot_meta(
             });
             continue;
         }
-        let clamp_i = slot_clamps.get(i).copied().unwrap_or((false, false));
         let mut canonical = i as u8;
         for (j, prev_path) in slot_paths[..i].iter().enumerate() {
-            let clamp_j = slot_clamps.get(j).copied().unwrap_or((false, false));
-            if !dynamic_slots.contains(&j) && prev_path == path && clamp_j == clamp_i {
+            if !dynamic_slots.contains(&j) && prev_path == path {
                 canonical = j as u8;
                 break;
             }
         }
+        let clamp_c = slot_clamps
+            .get(canonical as usize)
+            .copied()
+            .unwrap_or(clamp_i);
         let tex = textures.get(path).unwrap_or(fallback);
-        out.push(tex.slot_meta(canonical));
+        out.push(tex.slot_meta(canonical, clamp_c.0, clamp_c.1));
     }
     assert_eq!(out.len(), slot_paths.len());
     out

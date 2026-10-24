@@ -78,10 +78,104 @@ struct CompilerBuilder<'a> {
     cb2_bindings: Vec<VregCb2Binding>,
     const_bindings: Vec<VregConstBinding>,
     ssa_map: [[u16; 4]; 64],
+    v_input_map: [[u8; 4]; 8],
+    color0_v_idx: Option<usize>,
+    view_cb_slot: Option<usize>,
+    material_cb_slot: Option<usize>,
+    cb0_is_slate: bool,
     next_vreg: u16,
     use_ssa: bool,
     has_control_flow: bool,
     uses_indexable_temps: bool,
+}
+
+fn discover_cb_slots(shader: &DxbcShader) -> (Option<usize>, Option<usize>, bool) {
+    assert!(shader.instructions.len() <= 65_536);
+    let mut decls: Vec<(usize, usize)> = Vec::new();
+    for inst in &shader.instructions {
+        if inst.opcode == 89
+            && let Some(op) = inst.operands.first()
+            && op.op_type == 8
+            && op.indices.len() >= 2
+        {
+            decls.push((op.indices[0] as usize, op.indices[1] as usize));
+        }
+    }
+    if decls.is_empty() {
+        return (Some(1), Some(2), true);
+    }
+    let cb0_len = decls
+        .iter()
+        .find(|&&(s, _)| s == 0)
+        .map_or(4, |&(_, len)| len);
+    let cb0_is_slate = cb0_len == 4;
+    let view_cb_slot = decls
+        .iter()
+        .find(|&&(_, len)| len >= 142)
+        .map(|&(slot, _)| slot);
+    let max_cb_slot = decls.iter().map(|&(s, _)| s).max().unwrap_or(0);
+    let material_cb_slot = decls
+        .iter()
+        .filter(|&&(slot, len)| {
+            slot >= 1 && len != 143 && !(slot == 1 && len == 12 && max_cb_slot == 1 && cb0_len == 2)
+        })
+        .max_by_key(|&&(slot, _)| slot)
+        .map(|&(slot, _)| slot);
+    assert!(max_cb_slot <= 16);
+    (view_cb_slot, material_cb_slot, cb0_is_slate)
+}
+
+fn build_v_input_map(shader: &DxbcShader) -> ([[u8; 4]; 8], Option<usize>) {
+    assert!(shader.input_signature.len() <= 256);
+    let default_map = [
+        [REG_V0_X, REG_V0_X + 1, REG_ZERO, REG_V0_W],
+        [REG_V1_R, REG_V1_R + 1, REG_V1_R + 2, REG_V1_R + 3],
+        [REG_V2_X, REG_V2_X + 1, REG_ZERO, REG_ZERO],
+        [REG_V3_U, REG_V3_U + 1, REG_ZERO, REG_ZERO],
+        [REG_V4_X, REG_V4_X + 1, REG_V4_X + 2, REG_V4_X + 3],
+        [REG_ZERO; 4],
+        [REG_ZERO; 4],
+        [REG_ZERO; 4],
+    ];
+    if shader.input_signature.is_empty() {
+        return (default_map, Some(1));
+    }
+    let is_slate = shader
+        .input_signature
+        .iter()
+        .any(|s| s.semantic_name == "ORIGINAL_POSITION");
+    if is_slate {
+        return (default_map, Some(1));
+    }
+    let mut map = [[REG_ZERO; 4]; 8];
+    let mut color0_v_idx = None;
+    for sig in &shader.input_signature {
+        let r = sig.register as usize;
+        if r >= 8 {
+            continue;
+        }
+        match (sig.semantic_name.as_str(), sig.semantic_index) {
+            ("SV_POSITION" | "SV_Position", _) => {
+                map[r] = [REG_V0_X, REG_V0_X + 1, REG_ZERO, REG_V0_W];
+            }
+            ("COLOR", 0) => {
+                map[r] = [REG_V1_R, REG_V1_R + 1, REG_V1_R + 2, REG_V1_R + 3];
+                color0_v_idx = Some(r);
+            }
+            ("TEXCOORD", 0 | 3) => {
+                map[r] = [REG_V4_X, REG_V4_X + 1, REG_V4_X + 2, REG_V4_X + 3];
+            }
+            ("TEXCOORD", 10) => {
+                map[r] = [REG_ONE, REG_ZERO, REG_ZERO, REG_ZERO];
+            }
+            ("TEXCOORD", 11) => {
+                map[r] = [REG_ZERO, REG_ZERO, REG_ONE, REG_ONE];
+            }
+            _ => {}
+        }
+    }
+    assert!(map.len() == 8);
+    (map, color0_v_idx)
 }
 
 fn scan_shader_hazards(shader: &DxbcShader) -> (bool, bool) {
@@ -109,6 +203,8 @@ impl<'a> CompilerBuilder<'a> {
     fn new(shader: &'a DxbcShader, spec: ShaderSpecialization<'a>) -> Self {
         assert!(shader.instructions.len() <= 65_536);
         let (has_control_flow, uses_indexable_temps) = scan_shader_hazards(shader);
+        let (view_cb_slot, material_cb_slot, cb0_is_slate) = discover_cb_slots(shader);
+        let (v_input_map, color0_v_idx) = build_v_input_map(shader);
         let use_ssa = !has_control_flow && !uses_indexable_temps;
         let mut ssa_map = [[u16::from(REG_ZERO); 4]; 64];
         let mut next_vreg = u16::from(REG_DYNAMIC_BASE);
@@ -128,6 +224,11 @@ impl<'a> CompilerBuilder<'a> {
             cb2_bindings: Vec::new(),
             const_bindings: Vec::new(),
             ssa_map,
+            v_input_map,
+            color0_v_idx,
+            view_cb_slot,
+            material_cb_slot,
+            cb0_is_slate,
             next_vreg,
             use_ssa,
             has_control_flow,
@@ -233,7 +334,7 @@ impl<'a> CompilerBuilder<'a> {
         match op.op_type {
             0 => self.ssa_map[idx0.min(63)][swz_c as usize],
             1 => {
-                if idx0 == 1
+                if Some(idx0) == self.color0_v_idx
                     && self.use_ssa
                     && let Some(v1) = self.spec.static_v1
                 {
@@ -241,14 +342,11 @@ impl<'a> CompilerBuilder<'a> {
                     let clean = if val.is_nan() { 0.0 } else { val };
                     return self.alloc_const(clean.to_bits());
                 }
-                u16::from(match idx0 {
-                    0 => REG_V0_X + swz_c,
-                    1 => REG_V1_R + swz_c,
-                    2 => REG_V2_X + swz_c,
-                    3 => REG_V3_U + swz_c,
-                    4 => REG_V4_X + swz_c,
-                    _ => REG_ZERO,
-                })
+                u16::from(
+                    self.v_input_map
+                        .get(idx0)
+                        .map_or(REG_ZERO, |m| m[swz_c as usize]),
+                )
             }
             3 => {
                 let rel_reg = op
@@ -283,34 +381,29 @@ impl<'a> CompilerBuilder<'a> {
     ) -> u16 {
         assert!(swz_c < 4);
         assert!(mod_slot < REG_DYNAMIC_BASE);
-        match cb_slot {
-            0 => {
-                if vec_idx == 1 && (swz_c == 0 || swz_c == 3) {
-                    u16::from(REG_ONE)
-                } else {
-                    u16::from(REG_ZERO)
-                }
+        if Some(cb_slot) == self.material_cb_slot {
+            if let Some(dyn_s) = op.dynamic_index.clone() {
+                let rel_reg = self.parse_rel_reg(&dyn_s);
+                let dst = self.alloc_scratch_vreg(mod_slot);
+                self.insts.push(RawInst::with_aux_imm(
+                    VmOp::LoadCb2Dyn,
+                    dst,
+                    rel_reg,
+                    u16::from(swz_c),
+                    0,
+                    0,
+                    vec_idx as u16,
+                ));
+                dst
+            } else {
+                self.alloc_cb2(vec_idx as u16, swz_c)
             }
-            1 if vec_idx == 142 && swz_c == 2 => u16::from(REG_REAL_TIME),
-            2 => {
-                if let Some(dyn_s) = op.dynamic_index.clone() {
-                    let rel_reg = self.parse_rel_reg(&dyn_s);
-                    let dst = self.alloc_scratch_vreg(mod_slot);
-                    self.insts.push(RawInst::with_aux_imm(
-                        VmOp::LoadCb2Dyn,
-                        dst,
-                        rel_reg,
-                        u16::from(swz_c),
-                        0,
-                        0,
-                        vec_idx as u16,
-                    ));
-                    dst
-                } else {
-                    self.alloc_cb2(vec_idx as u16, swz_c)
-                }
-            }
-            _ => u16::from(REG_ZERO),
+        } else if Some(cb_slot) == self.view_cb_slot && vec_idx == 142 && swz_c == 2 {
+            u16::from(REG_REAL_TIME)
+        } else if cb_slot == 0 && self.cb0_is_slate && vec_idx == 1 && (swz_c == 0 || swz_c == 3) {
+            u16::from(REG_ONE)
+        } else {
+            u16::from(REG_ZERO)
         }
     }
 
@@ -608,11 +701,12 @@ fn lower_ssa_sample2d(
     vm_op: VmOp,
     u_reg: u16,
     v_reg: u16,
+    tex_op_idx: usize,
 ) {
     let dst = &inst.operands[0];
     let mask = dst.mask & 0x0F;
     let r = (dst.indices.first().copied().unwrap_or(0) as usize).min(63);
-    let tex_op = &inst.operands[2];
+    let tex_op = &inst.operands[tex_op_idx];
     let raw_t_idx = (tex_op.indices.first().copied().unwrap_or(0) & 0x0F) as usize;
     let meta_opt = b.spec.tex_meta.and_then(|m| m.get(raw_t_idx)).copied();
     let t_idx = meta_opt.map_or(raw_t_idx as u16, |m| u16::from(m.canonical_slot));
@@ -686,23 +780,31 @@ fn lower_sincos_or_sample(b: &mut CompilerBuilder<'_>, inst: &Sm5Instruction) {
         return;
     }
 
-    if matches!(inst.opcode, 69..=74 | 45 | 61 | 110) && inst.operands.len() >= 3 {
+    if matches!(inst.opcode, 69..=74 | 45 | 61 | 110 | 167) {
+        let tex_op_idx = if inst.opcode == 167 { 3 } else { 2 };
+        if inst.operands.len() <= tex_op_idx {
+            return;
+        }
         let dst = &inst.operands[0];
         let mask = dst.mask & 0x0F;
         if mask == 0 {
             return;
         }
-        let is_int_coord = inst.opcode == 45 || inst.opcode == 61;
+        let is_int_coord = matches!(inst.opcode, 45 | 61 | 167);
         let u_reg = b.resolve_src(&inst.operands[1], 0, REG_MOD0, is_int_coord);
-        let v_reg = b.resolve_src(&inst.operands[1], 1, REG_MOD1, is_int_coord);
+        let v_reg = if inst.opcode == 167 {
+            b.resolve_src(&inst.operands[2], 0, REG_MOD1, true)
+        } else {
+            b.resolve_src(&inst.operands[1], 1, REG_MOD1, is_int_coord)
+        };
         let vm_op = match inst.opcode {
-            45 => VmOp::TexLoad2D,
+            45 | 167 => VmOp::TexLoad2D,
             61 => VmOp::ResInfo2D,
             110 => VmOp::Gather4,
             _ => VmOp::Sample2D,
         };
         if b.use_ssa && dst.op_type == 0 {
-            lower_ssa_sample2d(b, inst, vm_op, u_reg, v_reg);
+            lower_ssa_sample2d(b, inst, vm_op, u_reg, v_reg, tex_op_idx);
             return;
         }
         let dst_base = match dst.op_type {
@@ -710,7 +812,7 @@ fn lower_sincos_or_sample(b: &mut CompilerBuilder<'_>, inst: &Sm5Instruction) {
             2 if dst.indices.first().copied().unwrap_or(0) == 0 => u16::from(REG_OUT_R),
             _ => return,
         };
-        let tex_op = &inst.operands[2];
+        let tex_op = &inst.operands[tex_op_idx];
         let t_idx = (tex_op.indices.first().copied().unwrap_or(0) & 0x0F) as u16;
         let swz = tex_op.swizzle;
         let swz_imm = ((swz[0] & 3) as u16)
@@ -898,6 +1000,7 @@ fn eval_const_op(op: VmOp, ua: u32, ub: u32, uc: u32) -> Option<u32> {
         VmOp::FLog2 => clean(fa.max(1.175_494_4e-38).log2()),
         VmOp::FPow => clean((fa.max(1.175_494_4e-38).log2() * fb).exp2()),
         VmOp::FAtan2 => clean(super::texture::fxc_atan2_scalar(fa, fb)),
+        VmOp::FHermite => clean((fa * fa) * (3.0 - (fa + fa))),
         VmOp::LinearToSrgb => clean(super::texture::linear_to_srgb_channel((fa * fb) * fc)),
         VmOp::FSin => clean(fa.sin()),
         VmOp::FCos => clean(fa.cos()),
@@ -1080,99 +1183,33 @@ fn try_fold_movc_patterns(
     }
 }
 
-fn alloc_tracked_const(
-    b: &mut CompilerBuilder<'_>,
-    bits: u32,
-    known_const: &mut [Option<u32>],
-    is_non_neg: &mut [bool],
-    is_unit: &mut [bool],
-    is_uniform: &mut [bool],
-) -> u16 {
-    let vreg = b.alloc_const(bits);
-    let idx = vreg as usize;
-    assert!(idx < known_const.len());
-    let f = f32::from_bits(bits);
-    known_const[idx] = Some(bits);
-    is_non_neg[idx] = (bits & 0x8000_0000) == 0 || bits == 0x8000_0000;
-    is_unit[idx] = is_non_neg[idx] && f <= 1.0;
-    is_uniform[idx] = true;
-    vreg
-}
-
-fn try_fold_affine_chains(
-    b: &mut CompilerBuilder<'_>,
-    inst: &mut RawInst,
-    known_const: &mut [Option<u32>],
-    is_non_neg: &mut [bool],
-    is_unit: &mut [bool],
-    is_uniform: &mut [bool],
+fn try_match_hermite_arg(
+    a: u16,
+    b: u16,
+    known_const: &[Option<u32>],
     def_inst: &[Option<RawInst>],
-) {
-    assert!((inst.src0 as usize) < def_inst.len());
-    // Canonicalize `FAdd` / `FMul` so any known-constant operand is in `src1`.
-    if matches!(inst.op, VmOp::FAdd | VmOp::FMul)
-        && known_const[inst.src0 as usize].is_some()
-        && known_const[inst.src1 as usize].is_none()
-    {
-        std::mem::swap(&mut inst.src0, &mut inst.src1);
+) -> Option<u16> {
+    assert!((a as usize) < def_inst.len());
+    assert!((b as usize) < def_inst.len());
+    for (sq_reg, lin_reg) in [(a, b), (b, a)] {
+        let Some(sq) = def_inst[sq_reg as usize] else {
+            continue;
+        };
+        let Some(lin) = def_inst[lin_reg as usize] else {
+            continue;
+        };
+        if sq.op == VmOp::FMul && sq.src0 == sq.src1 {
+            let t = sq.src0;
+            if lin.op == VmOp::FMad
+                && is_approx_f32(known_const[lin.src2 as usize], 3.0, 1e-5)
+                && ((lin.src0 == t && is_approx_f32(known_const[lin.src1 as usize], -2.0, 1e-5))
+                    || (lin.src1 == t && is_approx_f32(known_const[lin.src0 as usize], -2.0, 1e-5)))
+            {
+                return Some(t);
+            }
+        }
     }
-    let Some(u2) = known_const[inst.src1 as usize] else {
-        return;
-    };
-    let Some(d0) = def_inst[inst.src0 as usize] else {
-        return;
-    };
-    match (inst.op, d0.op) {
-        (VmOp::FAdd, VmOp::FAdd) => {
-            if let Some(u1) = known_const[d0.src1 as usize]
-                && let Some(u12) = eval_const_op(VmOp::FAdd, u1, u2, 0)
-            {
-                let c12 = alloc_tracked_const(b, u12, known_const, is_non_neg, is_unit, is_uniform);
-                *inst = RawInst::new(VmOp::FAdd, inst.dst, d0.src0, c12, 0);
-            }
-        }
-        (VmOp::FAdd, VmOp::FMul) if known_const[d0.src1 as usize].is_some() => {
-            *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, d0.src1, inst.src1);
-        }
-        (VmOp::FAdd, VmOp::FMad) => {
-            if let Some(u1) = known_const[d0.src2 as usize]
-                && let Some(u12) = eval_const_op(VmOp::FAdd, u1, u2, 0)
-            {
-                let c12 = alloc_tracked_const(b, u12, known_const, is_non_neg, is_unit, is_uniform);
-                *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, d0.src1, c12);
-            }
-        }
-        (VmOp::FMul, VmOp::FMul) => {
-            if let Some(u1) = known_const[d0.src1 as usize]
-                && let Some(u12) = eval_const_op(VmOp::FMul, u1, u2, 0)
-            {
-                let c12 = alloc_tracked_const(b, u12, known_const, is_non_neg, is_unit, is_uniform);
-                *inst = RawInst::new(VmOp::FMul, inst.dst, d0.src0, c12, 0);
-            }
-        }
-        (VmOp::FMul, VmOp::FAdd) => {
-            if let Some(u1) = known_const[d0.src1 as usize]
-                && let Some(u12) = eval_const_op(VmOp::FMul, u1, u2, 0)
-            {
-                let c12 = alloc_tracked_const(b, u12, known_const, is_non_neg, is_unit, is_uniform);
-                *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, inst.src1, c12);
-            }
-        }
-        (VmOp::FMul, VmOp::FMad) => {
-            if let (Some(u_s), Some(u_b)) =
-                (known_const[d0.src1 as usize], known_const[d0.src2 as usize])
-                && let (Some(ns), Some(nb)) = (
-                    eval_const_op(VmOp::FMul, u_s, u2, 0),
-                    eval_const_op(VmOp::FMul, u_b, u2, 0),
-                )
-            {
-                let cs = alloc_tracked_const(b, ns, known_const, is_non_neg, is_unit, is_uniform);
-                let cb = alloc_tracked_const(b, nb, known_const, is_non_neg, is_unit, is_uniform);
-                *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, cs, cb);
-            }
-        }
-        _ => {}
-    }
+    None
 }
 
 fn try_cancel_neg_and_lerp(
@@ -1275,6 +1312,10 @@ fn simplify_algebraic_peephole(
                 *inst = RawInst::new(VmOp::Mov, inst.dst, inst.src1, 0, 0);
             } else if is_one_bits(c1) {
                 *inst = RawInst::new(VmOp::Mov, inst.dst, inst.src0, 0, 0);
+            } else if let Some(t) =
+                try_match_hermite_arg(inst.src0, inst.src1, known_const, def_inst)
+            {
+                *inst = RawInst::new(VmOp::FHermite, inst.dst, t, 0, 0);
             }
         }
         VmOp::FAdd => {
@@ -1376,7 +1417,7 @@ fn eval_non_neg_op(op: VmOp, n0: bool, n1: bool, n2: bool) -> bool {
 
 fn eval_unit_op(op: VmOp, u0: bool, u1: bool, n0: bool, n1: bool) -> bool {
     match op {
-        VmOp::Mov | VmOp::FSqrt => u0,
+        VmOp::Mov | VmOp::FSqrt | VmOp::FHermite => u0,
         VmOp::MovSat | VmOp::FFrc | VmOp::LinearToSrgb => true,
         VmOp::FMul | VmOp::FMax => u0 && u1,
         VmOp::FMin => (u0 && n1) || (u1 && n0),
@@ -1400,147 +1441,472 @@ fn is_pure_ssa_alu(op: VmOp) -> bool {
         )
 }
 
-fn init_ssa_value_tables(
-    b: &CompilerBuilder<'_>,
-    cap: usize,
-) -> (Vec<Option<u32>>, Vec<bool>, Vec<bool>, Vec<bool>) {
-    assert!(cap >= REG_DYNAMIC_BASE as usize);
-    let mut known_const = vec![None; cap];
-    let mut is_non_neg = vec![false; cap];
-    let mut is_unit = vec![false; cap];
-    let mut is_uniform = vec![false; cap];
-
-    for r in [
-        REG_ZERO,
-        REG_ONE,
-        REG_TRUE,
-        REG_V0_W,
-        REG_REAL_TIME,
-        REG_V1_R,
-        REG_V1_R + 1,
-        REG_V1_R + 2,
-        REG_V1_R + 3,
-    ] {
-        is_uniform[r as usize] = true;
-    }
-    for cb2_b in &b.cb2_bindings {
-        is_uniform[cb2_b.vreg as usize] = true;
-    }
-    known_const[REG_ZERO as usize] = Some(0);
-    known_const[REG_ONE as usize] = Some(0x3F80_0000);
-    known_const[REG_TRUE as usize] = Some(0xFFFF_FFFF);
-    known_const[REG_V0_W as usize] = Some(0x3F80_0000);
-    if b.spec.static_cb2.is_some() {
-        known_const[REG_REAL_TIME as usize] = Some(0);
-        is_non_neg[REG_REAL_TIME as usize] = true;
-        is_unit[REG_REAL_TIME as usize] = true;
-    }
-    for r in [REG_ZERO, REG_ONE, REG_V0_W]
-        .into_iter()
-        .chain(REG_V1_R..=REG_V1_R + 3)
-        .chain(REG_V3_U..=REG_V4_X + 3)
-    {
-        is_non_neg[r as usize] = true;
-        is_unit[r as usize] = true;
-    }
-    for cb in &b.const_bindings {
-        let idx = cb.vreg as usize;
-        let f = f32::from_bits(cb.bits);
-        known_const[idx] = Some(cb.bits);
-        is_non_neg[idx] = (cb.bits & 0x8000_0000) == 0 || cb.bits == 0x8000_0000;
-        is_unit[idx] = is_non_neg[idx] && f <= 1.0;
-        is_uniform[idx] = true;
-    }
-    (known_const, is_non_neg, is_unit, is_uniform)
+struct SsaTables {
+    known_const: Vec<Option<u32>>,
+    is_non_neg: Vec<bool>,
+    is_unit: Vec<bool>,
+    is_uniform: Vec<bool>,
+    is_row_inv: Vec<bool>,
+    def_inst: Vec<Option<RawInst>>,
+    alias: Vec<u16>,
+    log2_arg: Vec<Option<u16>>,
+    cse_table: Vec<(VmOp, u16, u16, u16, u16)>,
+    out_insts: Vec<RawInst>,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn get_or_emit_fmul(
-    b: &mut CompilerBuilder<'_>,
-    lhs: u16,
-    rhs: u16,
-    out_insts: &mut Vec<RawInst>,
-    is_non_neg: &mut [bool],
-    is_unit: &mut [bool],
-    is_uniform: &mut [bool],
-    def_inst: &mut [Option<RawInst>],
-    cse_table: &mut Vec<(VmOp, u16, u16, u16, u16)>,
-) -> u16 {
-    assert!((lhs as usize) < is_uniform.len());
-    assert!((rhs as usize) < is_uniform.len());
-    if let Some(&(_, _, _, _, prev_dst)) = cse_table.iter().find(|&&(op, s0, s1, _, _)| {
-        op == VmOp::FMul && ((s0 == lhs && s1 == rhs) || (s0 == rhs && s1 == lhs))
-    }) {
-        return prev_dst;
-    }
-    let v = b.alloc_vreg(1);
-    let p_inst = RawInst::new(VmOp::FMul, v, lhs, rhs, 0);
-    let idx = v as usize;
-    is_non_neg[idx] = is_non_neg[lhs as usize] && is_non_neg[rhs as usize];
-    is_unit[idx] = is_unit[lhs as usize] && is_unit[rhs as usize];
-    is_uniform[idx] = is_uniform[lhs as usize] && is_uniform[rhs as usize];
-    def_inst[idx] = Some(p_inst);
-    cse_table.push((VmOp::FMul, lhs, rhs, 0, v));
-    out_insts.push(p_inst);
-    v
-}
+impl SsaTables {
+    fn new(b: &CompilerBuilder<'_>, cap: usize, inst_cap: usize) -> Self {
+        assert!(cap >= REG_DYNAMIC_BASE as usize);
+        let mut known_const = vec![None; cap];
+        let mut is_non_neg = vec![false; cap];
+        let mut is_unit = vec![false; cap];
+        let mut is_uniform = vec![false; cap];
+        let mut is_row_inv = vec![false; cap];
 
-#[allow(clippy::too_many_arguments)]
-fn try_reassociate_uniform_fmul(
-    b: &mut CompilerBuilder<'_>,
-    inst: &mut RawInst,
-    out_insts: &mut Vec<RawInst>,
-    is_non_neg: &mut [bool],
-    is_unit: &mut [bool],
-    is_uniform: &mut [bool],
-    def_inst: &mut [Option<RawInst>],
-    cse_table: &mut Vec<(VmOp, u16, u16, u16, u16)>,
-) {
-    assert_eq!(inst.op, VmOp::FMul);
-    if is_uniform[inst.src0 as usize] && !is_uniform[inst.src1 as usize] {
-        std::mem::swap(&mut inst.src0, &mut inst.src1);
-    }
-    if is_uniform[inst.src0 as usize] {
-        return;
-    }
-    let is_var_uni_fmul = |r: u16, is_uni: &[bool], defs: &[Option<RawInst>]| -> bool {
-        defs[r as usize].is_some_and(|d| {
-            d.op == VmOp::FMul && !is_uni[d.src0 as usize] && is_uni[d.src1 as usize]
-        })
-    };
-    if !is_var_uni_fmul(inst.src0, is_uniform, def_inst) {
-        if !is_uniform[inst.src1 as usize] && is_var_uni_fmul(inst.src1, is_uniform, def_inst) {
-            std::mem::swap(&mut inst.src0, &mut inst.src1);
-        } else {
-            return;
+        for r in [
+            REG_ZERO,
+            REG_ONE,
+            REG_TRUE,
+            REG_V0_W,
+            REG_REAL_TIME,
+            REG_V1_R,
+            REG_V1_R + 1,
+            REG_V1_R + 2,
+            REG_V1_R + 3,
+        ] {
+            is_uniform[r as usize] = true;
+            is_row_inv[r as usize] = true;
+        }
+        for r in [
+            super::ir::REG_V0_Y,
+            super::ir::REG_V2_Y,
+            super::ir::REG_V3_V,
+            super::ir::REG_V4_Y,
+            super::ir::REG_V4_W,
+        ] {
+            is_row_inv[r as usize] = true;
+        }
+        for cb2_b in &b.cb2_bindings {
+            is_uniform[cb2_b.vreg as usize] = true;
+            is_row_inv[cb2_b.vreg as usize] = true;
+        }
+        known_const[REG_ZERO as usize] = Some(0);
+        known_const[REG_ONE as usize] = Some(0x3F80_0000);
+        known_const[REG_TRUE as usize] = Some(0xFFFF_FFFF);
+        known_const[REG_V0_W as usize] = Some(0x3F80_0000);
+        if b.spec.static_cb2.is_some() {
+            known_const[REG_REAL_TIME as usize] = Some(0);
+            is_non_neg[REG_REAL_TIME as usize] = true;
+            is_unit[REG_REAL_TIME as usize] = true;
+        }
+        for r in [REG_ZERO, REG_ONE, REG_V0_W]
+            .into_iter()
+            .chain(REG_V1_R..=REG_V1_R + 3)
+            .chain(REG_V3_U..=REG_V4_X + 3)
+        {
+            is_non_neg[r as usize] = true;
+            is_unit[r as usize] = true;
+        }
+        for cb in &b.const_bindings {
+            let idx = cb.vreg as usize;
+            let f = f32::from_bits(cb.bits);
+            known_const[idx] = Some(cb.bits);
+            is_non_neg[idx] = (cb.bits & 0x8000_0000) == 0 || cb.bits == 0x8000_0000;
+            is_unit[idx] = is_non_neg[idx] && f <= 1.0;
+            is_uniform[idx] = true;
+            is_row_inv[idx] = true;
+        }
+        Self {
+            known_const,
+            is_non_neg,
+            is_unit,
+            is_uniform,
+            is_row_inv,
+            def_inst: vec![None; cap],
+            alias: (0..cap as u16).collect(),
+            log2_arg: vec![None; cap],
+            cse_table: Vec::with_capacity(inst_cap),
+            out_insts: Vec::with_capacity(inst_cap),
         }
     }
-    let Some(d0) = def_inst[inst.src0 as usize] else {
-        return;
-    };
-    if is_uniform[inst.src1 as usize] {
-        // `(varying_x * u1) * u2 -> varying_x * (u1 * u2)` where `u1 * u2` hoists to preamble!
-        let u12 = get_or_emit_fmul(
-            b, d0.src1, inst.src1, out_insts, is_non_neg, is_unit, is_uniform, def_inst, cse_table,
+
+    fn alloc_const(&mut self, b: &mut CompilerBuilder<'_>, bits: u32) -> u16 {
+        let vreg = b.alloc_const(bits);
+        let idx = vreg as usize;
+        assert!(idx < self.known_const.len());
+        let f = f32::from_bits(bits);
+        self.known_const[idx] = Some(bits);
+        self.is_non_neg[idx] = (bits & 0x8000_0000) == 0 || bits == 0x8000_0000;
+        self.is_unit[idx] = self.is_non_neg[idx] && f <= 1.0;
+        self.is_uniform[idx] = true;
+        self.is_row_inv[idx] = true;
+        vreg
+    }
+
+    fn record_alias(&mut self, d: usize, target: u16) {
+        assert!(d < self.alias.len());
+        let t = target as usize;
+        self.alias[d] = target;
+        self.known_const[d] = self.known_const[t];
+        self.is_non_neg[d] = self.is_non_neg[t];
+        self.is_unit[d] = self.is_unit[t];
+        self.is_uniform[d] = self.is_uniform[t];
+        self.is_row_inv[d] = self.is_row_inv[t];
+        self.def_inst[d] = self.def_inst[t];
+        self.log2_arg[d] = self.log2_arg[t];
+    }
+
+    fn record_inst(&mut self, inst: RawInst) {
+        let d = inst.dst as usize;
+        assert!(d < self.def_inst.len());
+        let (s0, s1, s2) = (inst.src0 as usize, inst.src1 as usize, inst.src2 as usize);
+        self.is_unit[d] = eval_unit_op(
+            inst.op,
+            self.is_unit[s0],
+            self.is_unit[s1],
+            self.is_non_neg[s0],
+            self.is_non_neg[s1],
         );
-        *inst = RawInst::new(VmOp::FMul, inst.dst, d0.src0, u12, 0);
-    } else if is_var_uni_fmul(inst.src1, is_uniform, def_inst)
-        && let Some(d1) = def_inst[inst.src1 as usize]
-    {
-        // `(varying_x * u1) * (varying_y * u2) -> (varying_x * varying_y) * (u1 * u2)`.
-        let xy = get_or_emit_fmul(
-            b, d0.src0, d1.src0, out_insts, is_non_neg, is_unit, is_uniform, def_inst, cse_table,
+        self.is_non_neg[d] = eval_non_neg_op(
+            inst.op,
+            self.is_non_neg[s0],
+            self.is_non_neg[s1],
+            self.is_non_neg[s2],
+        ) || (inst.op == VmOp::FHermite && self.is_unit[s0]);
+        let no_deriv = !matches!(inst.op, VmOp::FDdx | VmOp::FDdy);
+        self.is_uniform[d] = d >= (REG_DYNAMIC_BASE as usize)
+            && no_deriv
+            && self.is_uniform[s0]
+            && self.is_uniform[s1]
+            && self.is_uniform[s2];
+        self.is_row_inv[d] = d >= (REG_DYNAMIC_BASE as usize)
+            && no_deriv
+            && self.is_row_inv[s0]
+            && self.is_row_inv[s1]
+            && self.is_row_inv[s2];
+        self.def_inst[d] = Some(inst);
+        if inst.op == VmOp::FLog2 {
+            self.log2_arg[d] = Some(inst.src0);
+        }
+        if inst.dst >= u16::from(REG_DYNAMIC_BASE) {
+            self.cse_table
+                .push((inst.op, inst.src0, inst.src1, inst.src2, inst.dst));
+        }
+    }
+
+    fn canonicalize_src_order(&self, inst: &mut RawInst) {
+        assert!((inst.src0 as usize) < self.is_row_inv.len());
+        if matches!(inst.op, VmOp::FAdd | VmOp::FMul | VmOp::FMad) {
+            let (s0, s1) = (inst.src0 as usize, inst.src1 as usize);
+            let swap = (self.is_row_inv[s0] && !self.is_row_inv[s1])
+                || (self.is_row_inv[s0] == self.is_row_inv[s1]
+                    && self.is_uniform[s0]
+                    && !self.is_uniform[s1])
+                || (self.is_uniform[s0] == self.is_uniform[s1]
+                    && self.known_const[s0].is_some()
+                    && self.known_const[s1].is_none());
+            if swap {
+                std::mem::swap(&mut inst.src0, &mut inst.src1);
+            }
+        }
+    }
+
+    fn try_fold_affine_chains(&mut self, b: &mut CompilerBuilder<'_>, inst: &mut RawInst) {
+        assert!((inst.src0 as usize) < self.def_inst.len());
+        self.canonicalize_src_order(inst);
+        let Some(u2) = self.known_const[inst.src1 as usize] else {
+            return;
+        };
+        let Some(d0) = self.def_inst[inst.src0 as usize] else {
+            return;
+        };
+        match (inst.op, d0.op) {
+            (VmOp::FAdd, VmOp::FAdd) => {
+                if let Some(u1) = self.known_const[d0.src1 as usize]
+                    && let Some(u12) = eval_const_op(VmOp::FAdd, u1, u2, 0)
+                {
+                    let c12 = self.alloc_const(b, u12);
+                    *inst = RawInst::new(VmOp::FAdd, inst.dst, d0.src0, c12, 0);
+                }
+            }
+            (VmOp::FAdd, VmOp::FMul) if self.known_const[d0.src1 as usize].is_some() => {
+                *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, d0.src1, inst.src1);
+            }
+            (VmOp::FAdd, VmOp::FMad) => {
+                if let Some(u1) = self.known_const[d0.src2 as usize]
+                    && let Some(u12) = eval_const_op(VmOp::FAdd, u1, u2, 0)
+                {
+                    let c12 = self.alloc_const(b, u12);
+                    *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, d0.src1, c12);
+                }
+            }
+            (VmOp::FMul, VmOp::FMul) => {
+                if let Some(u1) = self.known_const[d0.src1 as usize]
+                    && let Some(u12) = eval_const_op(VmOp::FMul, u1, u2, 0)
+                {
+                    let c12 = self.alloc_const(b, u12);
+                    *inst = RawInst::new(VmOp::FMul, inst.dst, d0.src0, c12, 0);
+                }
+            }
+            (VmOp::FMul, VmOp::FAdd) => {
+                if let Some(u1) = self.known_const[d0.src1 as usize]
+                    && let Some(u12) = eval_const_op(VmOp::FMul, u1, u2, 0)
+                {
+                    let c12 = self.alloc_const(b, u12);
+                    *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, inst.src1, c12);
+                }
+            }
+            (VmOp::FMul, VmOp::FMad) => {
+                if let (Some(u_s), Some(u_b)) = (
+                    self.known_const[d0.src1 as usize],
+                    self.known_const[d0.src2 as usize],
+                ) && let (Some(ns), Some(nb)) = (
+                    eval_const_op(VmOp::FMul, u_s, u2, 0),
+                    eval_const_op(VmOp::FMul, u_b, u2, 0),
+                ) {
+                    let cs = self.alloc_const(b, ns);
+                    let cb = self.alloc_const(b, nb);
+                    *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, cs, cb);
+                }
+            }
+            (VmOp::FMad, VmOp::FAdd) => {
+                if let (Some(u1), Some(u_bias)) = (
+                    self.known_const[d0.src1 as usize],
+                    self.known_const[inst.src2 as usize],
+                ) && let Some(nb) = eval_const_op(VmOp::FMad, u1, u2, u_bias)
+                {
+                    let cb = self.alloc_const(b, nb);
+                    *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, inst.src1, cb);
+                }
+            }
+            (VmOp::FMad, VmOp::FMad) => {
+                if let (Some(u_s), Some(u_b), Some(u_bias)) = (
+                    self.known_const[d0.src1 as usize],
+                    self.known_const[d0.src2 as usize],
+                    self.known_const[inst.src2 as usize],
+                ) && let (Some(ns), Some(nb)) = (
+                    eval_const_op(VmOp::FMul, u_s, u2, 0),
+                    eval_const_op(VmOp::FMad, u_b, u2, u_bias),
+                ) {
+                    let cs = self.alloc_const(b, ns);
+                    let cb = self.alloc_const(b, nb);
+                    *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, cs, cb);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn emit_helper_op(
+        &mut self,
+        b: &mut CompilerBuilder<'_>,
+        op: VmOp,
+        s0: u16,
+        s1: u16,
+        s2: u16,
+    ) -> u16 {
+        assert!((s0 as usize) < self.known_const.len());
+        let mut tmp = RawInst::new(op, 0, s0, s1, s2);
+        try_cancel_neg_and_lerp(&mut tmp, &self.def_inst, &self.cse_table);
+        self.try_fold_affine_chains(b, &mut tmp);
+        let c0 = self.known_const[tmp.src0 as usize];
+        let c1 = self.known_const[tmp.src1 as usize];
+        let c2 = self.known_const[tmp.src2 as usize];
+        if let (Some(u0), Some(u1), Some(u2)) = (c0, c1, c2)
+            && let Some(bits) = eval_const_op(tmp.op, u0, u1, u2)
+        {
+            return self.alloc_const(b, bits);
+        }
+        simplify_algebraic_peephole(
+            &mut tmp,
+            c0,
+            c1,
+            c2,
+            &self.known_const,
+            &self.is_non_neg,
+            &self.is_unit,
+            &self.def_inst,
+            &self.log2_arg,
         );
-        let u12 = get_or_emit_fmul(
-            b, d0.src1, d1.src1, out_insts, is_non_neg, is_unit, is_uniform, def_inst, cse_table,
-        );
-        *inst = RawInst::new(VmOp::FMul, inst.dst, xy, u12, 0);
-    } else {
-        // `(varying_x * u1) * varying_y -> (varying_x * varying_y) * u1`.
-        let xy = get_or_emit_fmul(
-            b, d0.src0, inst.src1, out_insts, is_non_neg, is_unit, is_uniform, def_inst, cse_table,
-        );
-        *inst = RawInst::new(VmOp::FMul, inst.dst, xy, d0.src1, 0);
+        self.canonicalize_src_order(&mut tmp);
+        if tmp.op == VmOp::Mov {
+            return self.alias[tmp.src0 as usize];
+        }
+        let is_comm = matches!(tmp.op, VmOp::FAdd | VmOp::FMul | VmOp::FMin | VmOp::FMax);
+        if let Some(&(_, _, _, _, prev_dst)) =
+            self.cse_table.iter().find(|&&(cop, a, b_op, c, _)| {
+                cop == tmp.op
+                    && c == tmp.src2
+                    && ((a == tmp.src0 && b_op == tmp.src1)
+                        || (is_comm && a == tmp.src1 && b_op == tmp.src0))
+            })
+        {
+            return prev_dst;
+        }
+        let v = b.alloc_vreg(1);
+        tmp.dst = v;
+        self.record_inst(tmp);
+        self.out_insts.push(tmp);
+        v
+    }
+
+    fn try_reassociate_uniform_fmul(&mut self, b: &mut CompilerBuilder<'_>, inst: &mut RawInst) {
+        assert_eq!(inst.op, VmOp::FMul);
+        self.canonicalize_src_order(inst);
+        if self.is_uniform[inst.src0 as usize] {
+            return;
+        }
+        let is_var_uni = |r: u16, s: &Self| -> bool {
+            s.def_inst[r as usize].is_some_and(|d| {
+                d.op == VmOp::FMul
+                    && !s.is_uniform[d.src0 as usize]
+                    && s.is_uniform[d.src1 as usize]
+            })
+        };
+        if !is_var_uni(inst.src0, self) {
+            if !self.is_uniform[inst.src1 as usize] && is_var_uni(inst.src1, self) {
+                std::mem::swap(&mut inst.src0, &mut inst.src1);
+            } else {
+                return;
+            }
+        }
+        let Some(d0) = self.def_inst[inst.src0 as usize] else {
+            return;
+        };
+        if self.is_uniform[inst.src1 as usize] {
+            let u12 = self.emit_helper_op(b, VmOp::FMul, d0.src1, inst.src1, 0);
+            *inst = RawInst::new(VmOp::FMul, inst.dst, d0.src0, u12, 0);
+        } else if is_var_uni(inst.src1, self)
+            && let Some(d1) = self.def_inst[inst.src1 as usize]
+        {
+            let xy = self.emit_helper_op(b, VmOp::FMul, d0.src0, d1.src0, 0);
+            let u12 = self.emit_helper_op(b, VmOp::FMul, d0.src1, d1.src1, 0);
+            *inst = RawInst::new(VmOp::FMul, inst.dst, xy, u12, 0);
+        } else if !self.is_row_inv[inst.src0 as usize] || self.is_row_inv[inst.src1 as usize] {
+            let xy = self.emit_helper_op(b, VmOp::FMul, d0.src0, inst.src1, 0);
+            *inst = RawInst::new(VmOp::FMul, inst.dst, xy, d0.src1, 0);
+        }
+    }
+
+    fn try_reassociate_stage_affine(
+        &mut self,
+        b: &mut CompilerBuilder<'_>,
+        inst: &mut RawInst,
+        row_stage: bool,
+    ) {
+        assert!((inst.src0 as usize) < self.def_inst.len());
+        let inv = |r: u16, s: &Self| -> bool {
+            if row_stage {
+                s.is_row_inv[r as usize]
+            } else {
+                s.is_uniform[r as usize]
+            }
+        };
+        let (s0, s1, s2) = (inst.src0, inst.src1, inst.src2);
+        match inst.op {
+            VmOp::FMul if !inv(s0, self) && inv(s1, self) => {
+                if let Some(d0) = self.def_inst[s0 as usize] {
+                    if d0.op == VmOp::FAdd && !inv(d0.src0, self) && inv(d0.src1, self) {
+                        let c = self.emit_helper_op(b, VmOp::FMul, d0.src1, s1, 0);
+                        *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, s1, c);
+                    } else if d0.op == VmOp::FMad
+                        && !inv(d0.src0, self)
+                        && inv(d0.src1, self)
+                        && inv(d0.src2, self)
+                    {
+                        let ns = self.emit_helper_op(b, VmOp::FMul, d0.src1, s1, 0);
+                        let nb = self.emit_helper_op(b, VmOp::FMul, d0.src2, s1, 0);
+                        *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, ns, nb);
+                    }
+                }
+            }
+            VmOp::FAdd if !inv(s0, self) && inv(s1, self) => {
+                if let Some(d0) = self.def_inst[s0 as usize] {
+                    if d0.op == VmOp::FMad
+                        && !inv(d0.src0, self)
+                        && inv(d0.src1, self)
+                        && inv(d0.src2, self)
+                    {
+                        let nc = self.emit_helper_op(b, VmOp::FAdd, d0.src2, s1, 0);
+                        *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, d0.src1, nc);
+                    } else if d0.op == VmOp::FAdd && !inv(d0.src0, self) && inv(d0.src1, self) {
+                        let nc = self.emit_helper_op(b, VmOp::FAdd, d0.src1, s1, 0);
+                        *inst = RawInst::new(VmOp::FAdd, inst.dst, d0.src0, nc, 0);
+                    } else if d0.op == VmOp::FMul && !is_zero_bits(self.known_const[s1 as usize]) {
+                        *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, d0.src1, s1);
+                    }
+                }
+            }
+            VmOp::FMad if inv(s0, self) && inv(s1, self) && !inv(s2, self) => {
+                if let Some(d2) = self.def_inst[s2 as usize] {
+                    if d2.op == VmOp::FMad
+                        && !inv(d2.src0, self)
+                        && inv(d2.src1, self)
+                        && inv(d2.src2, self)
+                    {
+                        let nc = self.emit_helper_op(b, VmOp::FMad, s0, s1, d2.src2);
+                        *inst = RawInst::new(VmOp::FMad, inst.dst, d2.src0, d2.src1, nc);
+                    } else if d2.op == VmOp::FMul && !inv(d2.src0, self) && inv(d2.src1, self) {
+                        let nc = self.emit_helper_op(b, VmOp::FMul, s0, s1, 0);
+                        *inst = RawInst::new(VmOp::FMad, inst.dst, d2.src0, d2.src1, nc);
+                    } else if d2.op == VmOp::FAdd && !inv(d2.src0, self) && inv(d2.src1, self) {
+                        let nc = self.emit_helper_op(b, VmOp::FMad, s0, s1, d2.src1);
+                        *inst = RawInst::new(VmOp::FAdd, inst.dst, d2.src0, nc, 0);
+                    }
+                }
+            }
+            VmOp::FMad if !inv(s0, self) && inv(s1, self) && inv(s2, self) => {
+                if let Some(d0) = self.def_inst[s0 as usize] {
+                    if d0.op == VmOp::FAdd && !inv(d0.src0, self) && inv(d0.src1, self) {
+                        let nc = self.emit_helper_op(b, VmOp::FMad, d0.src1, s1, s2);
+                        *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, s1, nc);
+                    } else if d0.op == VmOp::FMad
+                        && !inv(d0.src0, self)
+                        && inv(d0.src1, self)
+                        && inv(d0.src2, self)
+                    {
+                        let ns = self.emit_helper_op(b, VmOp::FMul, d0.src1, s1, 0);
+                        let nc = self.emit_helper_op(b, VmOp::FMad, d0.src2, s1, s2);
+                        *inst = RawInst::new(VmOp::FMad, inst.dst, d0.src0, ns, nc);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn try_fuse_fadd_or_hermite(&mut self, b: &mut CompilerBuilder<'_>, inst: &mut RawInst) {
+        assert!((inst.src0 as usize) < self.def_inst.len());
+        if inst.op == VmOp::FNmad
+            && let Some(t) =
+                try_match_hermite_arg(inst.src0, inst.src1, &self.known_const, &self.def_inst)
+        {
+            let h = self.emit_helper_op(b, VmOp::FHermite, t, 0, 0);
+            *inst = RawInst::new(VmOp::FSub, inst.dst, inst.src2, h, 0);
+            return;
+        }
+        if inst.op == VmOp::FAdd {
+            let (s0, s1) = (inst.src0 as usize, inst.src1 as usize);
+            let d0 = self.def_inst[s0];
+            let d1 = self.def_inst[s1];
+            let no_bitand = !matches!(d0.map(|d| d.op), Some(VmOp::BitAnd))
+                && !matches!(d1.map(|d| d.op), Some(VmOp::BitAnd));
+            if no_bitand {
+                if let Some(m) = d0
+                    && m.op == VmOp::FMul
+                    && !self.is_uniform[s0]
+                    && !(self.is_row_inv[s0] && !self.is_row_inv[s1])
+                {
+                    *inst = RawInst::new(VmOp::FMad, inst.dst, m.src0, m.src1, inst.src1);
+                } else if let Some(m) = d1
+                    && m.op == VmOp::FMul
+                    && !self.is_uniform[s1]
+                    && !(self.is_row_inv[s1] && !self.is_row_inv[s0])
+                {
+                    *inst = RawInst::new(VmOp::FMad, inst.dst, m.src0, m.src1, inst.src0);
+                }
+            }
+        }
     }
 }
 
@@ -1550,30 +1916,39 @@ fn fold_ssa_constants_and_cse(b: &mut CompilerBuilder<'_>) {
         return;
     }
     let cap = (b.next_vreg as usize) + b.insts.len() * 3 + 256;
-    let (mut known_const, mut is_non_neg, mut is_unit, mut is_uniform) =
-        init_ssa_value_tables(b, cap);
-    let mut def_inst: Vec<Option<RawInst>> = vec![None; cap];
-    let mut alias: Vec<u16> = (0..cap as u16).collect();
-    let mut log2_arg: Vec<Option<u16>> = vec![None; cap];
-
     let raw_insts = std::mem::take(&mut b.insts);
-    let mut out_insts: Vec<RawInst> = Vec::with_capacity(raw_insts.len());
-    let mut cse_table: Vec<(VmOp, u16, u16, u16, u16)> = Vec::with_capacity(raw_insts.len());
+    let mut t = SsaTables::new(b, cap, raw_insts.len());
 
     for mut inst in raw_insts {
-        inst.src0 = alias[inst.src0 as usize];
-        inst.src1 = alias[inst.src1 as usize];
+        inst.src0 = t.alias[inst.src0 as usize];
+        inst.src1 = t.alias[inst.src1 as usize];
         if !matches!(
             inst.op,
             VmOp::Sample2D | VmOp::TexLoad2D | VmOp::ResInfo2D | VmOp::Gather4 | VmOp::LoadIdxTemp
         ) {
-            inst.src2 = alias[inst.src2 as usize];
+            inst.src2 = t.alias[inst.src2 as usize];
         } else if matches!(
             inst.op,
             VmOp::Sample2D | VmOp::TexLoad2D | VmOp::ResInfo2D | VmOp::Gather4
         ) {
             if inst.op == VmOp::Sample2D
-                && let Some(prev) = out_insts.iter_mut().find(|p| {
+                && let Some(meta) = b.spec.tex_meta.and_then(|m| m.get(inst.src2 as usize))
+            {
+                if meta.clamp_u
+                    && let Some(d) = t.def_inst[inst.src0 as usize]
+                    && d.op == VmOp::MovSat
+                {
+                    inst.src0 = t.alias[d.src0 as usize];
+                }
+                if meta.clamp_v
+                    && let Some(d) = t.def_inst[inst.src1 as usize]
+                    && d.op == VmOp::MovSat
+                {
+                    inst.src1 = t.alias[d.src0 as usize];
+                }
+            }
+            if inst.op == VmOp::Sample2D
+                && let Some(prev) = t.out_insts.iter_mut().find(|p| {
                     p.op == VmOp::Sample2D
                         && p.src0 == inst.src0
                         && p.src1 == inst.src1
@@ -1585,44 +1960,38 @@ fn fold_ssa_constants_and_cse(b: &mut CompilerBuilder<'_>) {
                 for c in 0..4u16 {
                     let d = (inst.dst + c) as usize;
                     let target = prev.dst + c;
-                    alias[d] = target;
-                    is_non_neg[d] = true;
-                    is_unit[d] = true;
+                    t.alias[d] = target;
+                    t.is_non_neg[d] = true;
+                    t.is_unit[d] = true;
                 }
                 continue;
             }
             for c in 0..4usize {
-                is_non_neg[(inst.dst as usize) + c] = true;
-                is_unit[(inst.dst as usize) + c] = true;
+                t.is_non_neg[(inst.dst as usize) + c] = true;
+                t.is_unit[(inst.dst as usize) + c] = true;
             }
         }
 
         if is_pure_ssa_alu(inst.op) {
-            try_cancel_neg_and_lerp(&mut inst, &def_inst, &cse_table);
-            try_fold_affine_chains(
-                b,
-                &mut inst,
-                &mut known_const,
-                &mut is_non_neg,
-                &mut is_unit,
-                &mut is_uniform,
-                &def_inst,
-            );
-            let c0 = known_const[inst.src0 as usize];
-            let c1 = known_const[inst.src1 as usize];
-            let c2 = known_const[inst.src2 as usize];
+            try_cancel_neg_and_lerp(&mut inst, &t.def_inst, &t.cse_table);
+            t.try_fold_affine_chains(b, &mut inst);
+            if t.is_row_inv[inst.src0 as usize]
+                && t.is_row_inv[inst.src1 as usize]
+                && t.is_row_inv[inst.src2 as usize]
+            {
+                t.try_reassociate_stage_affine(b, &mut inst, false);
+            } else {
+                t.try_reassociate_stage_affine(b, &mut inst, true);
+            }
+            t.try_fold_affine_chains(b, &mut inst);
+            let c0 = t.known_const[inst.src0 as usize];
+            let c1 = t.known_const[inst.src1 as usize];
+            let c2 = t.known_const[inst.src2 as usize];
 
             if let (Some(u0), Some(u1), Some(u2)) = (c0, c1, c2)
                 && let Some(bits) = eval_const_op(inst.op, u0, u1, u2)
             {
-                let c_vreg = alloc_tracked_const(
-                    b,
-                    bits,
-                    &mut known_const,
-                    &mut is_non_neg,
-                    &mut is_unit,
-                    &mut is_uniform,
-                );
+                let c_vreg = t.alloc_const(b, bits);
                 inst = RawInst::new(VmOp::Mov, inst.dst, c_vreg, 0, 0);
             } else {
                 simplify_algebraic_peephole(
@@ -1630,40 +1999,25 @@ fn fold_ssa_constants_and_cse(b: &mut CompilerBuilder<'_>) {
                     c0,
                     c1,
                     c2,
-                    &known_const,
-                    &is_non_neg,
-                    &is_unit,
-                    &def_inst,
-                    &log2_arg,
+                    &t.known_const,
+                    &t.is_non_neg,
+                    &t.is_unit,
+                    &t.def_inst,
+                    &t.log2_arg,
                 );
-                try_cancel_neg_and_lerp(&mut inst, &def_inst, &cse_table);
-                if inst.op == VmOp::MovSat && is_unit[inst.src0 as usize] {
+                try_cancel_neg_and_lerp(&mut inst, &t.def_inst, &t.cse_table);
+                t.try_fuse_fadd_or_hermite(b, &mut inst);
+                if inst.op == VmOp::MovSat && t.is_unit[inst.src0 as usize] {
                     inst = RawInst::new(VmOp::Mov, inst.dst, inst.src0, 0, 0);
                 }
                 if inst.op == VmOp::FMul {
-                    try_reassociate_uniform_fmul(
-                        b,
-                        &mut inst,
-                        &mut out_insts,
-                        &mut is_non_neg,
-                        &mut is_unit,
-                        &mut is_uniform,
-                        &mut def_inst,
-                        &mut cse_table,
-                    );
+                    t.try_reassociate_uniform_fmul(b, &mut inst);
                 }
             }
 
             if inst.op == VmOp::Mov && inst.dst >= u16::from(REG_DYNAMIC_BASE) {
-                let target = alias[inst.src0 as usize];
-                let d = inst.dst as usize;
-                alias[d] = target;
-                known_const[d] = known_const[target as usize];
-                is_non_neg[d] = is_non_neg[target as usize];
-                is_unit[d] = is_unit[target as usize];
-                is_uniform[d] = is_uniform[target as usize];
-                def_inst[d] = def_inst[target as usize];
-                log2_arg[d] = log2_arg[target as usize];
+                let target = t.alias[inst.src0 as usize];
+                t.record_alias(inst.dst as usize, target);
                 continue;
             }
 
@@ -1679,52 +2033,23 @@ fn fold_ssa_constants_and_cse(b: &mut CompilerBuilder<'_>) {
             );
             if inst.dst >= u16::from(REG_DYNAMIC_BASE)
                 && let Some(&(_, _, _, _, prev_dst)) =
-                    cse_table.iter().find(|&&(op, s0, s1, s2, _)| {
+                    t.cse_table.iter().find(|&&(op, s0, s1, s2, _)| {
                         op == inst.op
                             && s2 == inst.src2
                             && ((s0 == inst.src0 && s1 == inst.src1)
                                 || (is_comm && s0 == inst.src1 && s1 == inst.src0))
                     })
             {
-                let d = inst.dst as usize;
-                alias[d] = prev_dst;
-                known_const[d] = known_const[prev_dst as usize];
-                is_non_neg[d] = is_non_neg[prev_dst as usize];
-                is_unit[d] = is_unit[prev_dst as usize];
-                is_uniform[d] = is_uniform[prev_dst as usize];
-                def_inst[d] = def_inst[prev_dst as usize];
-                log2_arg[d] = log2_arg[prev_dst as usize];
+                t.record_alias(inst.dst as usize, prev_dst);
                 continue;
             }
 
-            let d = inst.dst as usize;
-            let (s0, s1, s2) = (inst.src0 as usize, inst.src1 as usize, inst.src2 as usize);
-            is_non_neg[d] =
-                eval_non_neg_op(inst.op, is_non_neg[s0], is_non_neg[s1], is_non_neg[s2]);
-            is_unit[d] = eval_unit_op(
-                inst.op,
-                is_unit[s0],
-                is_unit[s1],
-                is_non_neg[s0],
-                is_non_neg[s1],
-            );
-            is_uniform[d] = d >= (REG_DYNAMIC_BASE as usize)
-                && !matches!(inst.op, VmOp::FDdx | VmOp::FDdy)
-                && is_uniform[s0]
-                && is_uniform[s1]
-                && is_uniform[s2];
-            def_inst[d] = Some(inst);
-            if inst.op == VmOp::FLog2 {
-                log2_arg[d] = Some(inst.src0);
-            }
-            if inst.dst >= u16::from(REG_DYNAMIC_BASE) {
-                cse_table.push((inst.op, inst.src0, inst.src1, inst.src2, inst.dst));
-            }
+            t.record_inst(inst);
         }
-        out_insts.push(inst);
+        t.out_insts.push(inst);
     }
-    assert!(out_insts.len() <= MAX_STAGE_INSTS * 4);
-    b.insts = out_insts;
+    assert!(t.out_insts.len() <= MAX_STAGE_INSTS * 4);
+    b.insts = t.out_insts;
 }
 
 fn is_control_flow_or_side_effect(op: VmOp) -> bool {
@@ -1956,7 +2281,8 @@ fn does_zero_reg_kill_pixel(
             | VmOp::FTrunc
             | VmOp::FSin
             | VmOp::FDiv
-            | VmOp::FPow => z0,
+            | VmOp::FPow
+            | VmOp::FHermite => z0,
             VmOp::FMul | VmOp::FMin => z0 || z1,
             VmOp::FMul3 | VmOp::LinearToSrgb => z0 || z1 || z2,
             VmOp::FAdd | VmOp::FSub | VmOp::FMax => z0 && z1,
@@ -2459,41 +2785,58 @@ fn allocate_physical_regs(
         );
     }
 
-    let (read_in_pre, read_in_ker) =
+    let (read_in_pre, read_in_row, read_in_ker) =
         mark_stage_register_reads(preamble_raw, row_preamble_raw, kernel_raw, num_vregs);
     let mut next_phys = REG_DYNAMIC_BASE as usize;
     let alloc_one = |next: &mut usize| -> u8 {
-        let r = (*next).min(REG_FILE_SIZE - 1) as u8;
-        if *next < REG_FILE_SIZE {
-            *next += 1;
-        }
+        assert!(
+            *next < REG_FILE_SIZE - 1,
+            "physical register file overflow at {}",
+            *next
+        );
+        let r = *next as u8;
+        *next += 1;
         r
     };
 
-    let (const_out, cb2_out) = alloc_uniform_bindings(
+    let mut pre_next_phys = alloc_uniform_and_preamble_regs(
+        preamble_raw,
         const_vregs,
         cb2_vregs,
         &read_in_pre,
+        &read_in_row,
         &read_in_ker,
         &mut phys,
         &mut next_phys,
+        num_vregs,
         alloc_one,
     );
-    for inst in preamble_raw {
-        let v = inst.dst as usize;
-        if v >= REG_DYNAMIC_BASE as usize && phys[v] == 0xFF {
-            phys[v] = alloc_one(&mut next_phys);
-        }
-    }
+    let (const_out, cb2_out) = collect_uniform_bindings(
+        const_vregs,
+        cb2_vregs,
+        &read_in_pre,
+        &read_in_row,
+        &read_in_ker,
+        &phys,
+    );
     let num_uniform_regs = next_phys;
 
     for inst in row_preamble_raw {
         let v = inst.dst as usize;
-        if v >= REG_DYNAMIC_BASE as usize && phys[v] == 0xFF {
+        if v >= REG_DYNAMIC_BASE as usize && read_in_ker[v] && phys[v] == 0xFF {
             phys[v] = alloc_one(&mut next_phys);
         }
     }
     let num_row_regs = next_phys;
+    let mut row_next_phys = num_row_regs;
+    alloc_stage_temporaries(
+        row_preamble_raw,
+        &mut phys,
+        &mut row_next_phys,
+        num_row_regs,
+        num_vregs,
+        alloc_one,
+    );
 
     alloc_kernel_temporaries(
         kernel_raw,
@@ -2503,6 +2846,7 @@ fn allocate_physical_regs(
         num_vregs,
         alloc_one,
     );
+    pre_next_phys = pre_next_phys.max(row_next_phys);
 
     let pre = preamble_raw
         .iter()
@@ -2516,7 +2860,8 @@ fn allocate_physical_regs(
         .iter()
         .map(|r| map_raw_to_vm_inst(r, &phys))
         .collect();
-    assert!(next_phys <= REG_FILE_SIZE);
+    let total_used = next_phys.max(pre_next_phys).max(REG_DYNAMIC_BASE as usize);
+    assert!(total_used <= REG_FILE_SIZE);
     (
         pre,
         row_pre,
@@ -2525,7 +2870,7 @@ fn allocate_physical_regs(
         const_out,
         num_uniform_regs,
         num_row_regs,
-        next_phys.max(REG_DYNAMIC_BASE as usize),
+        total_used,
     )
 }
 
@@ -2579,14 +2924,20 @@ fn mark_stage_register_reads(
     row_preamble_raw: &[RawInst],
     kernel_raw: &[RawInst],
     num_vregs: usize,
-) -> (Vec<bool>, Vec<bool>) {
+) -> (Vec<bool>, Vec<bool>, Vec<bool>) {
     assert!(num_vregs >= REG_DYNAMIC_BASE as usize);
     let mut read_in_pre = vec![false; num_vregs + 8];
+    let mut read_in_row = vec![false; num_vregs + 8];
     let mut read_in_ker = vec![false; num_vregs + 8];
-    for inst in preamble_raw.iter().chain(row_preamble_raw.iter()) {
+    for inst in preamble_raw {
         read_in_pre[inst.src0 as usize] = true;
         read_in_pre[inst.src1 as usize] = true;
         read_in_pre[inst.src2 as usize] = true;
+    }
+    for inst in row_preamble_raw {
+        read_in_row[inst.src0 as usize] = true;
+        read_in_row[inst.src1 as usize] = true;
+        read_in_row[inst.src2 as usize] = true;
     }
     for inst in kernel_raw {
         read_in_ker[inst.src0 as usize] = true;
@@ -2599,27 +2950,82 @@ fn mark_stage_register_reads(
         }
     }
     assert_eq!(read_in_pre.len(), read_in_ker.len());
-    (read_in_pre, read_in_ker)
+    (read_in_pre, read_in_row, read_in_ker)
 }
 
-fn alloc_uniform_bindings(
+#[allow(clippy::too_many_arguments)]
+fn alloc_uniform_and_preamble_regs(
+    preamble_raw: &[RawInst],
     const_vregs: &[VregConstBinding],
     cb2_vregs: &[VregCb2Binding],
     read_in_pre: &[bool],
+    read_in_row: &[bool],
     read_in_ker: &[bool],
     phys: &mut [u8],
     next_phys: &mut usize,
+    num_vregs: usize,
     alloc_one: fn(&mut usize) -> u8,
-) -> (Vec<ConstRegBinding>, Vec<Cb2RegBinding>) {
+) -> usize {
     assert!(*next_phys >= REG_DYNAMIC_BASE as usize);
+    for b in const_vregs {
+        let v = b.vreg as usize;
+        if read_in_row[v] || read_in_ker[v] {
+            phys[v] = alloc_one(next_phys);
+        }
+    }
+    for b in cb2_vregs {
+        let v = b.vreg as usize;
+        if read_in_row[v] || read_in_ker[v] {
+            phys[v] = alloc_one(next_phys);
+        }
+    }
+    for inst in preamble_raw {
+        let v = inst.dst as usize;
+        if v >= REG_DYNAMIC_BASE as usize && (read_in_row[v] || read_in_ker[v]) && phys[v] == 0xFF {
+            phys[v] = alloc_one(next_phys);
+        }
+    }
+    let num_uniform_regs = *next_phys;
+    let mut pre_next_phys = num_uniform_regs;
+    for b in const_vregs {
+        let v = b.vreg as usize;
+        if read_in_pre[v] && phys[v] == 0xFF {
+            phys[v] = alloc_one(&mut pre_next_phys);
+        }
+    }
+    for b in cb2_vregs {
+        let v = b.vreg as usize;
+        if read_in_pre[v] && phys[v] == 0xFF {
+            phys[v] = alloc_one(&mut pre_next_phys);
+        }
+    }
+    alloc_stage_temporaries(
+        preamble_raw,
+        phys,
+        &mut pre_next_phys,
+        num_uniform_regs,
+        num_vregs,
+        alloc_one,
+    );
+    assert!(pre_next_phys <= REG_FILE_SIZE);
+    pre_next_phys
+}
+
+fn collect_uniform_bindings(
+    const_vregs: &[VregConstBinding],
+    cb2_vregs: &[VregCb2Binding],
+    read_in_pre: &[bool],
+    read_in_row: &[bool],
+    read_in_ker: &[bool],
+    phys: &[u8],
+) -> (Vec<ConstRegBinding>, Vec<Cb2RegBinding>) {
+    assert!(phys.len() >= REG_DYNAMIC_BASE as usize);
     let mut const_out = Vec::new();
     for b in const_vregs {
         let v = b.vreg as usize;
-        if read_in_pre[v] || read_in_ker[v] {
-            let p = alloc_one(next_phys);
-            phys[v] = p;
+        if read_in_pre[v] || read_in_row[v] || read_in_ker[v] {
             const_out.push(ConstRegBinding {
-                dst_reg: p,
+                dst_reg: phys[v],
                 bits: b.bits,
             });
         }
@@ -2627,18 +3033,60 @@ fn alloc_uniform_bindings(
     let mut cb2_out = Vec::new();
     for b in cb2_vregs {
         let v = b.vreg as usize;
-        if read_in_pre[v] || read_in_ker[v] {
-            let p = alloc_one(next_phys);
-            phys[v] = p;
+        if read_in_pre[v] || read_in_row[v] || read_in_ker[v] {
             cb2_out.push(Cb2RegBinding {
-                dst_reg: p,
+                dst_reg: phys[v],
                 comp: b.comp,
                 vec_idx: b.vec_idx,
             });
         }
     }
-    assert!(*next_phys <= REG_FILE_SIZE);
+    assert!(const_out.len() <= const_vregs.len());
     (const_out, cb2_out)
+}
+
+fn alloc_stage_temporaries(
+    stage_raw: &[RawInst],
+    phys: &mut [u8],
+    next_phys: &mut usize,
+    stage_floor: usize,
+    num_vregs: usize,
+    alloc_one: fn(&mut usize) -> u8,
+) {
+    assert!(stage_floor >= REG_DYNAMIC_BASE as usize);
+    let mut free_pool: Vec<u8> = Vec::new();
+    let mut released = vec![false; num_vregs + 8];
+    let mut is_read = vec![false; num_vregs + 8];
+    let mut last_use = vec![0usize; num_vregs + 8];
+    for (pc, inst) in stage_raw.iter().enumerate() {
+        for &src in &[inst.src0, inst.src1, inst.src2] {
+            is_read[src as usize] = true;
+            last_use[src as usize] = pc;
+        }
+    }
+    for (pc, inst) in stage_raw.iter().enumerate() {
+        let d = inst.dst as usize;
+        if d >= REG_DYNAMIC_BASE as usize && phys[d] == 0xFF {
+            let p = free_pool.pop().unwrap_or_else(|| alloc_one(next_phys));
+            phys[d] = p;
+            if !is_read[d] {
+                released[d] = true;
+                free_pool.push(p);
+            }
+        }
+        for &src in &[inst.src0, inst.src1, inst.src2] {
+            let s = src as usize;
+            if s >= REG_DYNAMIC_BASE as usize
+                && !released[s]
+                && last_use[s] == pc
+                && (phys[s] as usize) >= stage_floor
+            {
+                released[s] = true;
+                free_pool.push(phys[s]);
+            }
+        }
+    }
+    assert!(*next_phys <= REG_FILE_SIZE);
 }
 
 fn alloc_kernel_temporaries(
@@ -2652,6 +3100,8 @@ fn alloc_kernel_temporaries(
     assert!(num_row_regs >= REG_DYNAMIC_BASE as usize);
     // Allocate contiguous 4-register blocks for texture samples first, then linear-scan recycling
     // for all single-channel scalar temporaries in `kernel_raw`.
+    let mut free_pool: Vec<u8> = Vec::new();
+    let mut released = vec![false; num_vregs + 8];
     for inst in kernel_raw {
         if matches!(
             inst.op,
@@ -2659,7 +3109,13 @@ fn alloc_kernel_temporaries(
         ) && inst.dst >= u16::from(REG_DYNAMIC_BASE)
         {
             for c in 0..4usize {
-                phys[(inst.dst as usize) + c] = alloc_one(next_phys);
+                let p = alloc_one(next_phys);
+                let v = (inst.dst as usize) + c;
+                phys[v] = p;
+                if (inst.aux & (1 << c)) == 0 {
+                    released[v] = true;
+                    free_pool.push(p);
+                }
             }
         }
     }
@@ -2676,8 +3132,6 @@ fn alloc_kernel_temporaries(
         }
     }
 
-    let mut free_pool: Vec<u8> = Vec::new();
-    let mut released = vec![false; num_vregs + 8];
     for (pc, inst) in kernel_raw.iter().enumerate() {
         let d = inst.dst as usize;
         if d >= REG_DYNAMIC_BASE as usize && phys[d] == 0xFF {
@@ -2690,6 +3144,10 @@ fn alloc_kernel_temporaries(
                 && last_use[s] == pc
                 && (phys[s] as usize) >= num_row_regs
             {
+                assert_ne!(
+                    phys[s], 0xFF,
+                    "unmapped kernel src vreg {s} at pc {pc} inst={inst:?} next_phys={next_phys}"
+                );
                 // Do not recycle channels belonging to a 4-register texture sample block early
                 // unless all uses of that channel have completed.
                 released[s] = true;
@@ -2823,7 +3281,7 @@ pub fn compile_sm5_shader_specialized(
             16 => lower_dot_product(&mut builder, inst, 3),
             17 => lower_dot_product(&mut builder, inst, 4),
             38 | 81 | 78 | 132 | 133 => lower_multi_dst_int(&mut builder, inst),
-            69..=74 | 77 | 45 | 61 | 110 => lower_sincos_or_sample(&mut builder, inst),
+            69..=74 | 77 | 45 | 61 | 110 | 167 => lower_sincos_or_sample(&mut builder, inst),
             _ if inst.operands.len() >= 2 => lower_standard_alu(&mut builder, inst),
             _ => {}
         }

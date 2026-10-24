@@ -136,6 +136,7 @@ pub enum VmOp {
     FLog2,
     FPow,
     FAtan2,
+    FHermite,
     LinearToSrgb,
     FSin,
     FCos,
@@ -343,6 +344,10 @@ pub struct CompiledSm5Shader {
 pub struct TexSlotMeta {
     /// Earliest slot index bound to the exact same texture and UV clamp mode.
     pub canonical_slot: u8,
+    /// True if horizontal UV coordinates are clamped to `[0.0, 1.0]` by the sampler or texture.
+    pub clamp_u: bool,
+    /// True if vertical UV coordinates are clamped to `[0.0, 1.0]` by the sampler or texture.
+    pub clamp_v: bool,
     /// Bitmask (`bits 0..4`) of channels that contain at least one `0.0` texel.
     pub has_zeros_mask: u8,
     /// Quantized fraction (`0..=255`) of `0.0` texels in each channel (`R, G, B, A`).

@@ -149,6 +149,7 @@ fn eval_scalar_float_op(op: VmOp, a: f32, b: f32, c: f32) -> Option<(f32, bool)>
         VmOp::FLog2 => (a.max(1.175_494_4e-38).log2(), false),
         VmOp::FPow => (a.max(1.175_494_4e-38).powf(b), false),
         VmOp::FAtan2 => (fxc_atan2_scalar(a, b), false),
+        VmOp::FHermite => ((a * a) * (3.0 - (a + a)), false),
         VmOp::LinearToSrgb => (linear_to_srgb_channel((a * b) * c), false),
         VmOp::FSin => (a.sin(), false),
         VmOp::FCos => (a.cos(), false),
@@ -364,17 +365,16 @@ fn init_tile_uniform_regs(
         tile_regs[REG_V1_A as usize] = f32x8::splat(vertex_color_linear[3]).to_bits();
         return;
     }
-    *tile_regs = eval_shader_preamble(shader, vertex_color_linear, cb2, real_time);
+    eval_shader_preamble_into(shader, tile_regs, vertex_color_linear, cb2, real_time);
 }
 
-/// Evaluates Stage 1 (`shader.preamble`) once per quad on scalar registers and splats the
-/// initialized state into an 8-wide SIMD register template (`[u32x8; 256]`).
-pub fn eval_shader_preamble(
+fn eval_shader_preamble_into(
     shader: &CompiledSm5Shader,
+    out_simd: &mut [u32x8; REG_FILE_SIZE],
     vertex_color_linear: [f32; 4],
     cb2: &[[f32; 4]],
     real_time: f32,
-) -> [u32x8; REG_FILE_SIZE] {
+) {
     assert!(shader.num_regs_used <= REG_FILE_SIZE);
     assert!(vertex_color_linear[0].is_finite());
     let mut scalar_regs = [0u32; REG_FILE_SIZE];
@@ -404,11 +404,27 @@ pub fn eval_shader_preamble(
         exec_preamble_inst(&mut scalar_regs, inst, cb2, &shader.icb_vec4s);
     }
 
-    let mut base_simd = [u32x8::splat(0); REG_FILE_SIZE];
     let splat_limit = shader.num_uniform_regs.clamp(41, REG_FILE_SIZE);
-    for i in 0..splat_limit {
-        base_simd[i] = u32x8::splat(scalar_regs[i]);
+    for (dst, &bits) in out_simd[..splat_limit]
+        .iter_mut()
+        .zip(&scalar_regs[..splat_limit])
+    {
+        *dst = u32x8::splat(bits);
     }
+}
+
+/// Evaluates Stage 1 (`shader.preamble`) once per quad on scalar registers and splats the
+/// initialized state into an 8-wide SIMD register template (`[u32x8; 256]`).
+pub fn eval_shader_preamble(
+    shader: &CompiledSm5Shader,
+    vertex_color_linear: [f32; 4],
+    cb2: &[[f32; 4]],
+    real_time: f32,
+) -> [u32x8; REG_FILE_SIZE] {
+    assert!(shader.num_regs_used <= REG_FILE_SIZE);
+    assert!(vertex_color_linear[0].is_finite());
+    let mut base_simd = [u32x8::splat(0); REG_FILE_SIZE];
+    eval_shader_preamble_into(shader, &mut base_simd, vertex_color_linear, cb2, real_time);
     base_simd
 }
 
@@ -441,6 +457,7 @@ fn eval_simd_alu_value(regs: &[u32x8; REG_FILE_SIZE], inst: &VmInst) -> u32x8 {
         VmOp::FSqrt => a.simd_max(zero).sqrt().to_bits(),
         VmOp::FPow => fast_pow_x8(a, b).to_bits(),
         VmOp::FAtan2 => fast_atan2_x8(a, b).to_bits(),
+        VmOp::FHermite => ((a * a) * (f32x8::splat(3.0) - (a + a))).to_bits(),
         VmOp::LinearToSrgb => linear_to_srgb_x8((a * b) * c).to_bits(),
         _ => eval_simd_cold_float_value(regs, inst, ua, ub, uc),
     }
@@ -1730,6 +1747,181 @@ pub fn rasterize_sprite_quad_simd(
                         [sr, sg, sb, sa],
                         false,
                     );
+                }
+            }
+            px += 4;
+        }
+        py += 2;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exec_tile_transformed_branchless(
+    shader: &CompiledSm5Shader,
+    regs: &mut [u32x8; REG_FILE_SIZE],
+    fx: f32x8,
+    fy: f32x8,
+    u0: f32x8,
+    v0: f32x8,
+    u1: f32x8,
+    v1: f32x8,
+    cb2: &[[f32; 4]],
+    textures: &[&LinearTexture2D],
+    tex_clamps: &[(bool, bool)],
+) -> Option<[f32x8; 4]> {
+    assert!(!shader.has_control_flow);
+    assert!(!shader.uses_indexable_temps);
+    let fx_b = fx.to_bits();
+    let fy_b = fy.to_bits();
+    let u0_b = u0.to_bits();
+    let v0_b = v0.to_bits();
+    regs[REG_V0_X as usize] = fx_b;
+    regs[REG_V0_Y as usize] = fy_b;
+    regs[REG_V2_X as usize] = fx_b;
+    regs[REG_V2_Y as usize] = fy_b;
+    regs[REG_V3_U as usize] = u0_b;
+    regs[REG_V3_V as usize] = v0_b;
+    regs[REG_V4_X as usize] = u0_b;
+    regs[REG_V4_Y as usize] = v0_b;
+    regs[REG_V4_Z as usize] = u1.to_bits();
+    regs[REG_V4_W as usize] = v1.to_bits();
+
+    for inst in &shader.row_preamble {
+        regs[inst.dst as usize] = eval_simd_alu_value(regs, inst);
+    }
+    let dummy_y = [(i32x8::splat(0), f32x8::splat(0.0)); 4];
+    for inst in &shader.kernel {
+        match inst.op {
+            VmOp::Ret => break,
+            VmOp::EarlyOutZero => {
+                if regs[inst.src0 as usize] == u32x8::splat(0) {
+                    return None;
+                }
+            }
+            VmOp::Sample2D | VmOp::Gather4 => {
+                let mut no_row_y = *inst;
+                no_row_y.imm16 &= 0x01FF;
+                exec_sample2d_unmasked(regs, &no_row_y, textures, tex_clamps, &dummy_y);
+            }
+            VmOp::TexLoad2D | VmOp::ResInfo2D | VmOp::LoadCb2Dyn | VmOp::LoadIcbDyn => {
+                exec_tex_or_mem_cold(regs, inst, textures, tex_clamps, cb2, &shader.icb_vec4s);
+            }
+            _ => {
+                regs[inst.dst as usize] = eval_simd_alu_value(regs, inst);
+            }
+        }
+    }
+    Some([
+        f32x8::from_bits(regs[REG_OUT_R as usize]),
+        f32x8::from_bits(regs[REG_OUT_G as usize]),
+        f32x8::from_bits(regs[REG_OUT_B as usize]),
+        f32x8::from_bits(regs[REG_OUT_A as usize]),
+    ])
+}
+
+/// Rasterizes a compiled SM5 quad with arbitrary 2D affine UV transforms (`uv0_affine` for
+/// `v3.xy` / `v4.xy` and `uv1_affine` for `v4.zw`, where `[a, b, c, d, e, f]` maps screen
+/// `(fx, fy)` to `(a*fx + b*fy + c, d*fx + e*fy + f)`), supporting rotated/sheared widgets,
+/// `3_Slate_Tiled_UV` (`v4.zw = (Utiling, Vtiling)`), and `4_Slate_FontAtlas` (`FSlateMaterialShaderPS<true>`).
+#[allow(clippy::too_many_arguments)]
+pub fn rasterize_compiled_quad_transformed(
+    canvas: &mut [[f32; 4]],
+    width: u32,
+    height: u32,
+    clip_bounds: [f32; 4],
+    uv0_affine: [f32; 6],
+    uv1_affine: [f32; 6],
+    shader: &CompiledSm5Shader,
+    vertex_color_linear: [f32; 4],
+    cb2: &[[f32; 4]],
+    textures: &[&LinearTexture2D],
+    tex_clamps: &[(bool, bool)],
+    real_time: f32,
+    is_additive: bool,
+) {
+    assert_eq!(canvas.len(), (width * height) as usize);
+    let Some((min_x, max_x, min_y, max_y)) =
+        narrow_quad_pixel_bounds(clip_bounds, clip_bounds, None, width, height)
+    else {
+        return;
+    };
+    assert!(max_x <= width && max_y <= height);
+
+    let mut tile_regs = [u32x8::splat(0); REG_FILE_SIZE];
+    init_tile_uniform_regs(shader, &mut tile_regs, vertex_color_linear, cb2, real_time);
+    let base_simd = tile_regs;
+    let is_branchless = !shader.has_control_flow && !shader.uses_indexable_temps;
+    let (dx_v, dy_v) = (f32x8::from_array(TILE_DX), f32x8::from_array(TILE_DY));
+    let (ix_v, iy_v) = (u32x8::from_array(TILE_IX), u32x8::from_array(TILE_IY));
+    let (max_x_v, max_y_v) = (u32x8::splat(max_x), u32x8::splat(max_y));
+    let (zero_v, one_v) = (f32x8::splat(0.0), f32x8::splat(1.0));
+    let [a0, b0, c0, d0, e0, f0] = uv0_affine.map(f32x8::splat);
+    let [a1, b1, c1, d1, e1, f1] = uv1_affine.map(f32x8::splat);
+
+    let mut py = min_y;
+    while py < max_y {
+        let fy = f32x8::splat((py as f32) + 0.5) + dy_v;
+        let py_valid = (u32x8::splat(py) + iy_v).simd_lt(max_y_v);
+        let mut px = min_x;
+        while px < max_x {
+            let fx = f32x8::splat((px as f32) + 0.5) + dx_v;
+            let u0 = a0 * fx + b0 * fy + c0;
+            let v0 = d0 * fx + e0 * fy + f0;
+            let in_quad = u0.simd_ge(zero_v)
+                & u0.simd_le(one_v)
+                & v0.simd_ge(zero_v)
+                & v0.simd_le(one_v)
+                & (u32x8::splat(px) + ix_v).simd_lt(max_x_v)
+                & py_valid;
+            let valid_mask = in_quad.to_bitmask() as u8;
+            if valid_mask != 0 {
+                let u1 = a1 * fx + b1 * fy + c1;
+                let v1 = d1 * fx + e1 * fy + f1;
+                if is_branchless {
+                    if let Some(mut rgba) = exec_tile_transformed_branchless(
+                        shader,
+                        &mut tile_regs,
+                        fx,
+                        fy,
+                        u0,
+                        v0,
+                        u1,
+                        v1,
+                        cb2,
+                        textures,
+                        tex_clamps,
+                    ) {
+                        apply_srgb_output_mask(&mut rgba, shader.srgb_encode_mask);
+                        let write_mask = valid_mask & (rgba[3].simd_gt(zero_v).to_bitmask() as u8);
+                        if write_mask != 0 {
+                            blend_tile_x8(
+                                canvas,
+                                width as usize,
+                                height as usize,
+                                px,
+                                py,
+                                write_mask,
+                                rgba,
+                                is_additive,
+                            );
+                        }
+                    }
+                } else {
+                    let (alive, rgba) = execute_tile_x8(
+                        shader, &base_simd, fx, fy, u0, v0, valid_mask, cb2, textures, tex_clamps,
+                    );
+                    if alive != 0 {
+                        blend_tile_x8(
+                            canvas,
+                            width as usize,
+                            height as usize,
+                            px,
+                            py,
+                            alive,
+                            rgba,
+                            is_additive,
+                        );
+                    }
                 }
             }
             px += 4;

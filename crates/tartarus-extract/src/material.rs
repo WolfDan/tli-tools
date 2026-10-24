@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ExtractError;
 use crate::uasset::{
-    PACKAGE_FILE_TAG, UassetImportEntry, format_fname_idx, parse_uasset_imports,
-    parse_uasset_names, resolve_package_index,
+    PACKAGE_FILE_TAG, UassetImportEntry, format_fname_idx, parse_uasset_exports,
+    parse_uasset_imports, parse_uasset_names, resolve_package_index,
 };
 
 const UASSET_BYTES_MAX: usize = 256 * 1024 * 1024;
@@ -576,10 +576,17 @@ fn parse_script_names_patch_map(
         };
         let name_idx = LittleEndian::read_u32(&entry[0..4]);
         let name_num = LittleEndian::read_u32(&entry[4..8]);
-        let n_patches = LittleEndian::read_u32(&entry[8..12]).min(256) as usize;
+        let raw_patches = LittleEndian::read_u32(&entry[8..12]) as usize;
+        if name_idx as usize >= names.len() || name_num > 1024 || raw_patches > 64 {
+            break;
+        }
+        let n_patches = raw_patches.min(64);
         p += 12;
         let fname = format_fname_idx(names, name_idx, name_num);
         for _ in 0..n_patches {
+            if patch_map.len() >= UNIFORM_NAMES_MAX * 4 {
+                break;
+            }
             let Some(ps) = uexp.get(p..p + 4) else {
                 break;
             };
@@ -1193,6 +1200,19 @@ pub fn parse_material_asset(
         )));
     }
     let imports = parse_uasset_imports(uasset, &names);
+    let exports = parse_uasset_exports(uasset, &names, &imports);
+    if !exports.is_empty()
+        && !exports.iter().any(|e| {
+            matches!(
+                e.class_name.as_str(),
+                "Material" | "MaterialInstanceConstant" | "MaterialInstanceDynamic"
+            )
+        })
+    {
+        return Err(ExtractError::UassetFormat(format!(
+            "Asset is not a UMaterial or UMaterialInstance: {virtual_path}"
+        )));
+    }
 
     let mut info = MaterialInfo {
         virtual_path: virtual_path.to_string(),

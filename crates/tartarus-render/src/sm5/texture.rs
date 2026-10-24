@@ -702,9 +702,11 @@ impl LinearTexture2D {
 
     /// Returns compile-time specialization metadata for this texture at `canonical_slot`.
     #[inline]
-    pub const fn slot_meta(&self, canonical_slot: u8) -> TexSlotMeta {
+    pub const fn slot_meta(&self, canonical_slot: u8, clamp_u: bool, clamp_v: bool) -> TexSlotMeta {
         TexSlotMeta {
             canonical_slot,
+            clamp_u: self.clamp_x || clamp_u,
+            clamp_v: self.clamp_y || clamp_v,
             has_zeros_mask: self.has_zeros_mask,
             zero_frac: self.zero_frac,
             const_val: self.const_val,
