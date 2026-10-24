@@ -2,6 +2,7 @@
 //! monster portraits and rarity auras (`T = 0`).
 
 use std::collections::BTreeMap;
+use std::simd::{StdFloat, prelude::*};
 
 use serde::{Deserialize, Serialize};
 use tartarus_extract::{
@@ -11,9 +12,9 @@ use tartarus_extract::{
 };
 
 use crate::sm5::{
-    CompiledSm5Shader, LinearTexture2D, compile_sm5_shader, compile_sm5_shader_with_cb2,
-    rasterize_compiled_quad, rasterize_sprite_quad_simd, select_slate_default_ps,
-    srgb_to_linear_channel,
+    CompiledSm5Shader, LinearTexture2D, ShaderSpecialization, TexSlotMeta, compile_sm5_shader,
+    compile_sm5_shader_specialized, compile_sm5_shader_with_cb2, f32x8, rasterize_compiled_quad,
+    rasterize_sprite_quad_simd, select_slate_default_ps, srgb_to_linear_channel,
 };
 
 /// Reference 1080p unclipped canvas width for a single `S16BoardCell` (`256` px at `1.0x`).
@@ -252,6 +253,19 @@ pub struct CompiledSlateMaterial {
     pub is_additive: bool,
 }
 
+/// Pre-compiled per-widget draw state (`(blueprint_id, export_index, rarity, mode)`) eliminating
+/// all render-time `cb2` evaluation and SM5 shader compilation.
+#[derive(Clone, Debug)]
+pub struct PrecompiledWidgetDraw {
+    pub compiled_ps: CompiledSm5Shader,
+    pub cb2: Vec<[f32; 4]>,
+    pub slot_paths: Vec<String>,
+    pub slot_clamps: Vec<(bool, bool)>,
+    pub t1_override_slots: Vec<usize>,
+    pub vertex_color_linear: [f32; 4],
+    pub is_additive: bool,
+}
+
 /// In-memory cache of UMG blueprints, compiled SM5 shaders, materials, particle emitters, and
 /// decoded textures required to render any Tartarus monster cell at `T = 0`.
 pub struct CellRenderContext {
@@ -260,6 +274,7 @@ pub struct CellRenderContext {
     pub materials: BTreeMap<String, CompiledSlateMaterial>,
     pub particle_assets: BTreeMap<String, UiParticleEmitterAsset>,
     pub textures: BTreeMap<String, LinearTexture2D>,
+    pub widget_draws: BTreeMap<(u8, usize, u8, u8), PrecompiledWidgetDraw>,
     pub white_fallback: LinearTexture2D,
 }
 
@@ -397,6 +412,44 @@ fn extract_ps_shaders_for_hash(
     ))
 }
 
+fn build_tex_slot_meta(
+    slot_paths: &[String],
+    slot_clamps: &[(bool, bool)],
+    dynamic_slots: &[usize],
+    textures: &BTreeMap<String, LinearTexture2D>,
+    fallback: &LinearTexture2D,
+) -> Vec<TexSlotMeta> {
+    assert!(slot_paths.len() <= 32);
+    let mut out = Vec::with_capacity(slot_paths.len());
+    for (i, path) in slot_paths.iter().enumerate() {
+        if dynamic_slots.contains(&i) {
+            out.push(TexSlotMeta {
+                canonical_slot: i as u8,
+                has_zeros_mask: 0x0F,
+                zero_frac: [64; 4],
+                const_val: [None; 4],
+                eq_r: [false; 4],
+            });
+            continue;
+        }
+        let clamp_i = slot_clamps.get(i).copied().unwrap_or((false, false));
+        let mut canonical = i as u8;
+        for (j, prev_path) in slot_paths[..i].iter().enumerate() {
+            let clamp_j = slot_clamps.get(j).copied().unwrap_or((false, false));
+            if !dynamic_slots.contains(&j) && prev_path == path && clamp_j == clamp_i {
+                canonical = j as u8;
+                break;
+            }
+        }
+        let tex = textures.get(path).unwrap_or(fallback);
+        out.push(tex.slot_meta(canonical));
+    }
+    assert_eq!(out.len(), slot_paths.len());
+    out
+}
+
+type ShaderDedupCache = BTreeMap<(String, Vec<[u32; 4]>, [u32; 4], bool), CompiledSm5Shader>;
+
 impl CellRenderContext {
     /// Loads `S16BoardCell`, `S16Cell`, all referenced `UI_MI_V2_S16BoardCell_*` materials,
     /// `UI_P_V2_S16BoardCell_*` particle emitters, their compiled SM5 pixel shaders, and all
@@ -416,10 +469,12 @@ impl CellRenderContext {
             materials: BTreeMap::new(),
             particle_assets: BTreeMap::new(),
             textures: BTreeMap::new(),
+            widget_draws: BTreeMap::new(),
             white_fallback: LinearTexture2D::solid_rgba([1.0, 1.0, 1.0, 1.0]),
         };
         ctx.preload_umg_assets(vfs, &archives)?;
         ctx.preload_portraits(vfs)?;
+        ctx.precompile_widget_draws();
         Ok(ctx)
     }
 
@@ -447,8 +502,6 @@ impl CellRenderContext {
             let ps_idx = select_slate_default_ps(&ps_list, num_tex).unwrap_or(0);
             let pixel_shader = ps_list[ps_idx].clone();
             let default_cb2 = mat_info.evaluate_uniform_buffer(&[], &[]);
-            let compiled_ps = compile_sm5_shader_with_cb2(&pixel_shader, Some(&default_cb2));
-            let compiled_ps_dynamic = compile_sm5_shader(&pixel_shader);
             let default_texture_slots = mat_info.resolve_texture_slots(&[]);
             let default_slot_clamps = mat_info.resolve_slot_uv_clamps(&[]);
             for tpath in &default_texture_slots {
@@ -459,6 +512,22 @@ impl CellRenderContext {
                     self.textures.insert(tpath.clone(), tex);
                 }
             }
+            let tex_meta = build_tex_slot_meta(
+                &default_texture_slots,
+                &default_slot_clamps,
+                &[],
+                &self.textures,
+                &self.white_fallback,
+            );
+            let compiled_ps = compile_sm5_shader_specialized(
+                &pixel_shader,
+                ShaderSpecialization {
+                    static_cb2: Some(&default_cb2),
+                    static_v1: None,
+                    tex_meta: Some(&tex_meta),
+                },
+            );
+            let compiled_ps_dynamic = compile_sm5_shader(&pixel_shader);
             let is_additive = mat_info
                 .blend_mode
                 .as_deref()
@@ -534,6 +603,156 @@ impl CellRenderContext {
         }
         assert!(self.textures.len() >= 10);
         Ok(())
+    }
+
+    fn build_precompiled_draw(
+        &self,
+        widget: &UmgWidgetNode,
+        opacity_mul: f32,
+        scalar_overrides: &[(&str, f32)],
+        has_t1_override: bool,
+        shader_cache: &mut ShaderDedupCache,
+    ) -> Option<PrecompiledWidgetDraw> {
+        assert!(opacity_mul >= 0.0);
+        if opacity_mul <= 1e-5 {
+            return None;
+        }
+        let soft_path = widget.soft_object_path.as_deref()?;
+        let vpath = game_path_to_virtual_path(soft_path);
+        let mat = self.materials.get(&vpath)?;
+        let c = widget.color_and_opacity;
+        let vertex_color_linear = [
+            srgb_to_linear_channel(c[0]),
+            srgb_to_linear_channel(c[1]),
+            srgb_to_linear_channel(c[2]),
+            (c[3] * widget.render_opacity * opacity_mul).clamp(0.0, 1.0),
+        ];
+        if vertex_color_linear[3] <= 1e-5 {
+            return None;
+        }
+        let is_def = scalar_overrides.is_empty();
+        let cb2 = if is_def {
+            mat.default_cb2.clone()
+        } else {
+            mat.info.evaluate_uniform_buffer(scalar_overrides, &[])
+        };
+        let slot_paths = mat.default_texture_slots.clone();
+        let slot_clamps = if is_def {
+            mat.default_slot_clamps.clone()
+        } else {
+            mat.info.resolve_slot_uv_clamps(scalar_overrides)
+        };
+        let t1_override_slots: Vec<usize> = has_t1_override
+            .then(|| mat.info.resolve_texture_slots(&[("T1", "__T1__")]))
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(i, p)| (p == "__T1__").then_some(i))
+            .collect();
+        let cb2_bits: Vec<[u32; 4]> = cb2.iter().map(|v| v.map(f32::to_bits)).collect();
+        let v1_bits = vertex_color_linear.map(f32::to_bits);
+        let cache_key = (vpath, cb2_bits, v1_bits, has_t1_override);
+        let compiled_ps = if let Some(cached) = shader_cache.get(&cache_key) {
+            cached.clone()
+        } else {
+            let tex_meta = build_tex_slot_meta(
+                &slot_paths,
+                &slot_clamps,
+                &t1_override_slots,
+                &self.textures,
+                &self.white_fallback,
+            );
+            let compiled = compile_sm5_shader_specialized(
+                &mat.pixel_shader,
+                ShaderSpecialization {
+                    static_cb2: Some(&cb2),
+                    static_v1: Some(vertex_color_linear),
+                    tex_meta: Some(&tex_meta),
+                },
+            );
+            shader_cache.insert(cache_key, compiled.clone());
+            compiled
+        };
+        Some(PrecompiledWidgetDraw {
+            compiled_ps,
+            cb2,
+            slot_paths,
+            slot_clamps,
+            t1_override_slots,
+            vertex_color_linear,
+            is_additive: mat.is_additive,
+        })
+    }
+
+    fn precompile_widget_draws(&mut self) {
+        assert!(!self.cell_umg.widgets.is_empty());
+        let mut shader_cache = BTreeMap::new();
+        let mut draws = BTreeMap::new();
+        let pic_opt = self
+            .cell_umg
+            .widgets
+            .iter()
+            .find(|w| w.name == "Img_S16Board_Cell_MonsterPic");
+
+        for rarity in RarityTier::ALL {
+            for mode in [RarityMode::Shao, RarityMode::Quan] {
+                let anim_opt = self.find_animation_t0(rarity, mode);
+                for suffix in ["D", "Up"] {
+                    let panel_name =
+                        format!("{}_{}_{suffix}", rarity.uasset_prefix(), mode.suffix());
+                    let Some(panel) = self.cell_umg.widgets.iter().find(|w| w.name == panel_name)
+                    else {
+                        continue;
+                    };
+                    for child in self.cell_umg.widgets.iter().filter(|w| {
+                        w.parent_export_index == panel.export_index && w.class_name == "UIImage"
+                    }) {
+                        let opacity_mul = anim_opt
+                            .and_then(|a| a.render_opacities.get(&child.name).copied())
+                            .unwrap_or(1.0);
+                        let mut scalar_overrides = Vec::new();
+                        if let Some(anim) = anim_opt
+                            && let Some(params) = anim.material_scalars.get(&child.name)
+                        {
+                            for (k, v) in params {
+                                scalar_overrides.push((k.as_str(), *v));
+                            }
+                        }
+                        if let Some(pre) = self.build_precompiled_draw(
+                            child,
+                            opacity_mul,
+                            &scalar_overrides,
+                            false,
+                            &mut shader_cache,
+                        ) {
+                            draws.insert((1, child.export_index, rarity as u8, mode as u8), pre);
+                        }
+                    }
+                }
+                if let Some(pic_w) = pic_opt {
+                    let mut scalar_overrides = vec![("T1_U_DistortStr", 0.0f32)];
+                    if let Some(anim) = anim_opt
+                        && let Some(params) =
+                            anim.material_scalars.get("Img_S16Board_Cell_MonsterPic")
+                    {
+                        for (k, v) in params {
+                            scalar_overrides.push((k.as_str(), *v));
+                        }
+                    }
+                    if let Some(pre) = self.build_precompiled_draw(
+                        pic_w,
+                        1.0,
+                        &scalar_overrides,
+                        true,
+                        &mut shader_cache,
+                    ) {
+                        draws.insert((1, pic_w.export_index, rarity as u8, mode as u8), pre);
+                    }
+                }
+            }
+        }
+        assert!(!draws.is_empty());
+        self.widget_draws = draws;
     }
 
     /// Renders a single monster cell at `T = 0` according to `req`.
@@ -684,24 +903,33 @@ impl CellRenderContext {
             }
             if child.class_name == "UIImage" {
                 let rect = widget_rect_in_canvas(child, 0.0, 0.0, cell_scale, req.scale);
-                let mut scalar_overrides = Vec::new();
-                if let Some(anim) = anim_opt
-                    && let Some(params) = anim.material_scalars.get(&child.name)
-                {
-                    for (k, v) in params {
-                        scalar_overrides.push((k.as_str(), *v));
+                if let Some(pre) = self.widget_draws.get(&(
+                    1,
+                    child.export_index,
+                    req.rarity as u8,
+                    req.mode as u8,
+                )) {
+                    self.draw_precompiled_widget(canvas, width, height, rect, pre, None);
+                } else {
+                    let mut scalar_overrides = Vec::new();
+                    if let Some(anim) = anim_opt
+                        && let Some(params) = anim.material_scalars.get(&child.name)
+                    {
+                        for (k, v) in params {
+                            scalar_overrides.push((k.as_str(), *v));
+                        }
                     }
+                    self.draw_widget_quad(
+                        canvas,
+                        width,
+                        height,
+                        child,
+                        rect,
+                        opacity_mul,
+                        &scalar_overrides,
+                        &[],
+                    );
                 }
-                self.draw_widget_quad(
-                    canvas,
-                    width,
-                    height,
-                    child,
-                    rect,
-                    opacity_mul,
-                    &scalar_overrides,
-                    &[],
-                );
             } else if child.class_name == "UIParticleEmitter" && req.include_particles {
                 self.draw_particle_emitter_widget(
                     canvas,
@@ -818,6 +1046,20 @@ impl CellRenderContext {
             ..box_rect
         };
         let portrait_vpath = resolve_portrait_virtual_path(&req.portrait_selector);
+        if let Some(pre) =
+            self.widget_draws
+                .get(&(1, pic_w.export_index, req.rarity as u8, req.mode as u8))
+        {
+            self.draw_precompiled_widget(
+                canvas,
+                width,
+                height,
+                rect,
+                pre,
+                Some(portrait_vpath.as_str()),
+            );
+            return;
+        }
         let mut scalar_overrides = vec![("T1_U_DistortStr", 0.0f32)];
         if let Some(anim) = self.find_animation_t0(req.rarity, req.mode)
             && let Some(params) = anim.material_scalars.get("Img_S16Board_Cell_MonsterPic")
@@ -835,6 +1077,46 @@ impl CellRenderContext {
             1.0,
             &scalar_overrides,
             &[("T1", portrait_vpath.as_str())],
+        );
+    }
+
+    fn draw_precompiled_widget(
+        &self,
+        canvas: &mut [[f32; 4]],
+        width: u32,
+        height: u32,
+        rect: QuadRect,
+        pre: &PrecompiledWidgetDraw,
+        t1_override: Option<&str>,
+    ) {
+        assert_eq!(canvas.len(), (width * height) as usize);
+        let mut bound_tex: Vec<&LinearTexture2D> = pre
+            .slot_paths
+            .iter()
+            .map(|p| self.textures.get(p).unwrap_or(&self.white_fallback))
+            .collect();
+        if let Some(override_path) = t1_override {
+            let tex = self
+                .textures
+                .get(override_path)
+                .unwrap_or(&self.white_fallback);
+            for &slot_idx in &pre.t1_override_slots {
+                if slot_idx < bound_tex.len() {
+                    bound_tex[slot_idx] = tex;
+                }
+            }
+        }
+        rasterize_material_quad(
+            canvas,
+            width,
+            height,
+            rect,
+            &pre.compiled_ps,
+            pre.vertex_color_linear,
+            &pre.cb2,
+            &bound_tex,
+            &pre.slot_clamps,
+            pre.is_additive,
         );
     }
 
@@ -1018,26 +1300,89 @@ fn init_srgb_canvas(width: u32, height: u32, bg: BackgroundMode) -> Vec<[f32; 4]
 
 fn finalize_canvas_to_srgb8(canvas: &[[f32; 4]], bg: BackgroundMode) -> Vec<u8> {
     assert!(!canvas.is_empty());
-    let mut out = Vec::with_capacity(canvas.len() * 4);
-    for px in canvas {
-        let max_rgb = px[0].max(px[1]).max(px[2]).clamp(0.0, 1.0);
-        let a = match bg {
-            BackgroundMode::Transparent => px[3].max(max_rgb).clamp(0.0, 1.0),
-            BackgroundMode::SolidSrgb(_) => 1.0,
-        };
-        if a <= 1e-5 {
-            out.extend_from_slice(&[0, 0, 0, 0]);
+    let mut out = vec![0u8; canvas.len() * 4];
+    let zero = f32x8::splat(0.0);
+    let one = f32x8::splat(1.0);
+    let eps = f32x8::splat(1e-5);
+    let scale_255 = f32x8::splat(255.0);
+    let is_transparent = matches!(bg, BackgroundMode::Transparent);
+
+    let (px_chunks, px_rem) = canvas.as_chunks::<8>();
+    let (out_chunks, out_rem) = out.as_chunks_mut::<32>();
+    for (c, dst) in px_chunks.iter().zip(out_chunks.iter_mut()) {
+        let r = f32x8::from_array(c.map(|p| p[0]));
+        let g = f32x8::from_array(c.map(|p| p[1]));
+        let b = f32x8::from_array(c.map(|p| p[2]));
+        let a_in = f32x8::from_array(c.map(|p| p[3]));
+
+        if is_transparent {
+            let max_rgb = r.simd_max(g).simd_max(b).simd_max(zero).simd_min(one);
+            let a = a_in.simd_max(max_rgb).simd_max(zero).simd_min(one);
+            let active = a.simd_gt(eps);
+            if !active.any() {
+                continue;
+            }
+            let inv_a = active.select(one / a.simd_max(eps), zero);
+            let r8 = ((r * inv_a).simd_max(zero).simd_min(one) * scale_255)
+                .round()
+                .cast::<u32>()
+                .to_array();
+            let g8 = ((g * inv_a).simd_max(zero).simd_min(one) * scale_255)
+                .round()
+                .cast::<u32>()
+                .to_array();
+            let b8 = ((b * inv_a).simd_max(zero).simd_min(one) * scale_255)
+                .round()
+                .cast::<u32>()
+                .to_array();
+            let a8 = active
+                .select(a * scale_255, zero)
+                .round()
+                .cast::<u32>()
+                .to_array();
+            for i in 0..8 {
+                let off = i * 4;
+                dst[off] = r8[i] as u8;
+                dst[off + 1] = g8[i] as u8;
+                dst[off + 2] = b8[i] as u8;
+                dst[off + 3] = a8[i] as u8;
+            }
         } else {
-            let inv_a = if matches!(bg, BackgroundMode::Transparent) {
-                1.0 / a
-            } else {
-                1.0
-            };
-            let r = ((px[0] * inv_a).clamp(0.0, 1.0) * 255.0).round() as u8;
-            let g = ((px[1] * inv_a).clamp(0.0, 1.0) * 255.0).round() as u8;
-            let b = ((px[2] * inv_a).clamp(0.0, 1.0) * 255.0).round() as u8;
-            let a8 = (a * 255.0).round() as u8;
-            out.extend_from_slice(&[r, g, b, a8]);
+            let r8 = (r.simd_max(zero).simd_min(one) * scale_255)
+                .round()
+                .cast::<u32>()
+                .to_array();
+            let g8 = (g.simd_max(zero).simd_min(one) * scale_255)
+                .round()
+                .cast::<u32>()
+                .to_array();
+            let b8 = (b.simd_max(zero).simd_min(one) * scale_255)
+                .round()
+                .cast::<u32>()
+                .to_array();
+            for i in 0..8 {
+                let off = i * 4;
+                dst[off] = r8[i] as u8;
+                dst[off + 1] = g8[i] as u8;
+                dst[off + 2] = b8[i] as u8;
+                dst[off + 3] = 255;
+            }
+        }
+    }
+
+    for (px, dst) in px_rem.iter().zip(out_rem.as_chunks_mut::<4>().0) {
+        let max_rgb = px[0].max(px[1]).max(px[2]).clamp(0.0, 1.0);
+        let a = if is_transparent {
+            px[3].max(max_rgb).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        if a > 1e-5 {
+            let inv_a = if is_transparent { 1.0 / a } else { 1.0 };
+            dst[0] = ((px[0] * inv_a).clamp(0.0, 1.0) * 255.0).round() as u8;
+            dst[1] = ((px[1] * inv_a).clamp(0.0, 1.0) * 255.0).round() as u8;
+            dst[2] = ((px[2] * inv_a).clamp(0.0, 1.0) * 255.0).round() as u8;
+            dst[3] = (a * 255.0).round() as u8;
         }
     }
     assert_eq!(out.len(), canvas.len() * 4);

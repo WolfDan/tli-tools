@@ -8,14 +8,19 @@ pub mod texture;
 
 use tartarus_extract::DxbcShader;
 
-pub use compiler::{compile_sm5_shader, compile_sm5_shader_with_cb2};
+pub use compiler::{
+    compile_sm5_shader, compile_sm5_shader_specialized, compile_sm5_shader_with_cb2,
+};
 pub use exec::{
     eval_shader_preamble, execute_tile_x8, rasterize_compiled_quad, rasterize_sprite_quad_simd,
 };
-pub use ir::{CompiledSm5Shader, SIMD_LANES, VmInst, VmOp, f32x8, i32x8, u32x8};
+pub use ir::{
+    CompiledSm5Shader, SIMD_LANES, ShaderSpecialization, TexSlotMeta, VmInst, VmOp, f32x8, i32x8,
+    u32x8,
+};
 pub use texture::{
-    LinearTexture2D, fast_exp2_x8, fast_log2_x8, linear_to_srgb_channel, linear_to_srgb_x8,
-    srgb_to_linear_channel,
+    LinearTexture2D, fast_atan2_x8, fast_exp2_x8, fast_log2_x8, fast_pow_x8,
+    linear_to_srgb_channel, linear_to_srgb_x8, srgb_to_linear_channel,
 };
 
 fn is_candidate_slate_quad_ps(shader: &DxbcShader, expected_num_textures: usize) -> bool {
@@ -330,8 +335,8 @@ mod tests {
 
         let compiled = compile_sm5_shader(&shader);
         assert!(!compiled.preamble.is_empty());
-        // Kernel should only contain the 4 scalar FAdd instructions for o0.xyzw + Ret (5 insts).
-        assert_eq!(compiled.kernel.len(), 5);
+        // Kernel should only contain the 4 scalar FAdd instructions for o0.xyzw (trailing Ret stripped).
+        assert_eq!(compiled.kernel.len(), 4);
 
         let cb2 = [[1.0f32, 2.0, 3.0, 0.0], [2.0, -1.0, 4.0, 0.0]];
         // dp3([1,2,3], -|[2,-1,4]|) = 1*(-2) + 2*(-1) + 3*(-4) = -16.0
@@ -421,5 +426,32 @@ mod tests {
         assert_eq!(out_r[0], 2.0);
         assert_eq!(out_r[1], 10.0);
         assert_eq!(out_r[4], 2.0);
+    }
+
+    #[test]
+    fn test_fast_atan2_and_pow_accuracy() {
+        let ys = [-1.0f32, -0.5, -0.1, 0.0, 0.1, 0.5, 1.0, 2.0];
+        let xs = [1.0f32, -1.0, 0.5, 1.0, -0.5, 0.25, -2.0, 0.5];
+        let atan_v = fast_atan2_x8(f32x8::from_array(ys), f32x8::from_array(xs)).to_array();
+        for i in 0..8 {
+            let expected = ys[i].atan2(xs[i]);
+            assert!(
+                (atan_v[i] - expected).abs() < 1e-4,
+                "atan2 mismatch at lane {i}: got {}, expected {expected}",
+                atan_v[i]
+            );
+        }
+
+        let bases = [0.05f32, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0];
+        let exps = [2.2f32, 0.4545, 3.0, 1.5, 0.5, 4.0, 2.0, 3.0];
+        let pow_v = fast_pow_x8(f32x8::from_array(bases), f32x8::from_array(exps)).to_array();
+        for i in 0..8 {
+            let expected = bases[i].powf(exps[i]);
+            assert!(
+                (pow_v[i] - expected).abs() < 1e-3,
+                "pow mismatch at lane {i}: got {}, expected {expected}",
+                pow_v[i]
+            );
+        }
     }
 }

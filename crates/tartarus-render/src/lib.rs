@@ -14,9 +14,10 @@ pub use compositor::{
     render_comparison_sheet, resolve_portrait_virtual_path,
 };
 pub use sm5::{
-    CompiledSm5Shader, LinearTexture2D, compile_sm5_shader, compile_sm5_shader_with_cb2,
-    execute_compiled_sm5_ps, execute_sm5_ps, linear_to_srgb_channel, rasterize_compiled_quad,
-    rasterize_sprite_quad_simd, select_slate_default_ps, srgb_to_linear_channel,
+    CompiledSm5Shader, LinearTexture2D, ShaderSpecialization, TexSlotMeta, compile_sm5_shader,
+    compile_sm5_shader_specialized, compile_sm5_shader_with_cb2, execute_compiled_sm5_ps,
+    execute_sm5_ps, linear_to_srgb_channel, rasterize_compiled_quad, rasterize_sprite_quad_simd,
+    select_slate_default_ps, srgb_to_linear_channel,
 };
 
 #[cfg(test)]

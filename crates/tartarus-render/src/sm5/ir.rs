@@ -132,6 +132,8 @@ pub enum VmOp {
     FRcp,
     FExp2,
     FLog2,
+    FPow,
+    FAtan2,
     LinearToSrgb,
     FSin,
     FCos,
@@ -313,4 +315,27 @@ pub struct CompiledSm5Shader {
     pub has_control_flow: bool,
     /// True if any instruction in `kernel` uses dynamic indexable temporary arrays (`x#`).
     pub uses_indexable_temps: bool,
+}
+
+/// Compile-time metadata for a bound `LinearTexture2D` slot.
+#[derive(Clone, Copy, Debug)]
+pub struct TexSlotMeta {
+    /// Earliest slot index bound to the exact same texture and UV clamp mode.
+    pub canonical_slot: u8,
+    /// Bitmask (`bits 0..4`) of channels that contain at least one `0.0` texel.
+    pub has_zeros_mask: u8,
+    /// Quantized fraction (`0..=255`) of `0.0` texels in each channel (`R, G, B, A`).
+    pub zero_frac: [u8; 4],
+    /// Channels (`R, G, B, A`) that have a constant value across the entire texture.
+    pub const_val: [Option<f32>; 4],
+    /// Channels (`G, B, A`) that are bit-for-bit identical to channel `0` (`R`).
+    pub eq_r: [bool; 4],
+}
+
+/// Optional compile-time specialization inputs for `compile_sm5_shader_specialized`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ShaderSpecialization<'a> {
+    pub static_cb2: Option<&'a [[f32; 4]]>,
+    pub static_v1: Option<[f32; 4]>,
+    pub tex_meta: Option<&'a [TexSlotMeta]>,
 }
