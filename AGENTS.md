@@ -5,3 +5,5 @@ If you're running in NixOS always use "nix develop" to run "cargo"
 Always use SIMD and hardware related performance optimizations when writing or planning code if possible
 
 Always write Data oriented code
+
+Don't remove existing comments, you can modify them, improve them but don't remove them unless explicitely told so

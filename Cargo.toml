@@ -78,3 +78,9 @@ opt-level = 3
 
 [profile.release.package.tartarus-scan]
 opt-level = 3
+
+[profile.release.package.tartarus-render]
+opt-level = 3
+
+[profile.release.package.tartarus-extract]
+opt-level = 3

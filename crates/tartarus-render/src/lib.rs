@@ -1,19 +1,22 @@
 //! 1:1 CPU UMG and DirectX SM5 shader renderer for *Torchlight: Infinite* Season 16 (Tartarus)
 //! monster portraits and rarities (`T = 0`).
 
+#![feature(portable_simd)]
 #![forbid(unsafe_code)]
 
 pub mod compositor;
-pub mod sm5_vm;
+pub mod sm5;
+pub use sm5 as sm5_vm;
 
 pub use compositor::{
     BASE_CANVAS_HEIGHT, BASE_CANVAS_WIDTH, BackgroundMode, CellRenderContext, CellRenderRequest,
     CompiledSlateMaterial, DEFAULT_PARTICLE_SEED, RarityMode, RarityTier, RenderedImage,
     render_comparison_sheet, resolve_portrait_virtual_path,
 };
-pub use sm5_vm::{
-    LinearTexture2D, execute_sm5_ps, linear_to_srgb_channel, select_slate_default_ps,
-    srgb_to_linear_channel,
+pub use sm5::{
+    CompiledSm5Shader, LinearTexture2D, compile_sm5_shader, compile_sm5_shader_with_cb2,
+    execute_compiled_sm5_ps, execute_sm5_ps, linear_to_srgb_channel, rasterize_compiled_quad,
+    rasterize_sprite_quad_simd, select_slate_default_ps, srgb_to_linear_channel,
 };
 
 #[cfg(test)]

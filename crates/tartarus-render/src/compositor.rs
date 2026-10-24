@@ -10,8 +10,9 @@ use tartarus_extract::{
     parse_dxbc,
 };
 
-use crate::sm5_vm::{
-    LinearTexture2D, execute_sm5_ps, linear_to_srgb_channel, select_slate_default_ps,
+use crate::sm5::{
+    CompiledSm5Shader, LinearTexture2D, compile_sm5_shader, compile_sm5_shader_with_cb2,
+    rasterize_compiled_quad, rasterize_sprite_quad_simd, select_slate_default_ps,
     srgb_to_linear_channel,
 };
 
@@ -238,11 +239,13 @@ impl RenderedImage {
     }
 }
 
-/// Pre-compiled material + SM5 pixel shader + evaluated `cb2` ready for per-pixel execution.
+/// Pre-compiled material + SM5 pixel shader + evaluated `cb2` ready for SIMD tile execution.
 #[derive(Clone, Debug)]
 pub struct CompiledSlateMaterial {
     pub info: MaterialInfo,
     pub pixel_shader: DxbcShader,
+    pub compiled_ps: CompiledSm5Shader,
+    pub compiled_ps_dynamic: CompiledSm5Shader,
     pub default_cb2: Vec<[f32; 4]>,
     pub default_texture_slots: Vec<String>,
     pub default_slot_clamps: Vec<(bool, bool)>,
@@ -444,6 +447,8 @@ impl CellRenderContext {
             let ps_idx = select_slate_default_ps(&ps_list, num_tex).unwrap_or(0);
             let pixel_shader = ps_list[ps_idx].clone();
             let default_cb2 = mat_info.evaluate_uniform_buffer(&[], &[]);
+            let compiled_ps = compile_sm5_shader_with_cb2(&pixel_shader, Some(&default_cb2));
+            let compiled_ps_dynamic = compile_sm5_shader(&pixel_shader);
             let default_texture_slots = mat_info.resolve_texture_slots(&[]);
             let default_slot_clamps = mat_info.resolve_slot_uv_clamps(&[]);
             for tpath in &default_texture_slots {
@@ -463,6 +468,8 @@ impl CellRenderContext {
                 CompiledSlateMaterial {
                     info: mat_info,
                     pixel_shader,
+                    compiled_ps,
+                    compiled_ps_dynamic,
                     default_cb2,
                     default_texture_slots,
                     default_slot_clamps,
@@ -768,7 +775,7 @@ impl CellRenderContext {
                 width,
                 height,
                 rect,
-                &mat.pixel_shader,
+                &mat.compiled_ps,
                 vertex_color_linear,
                 &mat.default_cb2,
                 &bound_tex,
@@ -860,35 +867,48 @@ impl CellRenderContext {
         }
 
         if let Some(mat) = self.materials.get(&vpath) {
-            let cb2 = if scalar_overrides.is_empty() {
-                mat.default_cb2.clone()
+            let cb2_owned;
+            let cb2: &[[f32; 4]] = if scalar_overrides.is_empty() {
+                &mat.default_cb2
             } else {
-                mat.info.evaluate_uniform_buffer(scalar_overrides, &[])
+                cb2_owned = mat.info.evaluate_uniform_buffer(scalar_overrides, &[]);
+                &cb2_owned
             };
-            let slot_paths = if tex_overrides.is_empty() {
-                mat.default_texture_slots.clone()
+            let slots_owned;
+            let slot_paths: &[String] = if tex_overrides.is_empty() {
+                &mat.default_texture_slots
             } else {
-                mat.info.resolve_texture_slots(tex_overrides)
+                slots_owned = mat.info.resolve_texture_slots(tex_overrides);
+                &slots_owned
             };
-            let slot_clamps = if scalar_overrides.is_empty() {
-                mat.default_slot_clamps.clone()
+            let clamps_owned;
+            let slot_clamps: &[(bool, bool)] = if scalar_overrides.is_empty() {
+                &mat.default_slot_clamps
             } else {
-                mat.info.resolve_slot_uv_clamps(scalar_overrides)
+                clamps_owned = mat.info.resolve_slot_uv_clamps(scalar_overrides);
+                &clamps_owned
             };
             let bound_tex: Vec<&LinearTexture2D> = slot_paths
                 .iter()
                 .map(|p| self.textures.get(p).unwrap_or(&self.white_fallback))
                 .collect();
+            let specialized_ps;
+            let active_ps = if scalar_overrides.is_empty() {
+                &mat.compiled_ps
+            } else {
+                specialized_ps = compile_sm5_shader_with_cb2(&mat.pixel_shader, Some(cb2));
+                &specialized_ps
+            };
             rasterize_material_quad(
                 canvas,
                 width,
                 height,
                 rect,
-                &mat.pixel_shader,
+                active_ps,
                 vertex_color_linear,
-                &cb2,
+                cb2,
                 &bound_tex,
-                &slot_clamps,
+                slot_clamps,
                 mat.is_additive,
             );
         } else if let Some(tex) = self.textures.get(&vpath) {
@@ -935,87 +955,34 @@ fn widget_rect_in_canvas(
     )
 }
 
-fn blend_pixel(dst: &mut [f32; 4], src: [f32; 4], is_additive: bool) {
-    assert!(src[0].is_finite());
-    if is_additive {
-        let r = src[0].max(0.0);
-        let g = src[1].max(0.0);
-        let b = src[2].max(0.0);
-        dst[0] = (dst[0] + r).min(1.0);
-        dst[1] = (dst[1] + g).min(1.0);
-        dst[2] = (dst[2] + b).min(1.0);
-        let lum_a = r.max(g).max(b).clamp(0.0, 1.0);
-        dst[3] = (dst[3] + lum_a * (1.0 - dst[3])).clamp(0.0, 1.0);
-    } else {
-        let a = src[3].clamp(0.0, 1.0);
-        let inv_a = 1.0 - a;
-        dst[0] = (src[0].clamp(0.0, 1.0) * a + dst[0] * inv_a).clamp(0.0, 1.0);
-        dst[1] = (src[1].clamp(0.0, 1.0) * a + dst[1] * inv_a).clamp(0.0, 1.0);
-        dst[2] = (src[2].clamp(0.0, 1.0) * a + dst[2] * inv_a).clamp(0.0, 1.0);
-        dst[3] = (a + dst[3] * inv_a).clamp(0.0, 1.0);
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn rasterize_material_quad(
     canvas: &mut [[f32; 4]],
     width: u32,
     height: u32,
     rect: QuadRect,
-    shader: &DxbcShader,
+    shader: &CompiledSm5Shader,
     vertex_color_linear: [f32; 4],
     cb2: &[[f32; 4]],
     textures: &[&LinearTexture2D],
     tex_clamps: &[(bool, bool)],
     is_additive: bool,
 ) {
-    let qw = rect.x1 - rect.x0;
-    let qh = rect.y1 - rect.y0;
-    if qw <= 1e-3 || qh <= 1e-3 {
-        return;
-    }
-    let min_x = rect.x0.max(rect.clip_x0).floor().max(0.0) as u32;
-    let max_x = rect.x1.min(rect.clip_x1).ceil().min(width as f32) as u32;
-    let min_y = rect.y0.max(rect.clip_y0).floor().max(0.0) as u32;
-    let max_y = rect.y1.min(rect.clip_y1).ceil().min(height as f32) as u32;
-    if min_x >= max_x || min_y >= max_y {
-        return;
-    }
-    assert!(max_y <= height && max_x <= width);
-
-    let w_usize = width as usize;
-    let row_start = (min_y as usize) * w_usize;
-    let row_end = (max_y as usize) * w_usize;
-    for (dy, row) in canvas[row_start..row_end]
-        .chunks_exact_mut(w_usize)
-        .enumerate()
-    {
-        let py = min_y + (dy as u32);
-        let fy = (py as f32) + 0.5;
-        let v = (fy - rect.y0) / qh;
-        if !(0.0..=1.0).contains(&v) {
-            continue;
-        }
-        for px in min_x..max_x {
-            let fx = (px as f32) + 0.5;
-            let u = (fx - rect.x0) / qw;
-            if !(0.0..=1.0).contains(&u) {
-                continue;
-            }
-            if let Some(o0) = execute_sm5_ps(
-                shader,
-                [u, v],
-                [fx, fy],
-                vertex_color_linear,
-                cb2,
-                textures,
-                tex_clamps,
-                0.0,
-            ) {
-                blend_pixel(&mut row[px as usize], o0, is_additive);
-            }
-        }
-    }
+    assert!(width > 0 && height > 0);
+    rasterize_compiled_quad(
+        canvas,
+        width,
+        height,
+        [rect.x0, rect.y0, rect.x1, rect.y1],
+        [rect.clip_x0, rect.clip_y0, rect.clip_x1, rect.clip_y1],
+        shader,
+        vertex_color_linear,
+        cb2,
+        textures,
+        tex_clamps,
+        0.0,
+        is_additive,
+    );
 }
 
 fn rasterize_sprite_quad(
@@ -1026,39 +993,16 @@ fn rasterize_sprite_quad(
     tex: &LinearTexture2D,
     vertex_color_linear: [f32; 4],
 ) {
-    let qw = rect.x1 - rect.x0;
-    let qh = rect.y1 - rect.y0;
-    if qw <= 1e-3 || qh <= 1e-3 {
-        return;
-    }
-    let min_x = rect.x0.max(rect.clip_x0).floor().max(0.0) as u32;
-    let max_x = rect.x1.min(rect.clip_x1).ceil().min(width as f32) as u32;
-    let min_y = rect.y0.max(rect.clip_y0).floor().max(0.0) as u32;
-    let max_y = rect.y1.min(rect.clip_y1).ceil().min(height as f32) as u32;
-    assert!(max_y <= height && max_x <= width);
-
-    for py in min_y..max_y {
-        let fy = (py as f32) + 0.5;
-        let v = (fy - rect.y0) / qh;
-        if !(0.0..=1.0).contains(&v) {
-            continue;
-        }
-        for px in min_x..max_x {
-            let fx = (px as f32) + 0.5;
-            let u = (fx - rect.x0) / qw;
-            if !(0.0..=1.0).contains(&u) {
-                continue;
-            }
-            let t = tex.sample_bilinear(u, v, true, true);
-            let out_srgb = [
-                linear_to_srgb_channel(t[0] * vertex_color_linear[0]),
-                linear_to_srgb_channel(t[1] * vertex_color_linear[1]),
-                linear_to_srgb_channel(t[2] * vertex_color_linear[2]),
-                t[3] * vertex_color_linear[3],
-            ];
-            blend_pixel(&mut canvas[(py * width + px) as usize], out_srgb, false);
-        }
-    }
+    assert!(width > 0 && height > 0);
+    rasterize_sprite_quad_simd(
+        canvas,
+        width,
+        height,
+        [rect.x0, rect.y0, rect.x1, rect.y1],
+        [rect.clip_x0, rect.clip_y0, rect.clip_x1, rect.clip_y1],
+        tex,
+        vertex_color_linear,
+    );
 }
 
 fn init_srgb_canvas(width: u32, height: u32, bg: BackgroundMode) -> Vec<[f32; 4]> {

@@ -98,7 +98,7 @@
         }
         // lib.optionalAttrs (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) {
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "${pkgs.clang}/bin/clang";
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C target-feature=+ssse3,+sse4.2,+aes -C link-arg=-fuse-ld=${pkgs.mold}/bin/mold";
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C target-feature=+ssse3,+sse4.2,+avx2,+fma,+aes -C link-arg=-fuse-ld=${pkgs.mold}/bin/mold";
         };
 
       commonArgs =
