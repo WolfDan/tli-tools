@@ -1829,10 +1829,10 @@ fn split_preamble_and_kernel(
     num_vregs: usize,
     use_ssa: bool,
     tex_meta: Option<&[TexSlotMeta]>,
-) -> (Vec<RawInst>, Vec<RawInst>) {
+) -> (Vec<RawInst>, Vec<RawInst>, Vec<RawInst>, u8) {
     assert!(insts.len() <= MAX_STAGE_INSTS * 4);
     if !use_ssa {
-        return (Vec::new(), insts);
+        return (Vec::new(), Vec::new(), insts, 0);
     }
     let mut is_uniform = vec![true; num_vregs + 8];
     for r in [
@@ -1905,9 +1905,11 @@ fn split_preamble_and_kernel(
     });
     hoist_zero_annihilator_mask(&mut kernel, num_vregs, is_additive, tex_meta);
     fuse_kernel_superinstructions(&mut kernel, num_vregs);
+    let srgb_mask = extract_srgb_output_mask(&mut kernel, num_vregs);
     coalesce_kernel_output_moves(&mut kernel, num_vregs);
+    let row_preamble = extract_row_preamble(&mut kernel, &is_uniform, num_vregs);
     assert!(kernel.len() <= MAX_STAGE_INSTS * 4);
-    (preamble, kernel)
+    (preamble, row_preamble, kernel, srgb_mask)
 }
 
 fn does_zero_reg_kill_pixel(
@@ -2208,8 +2210,75 @@ fn try_fuse_srgb_product(
     }
 }
 
+fn linearize_srgb_inst(inst: RawInst) -> RawInst {
+    assert_eq!(inst.op, VmOp::LinearToSrgb);
+    let one = u16::from(REG_ONE);
+    assert!(one > 0);
+    if inst.src1 == one && inst.src2 == one {
+        RawInst::new(VmOp::Mov, inst.dst, inst.src0, 0, 0)
+    } else if inst.src2 == one {
+        RawInst::new(VmOp::FMul, inst.dst, inst.src0, inst.src1, 0)
+    } else if inst.src1 == one {
+        RawInst::new(VmOp::FMul, inst.dst, inst.src0, inst.src2, 0)
+    } else {
+        RawInst::new(VmOp::FMul3, inst.dst, inst.src0, inst.src1, inst.src2)
+    }
+}
+
+fn extract_srgb_output_mask(kernel: &mut [RawInst], num_vregs: usize) -> u8 {
+    assert!(kernel.len() <= MAX_STAGE_INSTS * 4);
+    assert!(num_vregs >= REG_DYNAMIC_BASE as usize);
+    let mut read_count = vec![0u16; num_vregs + 8];
+    let mut out_mov_mask = vec![0u8; num_vregs + 8];
+    let mut non_out_read = vec![false; num_vregs + 8];
+    let out_r = u16::from(REG_OUT_R);
+    let out_b = u16::from(REG_OUT_B);
+
+    for inst in kernel.iter() {
+        read_count[inst.src0 as usize] = read_count[inst.src0 as usize].saturating_add(1);
+        read_count[inst.src1 as usize] = read_count[inst.src1 as usize].saturating_add(1);
+        if !matches!(
+            inst.op,
+            VmOp::Sample2D | VmOp::TexLoad2D | VmOp::ResInfo2D | VmOp::Gather4
+        ) {
+            read_count[inst.src2 as usize] = read_count[inst.src2 as usize].saturating_add(1);
+        }
+        if inst.op == VmOp::Mov && (out_r..=out_b).contains(&inst.dst) {
+            out_mov_mask[inst.src0 as usize] |= 1 << (inst.dst - out_r);
+        } else {
+            non_out_read[inst.src0 as usize] = true;
+            non_out_read[inst.src1 as usize] = true;
+            if !matches!(
+                inst.op,
+                VmOp::Sample2D | VmOp::TexLoad2D | VmOp::ResInfo2D | VmOp::Gather4
+            ) {
+                non_out_read[inst.src2 as usize] = true;
+            }
+        }
+    }
+
+    let mut srgb_mask = 0u8;
+    for inst in kernel.iter_mut() {
+        if inst.op != VmOp::LinearToSrgb {
+            continue;
+        }
+        if (out_r..=out_b).contains(&inst.dst) && read_count[inst.dst as usize] == 0 {
+            srgb_mask |= 1 << (inst.dst - out_r);
+            *inst = linearize_srgb_inst(*inst);
+        } else if inst.dst >= u16::from(REG_DYNAMIC_BASE)
+            && out_mov_mask[inst.dst as usize] != 0
+            && !non_out_read[inst.dst as usize]
+        {
+            srgb_mask |= out_mov_mask[inst.dst as usize];
+            *inst = linearize_srgb_inst(*inst);
+        }
+    }
+    srgb_mask
+}
+
 fn coalesce_kernel_output_moves(kernel: &mut Vec<RawInst>, num_vregs: usize) {
     assert!(kernel.len() <= MAX_STAGE_INSTS * 4);
+    assert!(num_vregs >= REG_DYNAMIC_BASE as usize);
     let mut read_count = vec![0u16; num_vregs + 8];
     let mut def_pc: Vec<Option<usize>> = vec![None; num_vregs + 8];
 
@@ -2247,6 +2316,76 @@ fn coalesce_kernel_output_moves(kernel: &mut Vec<RawInst>, num_vregs: usize) {
         idx += 1;
         keep
     });
+
+    if kernel.len() == 6
+        && kernel[0].op == VmOp::Sample2D
+        && kernel[1].op == VmOp::EarlyOutZero
+        && kernel[1].src0 == kernel[0].dst + 3
+        && (0..4u16).all(|c| {
+            let m = kernel[2 + c as usize];
+            m.op == VmOp::Mov && m.dst == u16::from(REG_OUT_R) + c && m.src0 == kernel[0].dst + c
+        })
+    {
+        kernel[0].dst = u16::from(REG_OUT_R);
+        kernel[1].src0 = u16::from(REG_OUT_A);
+        kernel.truncate(2);
+    }
+}
+
+fn extract_row_preamble(
+    kernel: &mut Vec<RawInst>,
+    is_uniform: &[bool],
+    num_vregs: usize,
+) -> Vec<RawInst> {
+    assert!(kernel.len() <= MAX_STAGE_INSTS * 4);
+    assert!(is_uniform.len() >= num_vregs);
+    let mut is_row_inv = is_uniform.to_vec();
+    for r in [
+        super::ir::REG_V0_Y,
+        super::ir::REG_V2_Y,
+        super::ir::REG_V3_V,
+        super::ir::REG_V4_Y,
+        super::ir::REG_V4_W,
+    ] {
+        is_row_inv[r as usize] = true;
+    }
+
+    let mut write_count = vec![0u16; num_vregs + 8];
+    for inst in kernel.iter() {
+        if matches!(
+            inst.op,
+            VmOp::Sample2D | VmOp::TexLoad2D | VmOp::ResInfo2D | VmOp::Gather4
+        ) {
+            for c in 0..4usize {
+                write_count[(inst.dst as usize) + c] =
+                    write_count[(inst.dst as usize) + c].saturating_add(1);
+            }
+        } else {
+            write_count[inst.dst as usize] = write_count[inst.dst as usize].saturating_add(1);
+        }
+    }
+
+    let mut row_preamble = Vec::new();
+    let mut rem_kernel = Vec::with_capacity(kernel.len());
+    let dyn_base = u16::from(REG_DYNAMIC_BASE);
+
+    for inst in kernel.drain(..) {
+        if is_pure_ssa_alu(inst.op)
+            && !matches!(inst.op, VmOp::FDdx | VmOp::FDdy)
+            && inst.dst >= dyn_base
+            && write_count[inst.dst as usize] == 1
+            && is_row_inv[inst.src0 as usize]
+            && is_row_inv[inst.src1 as usize]
+            && is_row_inv[inst.src2 as usize]
+        {
+            is_row_inv[inst.dst as usize] = true;
+            row_preamble.push(inst);
+        } else {
+            rem_kernel.push(inst);
+        }
+    }
+    *kernel = rem_kernel;
+    row_preamble
 }
 
 fn map_raw_to_vm_inst(inst: &RawInst, phys: &[u8]) -> VmInst {
@@ -2283,21 +2422,26 @@ fn map_raw_to_vm_inst(inst: &RawInst, phys: &[u8]) -> VmInst {
     VmInst::with_aux_imm(inst.op, dst, src0, src1, src2, inst.aux, inst.imm16)
 }
 
-fn allocate_physical_regs(
-    preamble_raw: &[RawInst],
-    kernel_raw: &[RawInst],
-    cb2_vregs: &[VregCb2Binding],
-    const_vregs: &[VregConstBinding],
-    num_vregs: usize,
-    use_ssa: bool,
-) -> (
+type LoweredStages = (
+    Vec<VmInst>,
     Vec<VmInst>,
     Vec<VmInst>,
     Vec<Cb2RegBinding>,
     Vec<ConstRegBinding>,
     usize,
     usize,
-) {
+    usize,
+);
+
+fn allocate_physical_regs(
+    preamble_raw: &[RawInst],
+    row_preamble_raw: &[RawInst],
+    kernel_raw: &[RawInst],
+    cb2_vregs: &[VregCb2Binding],
+    const_vregs: &[VregConstBinding],
+    num_vregs: usize,
+    use_ssa: bool,
+) -> LoweredStages {
     assert!(num_vregs >= REG_DYNAMIC_BASE as usize);
     let mut phys = vec![0xFFu8; num_vregs + 8];
     for (i, slot) in phys.iter_mut().enumerate().take(REG_DYNAMIC_BASE as usize) {
@@ -2305,44 +2449,141 @@ fn allocate_physical_regs(
     }
 
     if !use_ssa {
-        for (i, slot) in phys
-            .iter_mut()
-            .enumerate()
-            .take(num_vregs.min(REG_FILE_SIZE))
-            .skip(REG_DYNAMIC_BASE as usize)
-        {
-            *slot = i as u8;
-        }
-        let used = num_vregs.min(REG_FILE_SIZE);
-        let pre: Vec<VmInst> = preamble_raw
-            .iter()
-            .map(|r| map_raw_to_vm_inst(r, &phys))
-            .collect();
-        let ker: Vec<VmInst> = kernel_raw
-            .iter()
-            .map(|r| map_raw_to_vm_inst(r, &phys))
-            .collect();
-        let cb2 = cb2_vregs
-            .iter()
-            .map(|b| Cb2RegBinding {
-                dst_reg: phys[b.vreg as usize],
-                comp: b.comp,
-                vec_idx: b.vec_idx,
-            })
-            .collect();
-        let cst = const_vregs
-            .iter()
-            .map(|b| ConstRegBinding {
-                dst_reg: phys[b.vreg as usize],
-                bits: b.bits,
-            })
-            .collect();
-        return (pre, ker, cb2, cst, used, used);
+        return lower_non_ssa_stages(
+            preamble_raw,
+            kernel_raw,
+            cb2_vregs,
+            const_vregs,
+            &mut phys,
+            num_vregs,
+        );
     }
 
+    let (read_in_pre, read_in_ker) =
+        mark_stage_register_reads(preamble_raw, row_preamble_raw, kernel_raw, num_vregs);
+    let mut next_phys = REG_DYNAMIC_BASE as usize;
+    let alloc_one = |next: &mut usize| -> u8 {
+        let r = (*next).min(REG_FILE_SIZE - 1) as u8;
+        if *next < REG_FILE_SIZE {
+            *next += 1;
+        }
+        r
+    };
+
+    let (const_out, cb2_out) = alloc_uniform_bindings(
+        const_vregs,
+        cb2_vregs,
+        &read_in_pre,
+        &read_in_ker,
+        &mut phys,
+        &mut next_phys,
+        alloc_one,
+    );
+    for inst in preamble_raw {
+        let v = inst.dst as usize;
+        if v >= REG_DYNAMIC_BASE as usize && phys[v] == 0xFF {
+            phys[v] = alloc_one(&mut next_phys);
+        }
+    }
+    let num_uniform_regs = next_phys;
+
+    for inst in row_preamble_raw {
+        let v = inst.dst as usize;
+        if v >= REG_DYNAMIC_BASE as usize && phys[v] == 0xFF {
+            phys[v] = alloc_one(&mut next_phys);
+        }
+    }
+    let num_row_regs = next_phys;
+
+    alloc_kernel_temporaries(
+        kernel_raw,
+        &mut phys,
+        &mut next_phys,
+        num_row_regs,
+        num_vregs,
+        alloc_one,
+    );
+
+    let pre = preamble_raw
+        .iter()
+        .map(|r| map_raw_to_vm_inst(r, &phys))
+        .collect();
+    let row_pre = row_preamble_raw
+        .iter()
+        .map(|r| map_raw_to_vm_inst(r, &phys))
+        .collect();
+    let ker = kernel_raw
+        .iter()
+        .map(|r| map_raw_to_vm_inst(r, &phys))
+        .collect();
+    assert!(next_phys <= REG_FILE_SIZE);
+    (
+        pre,
+        row_pre,
+        ker,
+        cb2_out,
+        const_out,
+        num_uniform_regs,
+        num_row_regs,
+        next_phys.max(REG_DYNAMIC_BASE as usize),
+    )
+}
+
+fn lower_non_ssa_stages(
+    preamble_raw: &[RawInst],
+    kernel_raw: &[RawInst],
+    cb2_vregs: &[VregCb2Binding],
+    const_vregs: &[VregConstBinding],
+    phys: &mut [u8],
+    num_vregs: usize,
+) -> LoweredStages {
+    assert!(phys.len() >= num_vregs);
+    for (i, slot) in phys
+        .iter_mut()
+        .enumerate()
+        .take(num_vregs.min(REG_FILE_SIZE))
+        .skip(REG_DYNAMIC_BASE as usize)
+    {
+        *slot = i as u8;
+    }
+    let used = num_vregs.min(REG_FILE_SIZE);
+    let pre = preamble_raw
+        .iter()
+        .map(|r| map_raw_to_vm_inst(r, phys))
+        .collect();
+    let ker = kernel_raw
+        .iter()
+        .map(|r| map_raw_to_vm_inst(r, phys))
+        .collect();
+    let cb2 = cb2_vregs
+        .iter()
+        .map(|b| Cb2RegBinding {
+            dst_reg: phys[b.vreg as usize],
+            comp: b.comp,
+            vec_idx: b.vec_idx,
+        })
+        .collect();
+    let cst = const_vregs
+        .iter()
+        .map(|b| ConstRegBinding {
+            dst_reg: phys[b.vreg as usize],
+            bits: b.bits,
+        })
+        .collect();
+    assert!(used <= REG_FILE_SIZE);
+    (pre, Vec::new(), ker, cb2, cst, used, used, used)
+}
+
+fn mark_stage_register_reads(
+    preamble_raw: &[RawInst],
+    row_preamble_raw: &[RawInst],
+    kernel_raw: &[RawInst],
+    num_vregs: usize,
+) -> (Vec<bool>, Vec<bool>) {
+    assert!(num_vregs >= REG_DYNAMIC_BASE as usize);
     let mut read_in_pre = vec![false; num_vregs + 8];
     let mut read_in_ker = vec![false; num_vregs + 8];
-    for inst in preamble_raw {
+    for inst in preamble_raw.iter().chain(row_preamble_raw.iter()) {
         read_in_pre[inst.src0 as usize] = true;
         read_in_pre[inst.src1 as usize] = true;
         read_in_pre[inst.src2 as usize] = true;
@@ -2357,21 +2598,25 @@ fn allocate_physical_regs(
             read_in_ker[inst.src2 as usize] = true;
         }
     }
+    assert_eq!(read_in_pre.len(), read_in_ker.len());
+    (read_in_pre, read_in_ker)
+}
 
-    let mut next_phys = REG_DYNAMIC_BASE as usize;
-    let alloc_one = |next: &mut usize| -> u8 {
-        let r = (*next).min(REG_FILE_SIZE - 1) as u8;
-        if *next < REG_FILE_SIZE {
-            *next += 1;
-        }
-        r
-    };
-
+fn alloc_uniform_bindings(
+    const_vregs: &[VregConstBinding],
+    cb2_vregs: &[VregCb2Binding],
+    read_in_pre: &[bool],
+    read_in_ker: &[bool],
+    phys: &mut [u8],
+    next_phys: &mut usize,
+    alloc_one: fn(&mut usize) -> u8,
+) -> (Vec<ConstRegBinding>, Vec<Cb2RegBinding>) {
+    assert!(*next_phys >= REG_DYNAMIC_BASE as usize);
     let mut const_out = Vec::new();
     for b in const_vregs {
         let v = b.vreg as usize;
         if read_in_pre[v] || read_in_ker[v] {
-            let p = alloc_one(&mut next_phys);
+            let p = alloc_one(next_phys);
             phys[v] = p;
             const_out.push(ConstRegBinding {
                 dst_reg: p,
@@ -2383,7 +2628,7 @@ fn allocate_physical_regs(
     for b in cb2_vregs {
         let v = b.vreg as usize;
         if read_in_pre[v] || read_in_ker[v] {
-            let p = alloc_one(&mut next_phys);
+            let p = alloc_one(next_phys);
             phys[v] = p;
             cb2_out.push(Cb2RegBinding {
                 dst_reg: p,
@@ -2392,14 +2637,19 @@ fn allocate_physical_regs(
             });
         }
     }
-    for inst in preamble_raw {
-        let v = inst.dst as usize;
-        if v >= REG_DYNAMIC_BASE as usize && phys[v] == 0xFF {
-            phys[v] = alloc_one(&mut next_phys);
-        }
-    }
-    let num_uniform_regs = next_phys;
+    assert!(*next_phys <= REG_FILE_SIZE);
+    (const_out, cb2_out)
+}
 
+fn alloc_kernel_temporaries(
+    kernel_raw: &[RawInst],
+    phys: &mut [u8],
+    next_phys: &mut usize,
+    num_row_regs: usize,
+    num_vregs: usize,
+    alloc_one: fn(&mut usize) -> u8,
+) {
+    assert!(num_row_regs >= REG_DYNAMIC_BASE as usize);
     // Allocate contiguous 4-register blocks for texture samples first, then linear-scan recycling
     // for all single-channel scalar temporaries in `kernel_raw`.
     for inst in kernel_raw {
@@ -2409,7 +2659,7 @@ fn allocate_physical_regs(
         ) && inst.dst >= u16::from(REG_DYNAMIC_BASE)
         {
             for c in 0..4usize {
-                phys[(inst.dst as usize) + c] = alloc_one(&mut next_phys);
+                phys[(inst.dst as usize) + c] = alloc_one(next_phys);
             }
         }
     }
@@ -2431,14 +2681,14 @@ fn allocate_physical_regs(
     for (pc, inst) in kernel_raw.iter().enumerate() {
         let d = inst.dst as usize;
         if d >= REG_DYNAMIC_BASE as usize && phys[d] == 0xFF {
-            phys[d] = free_pool.pop().unwrap_or_else(|| alloc_one(&mut next_phys));
+            phys[d] = free_pool.pop().unwrap_or_else(|| alloc_one(next_phys));
         }
         for &src in &[inst.src0, inst.src1, inst.src2] {
             let s = src as usize;
             if s >= REG_DYNAMIC_BASE as usize
                 && !released[s]
                 && last_use[s] == pc
-                && (phys[s] as usize) >= num_uniform_regs
+                && (phys[s] as usize) >= num_row_regs
             {
                 // Do not recycle channels belonging to a 4-register texture sample block early
                 // unless all uses of that channel have completed.
@@ -2447,24 +2697,7 @@ fn allocate_physical_regs(
             }
         }
     }
-
-    let pre: Vec<VmInst> = preamble_raw
-        .iter()
-        .map(|r| map_raw_to_vm_inst(r, &phys))
-        .collect();
-    let ker: Vec<VmInst> = kernel_raw
-        .iter()
-        .map(|r| map_raw_to_vm_inst(r, &phys))
-        .collect();
-    assert!(next_phys <= REG_FILE_SIZE);
-    (
-        pre,
-        ker,
-        cb2_out,
-        const_out,
-        num_uniform_regs,
-        next_phys.max(REG_DYNAMIC_BASE as usize),
-    )
+    assert!(*next_phys <= REG_FILE_SIZE);
 }
 
 fn link_control_flow_jumps(insts: &mut [VmInst]) {
@@ -2530,7 +2763,46 @@ fn link_control_flow_jumps(insts: &mut [VmInst]) {
     assert!(if_stack.is_empty() || !insts.is_empty());
 }
 
-/// Compiles a parsed `DxbcShader` into a two-stage scalarized `CompiledSm5Shader` using optional
+fn tag_row_invariant_samples(
+    kernel: &mut [VmInst],
+    num_row_regs: usize,
+    has_control_flow: bool,
+) -> ([(u8, u8); 4], u8) {
+    assert!(num_row_regs <= REG_FILE_SIZE);
+    let mut row_y_samples = [(0u8, 0u8); 4];
+    let mut num_row_y = 0usize;
+    if has_control_flow {
+        return (row_y_samples, 0);
+    }
+    for inst in kernel.iter_mut() {
+        let is_row_v = matches!(
+            inst.src1,
+            super::ir::REG_V0_Y
+                | super::ir::REG_V2_Y
+                | super::ir::REG_V3_V
+                | super::ir::REG_V4_Y
+                | super::ir::REG_V4_W
+        ) || (inst.src1 >= REG_DYNAMIC_BASE && (inst.src1 as usize) < num_row_regs);
+        if inst.op == VmOp::Sample2D && inst.imm16 == 228 && is_row_v && num_row_y < 4 {
+            let slot_idx = if let Some(prev) = row_y_samples[..num_row_y]
+                .iter()
+                .position(|&pair| pair == (inst.src2, inst.src1))
+            {
+                prev
+            } else {
+                let idx = num_row_y;
+                row_y_samples[idx] = (inst.src2, inst.src1);
+                num_row_y += 1;
+                idx
+            };
+            inst.imm16 = 228 | (((slot_idx as u16) + 1) << 9);
+        }
+    }
+    assert!(num_row_y <= 4);
+    (row_y_samples, num_row_y as u8)
+}
+
+/// Compiles a parsed `DxbcShader` into a three-stage scalarized `CompiledSm5Shader` using optional
 /// compile-time `cb2`, `v1` vertex color, and `TexSlotMeta` specialization hints.
 pub fn compile_sm5_shader_specialized(
     shader: &DxbcShader,
@@ -2564,24 +2836,35 @@ pub fn compile_sm5_shader_specialized(
         num_vregs,
         builder.has_control_flow || builder.uses_indexable_temps,
     );
-    let (preamble_raw, kernel_raw) =
+    let (preamble_raw, row_preamble_raw, kernel_raw, srgb_encode_mask) =
         split_preamble_and_kernel(dce_insts, num_vregs, builder.use_ssa, spec.tex_meta);
-    let (preamble, mut kernel, cb2_bindings, const_bindings, num_uniform_regs, num_regs_used) =
-        allocate_physical_regs(
-            &preamble_raw,
-            &kernel_raw,
-            &builder.cb2_bindings,
-            &builder.const_bindings,
-            num_vregs,
-            builder.use_ssa,
-        );
+    let (
+        preamble,
+        row_preamble,
+        mut kernel,
+        cb2_bindings,
+        const_bindings,
+        num_uniform_regs,
+        num_row_regs,
+        num_regs_used,
+    ) = allocate_physical_regs(
+        &preamble_raw,
+        &row_preamble_raw,
+        &kernel_raw,
+        &builder.cb2_bindings,
+        &builder.const_bindings,
+        num_vregs,
+        builder.use_ssa,
+    );
     link_control_flow_jumps(&mut kernel);
     assert!(num_regs_used <= REG_FILE_SIZE);
+    let (row_y_samples, num_row_y_samples) =
+        tag_row_invariant_samples(&mut kernel, num_row_regs, builder.has_control_flow);
 
     let uv_kill_slot_ch = if !builder.has_control_flow
         && kernel.len() >= 2
         && kernel[0].op == VmOp::Sample2D
-        && kernel[0].imm16 == 228
+        && (kernel[0].imm16 & 0x01FF) == 228
         && matches!(
             kernel[0].src0,
             super::ir::REG_V3_U | super::ir::REG_V4_X | super::ir::REG_V4_Z
@@ -2599,18 +2882,27 @@ pub fn compile_sm5_shader_specialized(
         None
     };
 
-    CompiledSm5Shader {
+    let mut compiled = CompiledSm5Shader {
         preamble,
+        row_preamble,
         kernel,
         cb2_bindings,
         const_bindings,
         icb_vec4s: shader.icb_vec4s.clone(),
+        static_uniform_regs: Vec::new(),
+        has_static_preamble: false,
         num_uniform_regs,
+        num_row_regs,
         num_regs_used,
+        srgb_encode_mask,
         has_control_flow: builder.has_control_flow,
         uses_indexable_temps: builder.uses_indexable_temps,
         uv_kill_slot_ch,
-    }
+        row_y_samples,
+        num_row_y_samples,
+    };
+    super::exec::populate_static_uniform_regs(&mut compiled, spec);
+    compiled
 }
 
 /// Compiles a parsed `DxbcShader` into a two-stage scalarized `CompiledSm5Shader`, optionally

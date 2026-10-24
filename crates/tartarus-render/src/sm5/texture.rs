@@ -126,6 +126,7 @@ pub struct LinearTexture2D {
     pub const_val: [Option<f32>; 4],
     pub eq_r: [bool; 4],
     pub nonzero_uv_bounds: [[f32; 4]; 4],
+    pub coarse_nonzero_mask: [[u16; 16]; 4],
     pub channels: [Vec<f32>; 4],
 }
 
@@ -372,6 +373,59 @@ pub fn linear_to_srgb_x8(c: f32x8) -> f32x8 {
     is_low.select(low, high).simd_max(zero).simd_min(one)
 }
 
+/// Converts 3 (`R, G, B`) 8-wide Linear light vectors (`[0.0, 1.0]`) to sRGB simultaneously,
+/// pipelining the dual `vsqrtps` fourth-root (`x^(1/4)`) and 3 Horner FMA chains across AVX2 ports.
+#[inline(always)]
+pub fn linear_to_srgb_rgb_x8(rgb: [f32x8; 3]) -> [f32x8; 3] {
+    assert_eq!(SIMD_LANES, 8);
+    let zero = f32x8::splat(0.0);
+    let one = f32x8::splat(1.0);
+    let thresh = f32x8::splat(0.003_130_8);
+    let scale_low = f32x8::splat(12.92);
+    let xr = rgb[0].simd_max(zero).simd_min(one);
+    let xg = rgb[1].simd_max(zero).simd_min(one);
+    let xb = rgb[2].simd_max(zero).simd_min(one);
+    let low_r = xr * scale_low;
+    let low_g = xg * scale_low;
+    let low_b = xb * scale_low;
+    let is_low_r = xr.simd_le(thresh);
+    let is_low_g = xg.simd_le(thresh);
+    let is_low_b = xb.simd_le(thresh);
+    if (is_low_r & is_low_g & is_low_b).all() {
+        return [low_r, low_g, low_b];
+    }
+    let q1_r = xr.sqrt();
+    let q1_g = xg.sqrt();
+    let q1_b = xb.sqrt();
+    let qr = q1_r.sqrt();
+    let qg = q1_g.sqrt();
+    let qb = q1_b.sqrt();
+    let [c0, c1, c2, c3, c4, c5] = SRGB_Q_POLY;
+    let (c5_v, c4_v, c3_v) = (f32x8::splat(c5), f32x8::splat(c4), f32x8::splat(c3));
+    let (c2_v, c1_v, c0_v) = (f32x8::splat(c2), f32x8::splat(c1), f32x8::splat(c0));
+    let mut hr = c5_v * qr + c4_v;
+    let mut hg = c5_v * qg + c4_v;
+    let mut hb = c5_v * qb + c4_v;
+    hr = hr * qr + c3_v;
+    hg = hg * qg + c3_v;
+    hb = hb * qb + c3_v;
+    hr = hr * qr + c2_v;
+    hg = hg * qg + c2_v;
+    hb = hb * qb + c2_v;
+    hr = hr * qr + c1_v;
+    hg = hg * qg + c1_v;
+    hb = hb * qb + c1_v;
+    hr = hr * qr + c0_v;
+    hg = hg * qg + c0_v;
+    hb = hb * qb + c0_v;
+    assert!(c5.is_finite());
+    [
+        is_low_r.select(low_r, hr).simd_max(zero).simd_min(one),
+        is_low_g.select(low_g, hg).simd_max(zero).simd_min(one),
+        is_low_b.select(low_b, hb).simd_max(zero).simd_min(one),
+    ]
+}
+
 type DecodedSoaData = (
     [Vec<f32>; 4],
     [Option<f32>; 4],
@@ -379,7 +433,25 @@ type DecodedSoaData = (
     u8,
     [u8; 4],
     [[f32; 4]; 4],
+    [[u16; 16]; 4],
 );
+
+fn build_coarse_axis_lut(dim: usize) -> Vec<u16> {
+    assert!(dim > 0);
+    let mut lut = vec![0u16; dim];
+    let dim_f = dim as f32;
+    let dim_i = dim as i32;
+    for g in 0..16u32 {
+        let i_min = ((g as f32) * 0.0625 * dim_f - 0.5).floor() as i32 - 1;
+        let i_max = (((g + 1) as f32) * 0.0625 * dim_f - 0.5).ceil() as i32 + 1;
+        for i in i_min..=i_max {
+            let idx = i.rem_euclid(dim_i) as usize;
+            lut[idx] |= 1u16 << g;
+        }
+    }
+    assert_eq!(lut.len(), dim);
+    lut
+}
 
 fn compute_nonzero_uv_rect(
     min_x: usize,
@@ -433,15 +505,20 @@ fn decode_rgba8_to_soa(
     let mut zero_count = [0usize; 4];
     let (mut min_x, mut max_x) = ([width; 4], [0usize; 4]);
     let (mut min_y, mut max_y) = ([height; 4], [0usize; 4]);
+    let mut coarse = [[0u16; 16]; 4];
+    let x_lut = build_coarse_axis_lut(width);
+    let y_lut = build_coarse_axis_lut(height);
     let mut chans: [Vec<f32>; 4] = std::array::from_fn(|_| Vec::with_capacity(padded_total));
     let inv_255 = 1.0f32 / 255.0;
     let lut = &SRGB8_TO_LINEAR_LUT;
     let px_slice = rgba8.as_chunks::<4>().0;
     let total_px = px_slice.len().max(1);
 
-    for y in 0..height {
+    for (y, &y_bits) in y_lut.iter().enumerate() {
         let row_px = &px_slice[y * width..(y + 1) * width];
+        let mut row_gx = [0u16; 4];
         for (x, px) in row_px.iter().enumerate() {
+            let x_bits = x_lut[x];
             for c in 0..4 {
                 is_const[c] &= px[c] == first[c];
                 if px[c] == 0 {
@@ -452,26 +529,57 @@ fn decode_rgba8_to_soa(
                     max_x[c] = max_x[c].max(x);
                     min_y[c] = min_y[c].min(y);
                     max_y[c] = max_y[c].max(y);
+                    row_gx[c] |= x_bits;
                 }
             }
             eq_r[1] &= px[1] == px[0];
             eq_r[2] &= px[2] == px[0];
             for c in 0..3 {
-                let v = if srgb {
+                chans[c].push(if srgb {
                     lut[px[c] as usize]
                 } else {
                     (px[c] as f32) * inv_255
-                };
-                chans[c].push(v);
+                });
             }
             chans[3].push((px[3] as f32) * inv_255);
         }
-        // Right wrap-guard column: `row[y][width] = row[y][0]`.
-        for ch in &mut chans {
-            let row0_val = ch[y * stride];
-            ch.push(row0_val);
+        for c in 0..4 {
+            let row0_val = chans[c][y * stride];
+            chans[c].push(row0_val);
+            for (gy, slot) in coarse[c].iter_mut().enumerate() {
+                if (y_bits >> gy) & 1 != 0 {
+                    *slot |= row_gx[c];
+                }
+            }
         }
     }
+    finalize_soa_metadata(
+        chans,
+        is_const,
+        eq_r,
+        has_zeros_mask,
+        zero_count,
+        (min_x, max_x, min_y, max_y),
+        (width, height, stride, total_px, padded_total),
+        coarse,
+    )
+}
+
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn finalize_soa_metadata(
+    mut chans: [Vec<f32>; 4],
+    is_const: [bool; 4],
+    mut eq_r: [bool; 4],
+    has_zeros_mask: u8,
+    zero_count: [usize; 4],
+    extents: ([usize; 4], [usize; 4], [usize; 4], [usize; 4]),
+    dims: (usize, usize, usize, usize, usize),
+    coarse: [[u16; 16]; 4],
+) -> DecodedSoaData {
+    let (min_x, max_x, min_y, max_y) = extents;
+    let (width, height, stride, total_px, padded_total) = dims;
+    assert!(stride == width + 1);
+    assert!(total_px > 0);
     let mut const_val = [None; 4];
     let mut zero_frac = [0u8; 4];
     let mut nz_bounds = [[0.0f32, 0.0, 1.0, 1.0]; 4];
@@ -487,7 +595,15 @@ fn decode_rgba8_to_soa(
             compute_nonzero_uv_rect(min_x[c], max_x[c], min_y[c], max_y[c], width, height);
         chans[c].resize(padded_total, 0.0);
     }
-    (chans, const_val, eq_r, has_zeros_mask, zero_frac, nz_bounds)
+    (
+        chans,
+        const_val,
+        eq_r,
+        has_zeros_mask,
+        zero_frac,
+        nz_bounds,
+        coarse,
+    )
 }
 
 impl LinearTexture2D {
@@ -500,8 +616,15 @@ impl LinearTexture2D {
         let padded_len = guarded_len.next_power_of_two().max(1);
         let padded_total = padded_len + stride + 2;
         assert_eq!(tex.rgba8.len(), tex.width * tex.height * 4);
-        let (channels, const_val, eq_r, has_zeros_mask, zero_frac, nonzero_uv_bounds) =
-            decode_rgba8_to_soa(&tex.rgba8, tex.width, tex.height, tex.srgb, padded_total);
+        let (
+            channels,
+            const_val,
+            eq_r,
+            has_zeros_mask,
+            zero_frac,
+            nonzero_uv_bounds,
+            coarse_nonzero_mask,
+        ) = decode_rgba8_to_soa(&tex.rgba8, tex.width, tex.height, tex.srgb, padded_total);
         let is_pot_x = tex.width.is_power_of_two();
         let is_pot_y = tex.height.is_power_of_two();
         Self {
@@ -526,6 +649,7 @@ impl LinearTexture2D {
             const_val,
             eq_r,
             nonzero_uv_bounds,
+            coarse_nonzero_mask,
             channels,
         }
     }
@@ -536,10 +660,12 @@ impl LinearTexture2D {
         assert!(rgba[3].is_finite());
         let mut has_zeros_mask = 0u8;
         let mut zero_frac = [0u8; 4];
+        let mut coarse_nonzero_mask = [[0xFFFFu16; 16]; 4];
         for (c, &v) in rgba.iter().enumerate() {
             if v == 0.0 {
                 has_zeros_mask |= 1 << c;
                 zero_frac[c] = 255;
+                coarse_nonzero_mask[c] = [0u16; 16];
             }
         }
         Self {
@@ -564,6 +690,7 @@ impl LinearTexture2D {
             const_val: [Some(rgba[0]), Some(rgba[1]), Some(rgba[2]), Some(rgba[3])],
             eq_r: [false; 4],
             nonzero_uv_bounds: [[0.0, 0.0, 1.0, 1.0]; 4],
+            coarse_nonzero_mask,
             channels: [
                 vec![rgba[0]; 8],
                 vec![rgba[1]; 8],
@@ -583,6 +710,38 @@ impl LinearTexture2D {
             const_val: self.const_val,
             eq_r: self.eq_r,
         }
+    }
+
+    /// Returns the 16-bit horizontal UV occupancy bitmask for channel `ch` across `[v0, v1]`.
+    #[inline(always)]
+    pub fn row_occupancy_mask(&self, ch: usize, v0: f32, v1: f32) -> u16 {
+        assert!(ch < 4);
+        assert!(v0.is_finite());
+        if v0 < 0.0 || v1 > 1.0 {
+            return 0xFFFF;
+        }
+        let gy0 = ((v0 * 16.0) as usize).min(15);
+        let gy1 = ((v1 * 16.0) as usize).min(15);
+        let rows = &self.coarse_nonzero_mask[ch];
+        rows[gy0] | rows[gy1]
+    }
+
+    /// Precomputes row-invariant `(iy0 * stride, ty)` for a `V` coordinate vector `v`.
+    #[inline(always)]
+    pub fn precompute_row_y_x8(&self, v: f32x8, clamp_v_override: bool) -> (i32x8, f32x8) {
+        assert!(self.height > 0);
+        assert_eq!(SIMD_LANES, 8);
+        let cv = self.clamp_y || clamp_v_override;
+        let (iy0, ty) = coord_and_frac_x8(
+            v,
+            self.height_f32,
+            self.height_m1_f32,
+            self.height as i32,
+            self.height_mask,
+            self.is_pot_y,
+            cv,
+        );
+        (iy0 * i32x8::splat(self.stride as i32), ty)
     }
 
     /// Loads an exact integer texel `(x, y)` clamped to `[0..width-1, 0..height-1]`.
@@ -628,22 +787,21 @@ impl LinearTexture2D {
         out
     }
 
-    /// Samples 8 pixels `(u, v)` simultaneously using 8-wide SIMD bilinear filtering over the
-    /// 2D wrap-guard padded SoA layout (`stride = width + 1`), evaluating only `active_mask & 0x0F`.
+    /// Samples 8 pixels `(u, v)` using precomputed row-invariant `(iy0_stride, ty)` from
+    /// `precompute_row_y_x8`, cutting coordinate setup instructions in half.
     #[inline(always)]
-    pub fn sample_bilinear_x8(
+    pub fn sample_bilinear_with_y_x8(
         &self,
         u: f32x8,
-        v: f32x8,
+        iy0_stride: i32x8,
+        ty: f32x8,
         clamp_u_override: bool,
-        clamp_v_override: bool,
         active_mask: u8,
     ) -> [f32x8; 4] {
         assert!(self.width > 0 && self.height > 0);
         let dst_mask = active_mask & 0x0F;
         assert!(dst_mask <= 0x0F);
         let cu = self.clamp_x || clamp_u_override;
-        let cv = self.clamp_y || clamp_v_override;
         let (ix0, tx) = coord_and_frac_x8(
             u,
             self.width_f32,
@@ -653,18 +811,9 @@ impl LinearTexture2D {
             self.is_pot_x,
             cu,
         );
-        let (iy0, ty) = coord_and_frac_x8(
-            v,
-            self.height_f32,
-            self.height_m1_f32,
-            self.height as i32,
-            self.height_mask,
-            self.is_pot_y,
-            cv,
-        );
         let stride = self.stride;
         let bmask = self.buf_mask;
-        let i00 = (iy0 * i32x8::splat(stride as i32) + ix0).to_array();
+        let i00 = (iy0_stride + ix0).to_array();
         let mut out = [f32x8::splat(0.0); 4];
         if active_mask >= 16 {
             let kc = ((active_mask >> 4).trailing_zeros() as usize) & 3;
@@ -681,6 +830,23 @@ impl LinearTexture2D {
             }
         }
         out
+    }
+
+    /// Samples 8 pixels `(u, v)` simultaneously using 8-wide SIMD bilinear filtering over the
+    /// 2D wrap-guard padded SoA layout (`stride = width + 1`), evaluating only `active_mask & 0x0F`.
+    #[inline(always)]
+    pub fn sample_bilinear_x8(
+        &self,
+        u: f32x8,
+        v: f32x8,
+        clamp_u_override: bool,
+        clamp_v_override: bool,
+        active_mask: u8,
+    ) -> [f32x8; 4] {
+        assert!(self.width > 0);
+        assert!(self.height > 0);
+        let (iy0_stride, ty) = self.precompute_row_y_x8(v, clamp_v_override);
+        self.sample_bilinear_with_y_x8(u, iy0_stride, ty, clamp_u_override, active_mask)
     }
 }
 

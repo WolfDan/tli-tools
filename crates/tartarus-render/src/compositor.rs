@@ -6,9 +6,9 @@ use std::simd::{StdFloat, prelude::*};
 
 use serde::{Deserialize, Serialize};
 use tartarus_extract::{
-    DxbcShader, ExtractError, MaterialInfo, PakVfs, UiParticleEmitterAsset, UmgAnimationStateT0,
-    UmgBlueprint, UmgWidgetNode, crop_rgba8, encode_png_rgba8, game_path_to_virtual_path,
-    parse_dxbc,
+    DxbcShader, ExtractError, MaterialInfo, PakVfs, SimulatedUiParticle, UiParticleEmitterAsset,
+    UmgAnimationStateT0, UmgBlueprint, UmgWidgetNode, crop_rgba8, encode_png_rgba8,
+    game_path_to_virtual_path, parse_dxbc,
 };
 
 use crate::sm5::{
@@ -275,6 +275,7 @@ pub struct CellRenderContext {
     pub particle_assets: BTreeMap<String, UiParticleEmitterAsset>,
     pub textures: BTreeMap<String, LinearTexture2D>,
     pub widget_draws: BTreeMap<(u8, usize, u8, u8), PrecompiledWidgetDraw>,
+    pub default_particles: BTreeMap<usize, Vec<SimulatedUiParticle>>,
     pub white_fallback: LinearTexture2D,
 }
 
@@ -470,11 +471,13 @@ impl CellRenderContext {
             particle_assets: BTreeMap::new(),
             textures: BTreeMap::new(),
             widget_draws: BTreeMap::new(),
+            default_particles: BTreeMap::new(),
             white_fallback: LinearTexture2D::solid_rgba([1.0, 1.0, 1.0, 1.0]),
         };
         ctx.preload_umg_assets(vfs, &archives)?;
         ctx.preload_portraits(vfs)?;
         ctx.precompile_widget_draws();
+        ctx.precompute_default_particles();
         Ok(ctx)
     }
 
@@ -755,6 +758,33 @@ impl CellRenderContext {
         self.widget_draws = draws;
     }
 
+    fn precompute_default_particles(&mut self) {
+        assert!(!self.cell_umg.widgets.is_empty());
+        let mut cache = BTreeMap::new();
+        for w in self
+            .cell_umg
+            .widgets
+            .iter()
+            .filter(|w| w.class_name == "UIParticleEmitter")
+        {
+            let Some(raw_path) = w
+                .particle_asset_path
+                .as_deref()
+                .or(w.soft_object_path.as_deref())
+            else {
+                continue;
+            };
+            let p_vpath = game_path_to_virtual_path(raw_path);
+            if let Some(emitter) = self.particle_assets.get(&p_vpath) {
+                let widget_seed =
+                    DEFAULT_PARTICLE_SEED ^ ((w.export_index as u64).wrapping_mul(0x9E37_79B9));
+                cache.insert(w.export_index, emitter.simulate_prewarm_t0(widget_seed));
+            }
+        }
+        assert!(!cache.is_empty() || self.particle_assets.is_empty());
+        self.default_particles = cache;
+    }
+
     /// Renders a single monster cell at `T = 0` according to `req`.
     pub fn render_cell(&self, req: &CellRenderRequest) -> Result<RenderedImage, ExtractError> {
         assert!(req.scale > 0.0 && req.scale <= 16.0);
@@ -980,8 +1010,16 @@ impl CellRenderContext {
             .map(|p| self.textures.get(p).unwrap_or(&self.white_fallback))
             .collect();
 
-        let widget_seed = base_seed ^ ((widget.export_index as u64).wrapping_mul(0x9E37_79B9));
-        let particles = emitter.simulate_prewarm_t0(widget_seed);
+        let dynamic_particles;
+        let particles: &[SimulatedUiParticle] = if base_seed == DEFAULT_PARTICLE_SEED
+            && let Some(cached) = self.default_particles.get(&widget.export_index)
+        {
+            cached.as_slice()
+        } else {
+            let widget_seed = base_seed ^ ((widget.export_index as u64).wrapping_mul(0x9E37_79B9));
+            dynamic_particles = emitter.simulate_prewarm_t0(widget_seed);
+            dynamic_particles.as_slice()
+        };
         let emit_off_x = widget.anchor.offset_left + widget.render_translation[0];
         let emit_off_y = widget.anchor.offset_top + widget.render_translation[1];
 

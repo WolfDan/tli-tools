@@ -296,11 +296,13 @@ pub struct ConstRegBinding {
     pub bits: u32,
 }
 
-/// Pre-compiled, scalarized two-stage SIMT pixel shader program ready for 8-wide SIMD execution.
+/// Pre-compiled, scalarized three-stage SIMT pixel shader program ready for 8-wide SIMD execution.
 #[derive(Clone, Debug)]
 pub struct CompiledSm5Shader {
     /// Stage 1: Uniform instructions executed **once per quad** on scalar registers.
     pub preamble: Vec<VmInst>,
+    /// Stage 1.5: Row-invariant (`Y`/`V`-only) instructions executed **once per `py` row** on SIMD registers.
+    pub row_preamble: Vec<VmInst>,
     /// Stage 2: Pixel-varying instructions executed per `4x2` tile on `f32x8` / `u32x8` SIMD registers.
     pub kernel: Vec<VmInst>,
     /// Static `cb2` scalar components loaded into the register file before running `preamble`.
@@ -309,10 +311,19 @@ pub struct CompiledSm5Shader {
     pub const_bindings: Vec<ConstRegBinding>,
     /// Immediate constant buffer (`icb`) vec4 table for dynamic `icb[r0.x + K]` loads.
     pub icb_vec4s: Vec<[u32; 4]>,
-    /// Number of persistent uniform/preamble registers in `[0..num_uniform_regs]` (`<= num_regs_used`).
+    /// Pre-evaluated scalar uniform register image `[0..num_uniform_regs]` for fast SIMD splat setup.
+    pub static_uniform_regs: Vec<u32>,
+    /// True if `static_uniform_regs` already includes `cb2_bindings`, `static_v1`, and `preamble` (`real_time == 0.0`).
+    pub has_static_preamble: bool,
+    /// Number of persistent uniform/preamble registers in `[0..num_uniform_regs]` (`<= num_row_regs`).
     pub num_uniform_regs: usize,
+    /// Number of persistent uniform + row-invariant registers in `[0..num_row_regs]` (`<= num_regs_used`).
+    pub num_row_regs: usize,
     /// Total registers used in `[0..num_regs_used]` (`<= 256`).
     pub num_regs_used: usize,
+    /// Bitmask (`bits 0..3` for `R, G, B`) of output channels whose linear value in `REG_OUT_R..=REG_OUT_B`
+    /// should be sRGB-encoded via pipelined `linear_to_srgb_rgb_x8` after `write_mask != 0` is verified.
+    pub srgb_encode_mask: u8,
     /// True if `kernel` contains any divergent branch, loop, or discard instructions.
     pub has_control_flow: bool,
     /// True if any instruction in `kernel` uses dynamic indexable temporary arrays (`x#`).
@@ -320,6 +331,11 @@ pub struct CompiledSm5Shader {
     /// Optional `(slot_idx, kill_ch)` when `kernel[0]` samples undistorted quad `(u, v)` and
     /// `kernel[1]` is `EarlyOutZero` on channel `kill_ch`, enabling $O(1)$ UV bounding-box trimming.
     pub uv_kill_slot_ch: Option<(u8, u8)>,
+    /// Up to 4 `(tex_slot, v_reg)` pairs for `Sample2D` instructions in `kernel` whose `V` coordinate
+    /// is row-invariant (`v_reg < num_row_regs`), enabling per-row `(iy0 * stride, ty)` precomputation.
+    pub row_y_samples: [(u8, u8); 4],
+    /// Number of valid entries in `row_y_samples` (`0..=4`).
+    pub num_row_y_samples: u8,
 }
 
 /// Compile-time metadata for a bound `LinearTexture2D` slot.
