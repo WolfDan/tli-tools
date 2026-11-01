@@ -1,0 +1,23 @@
+too-many-lines-threshold = 70
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+  { path = "core::mem::transmute", reason = "Use zerocopy traits/macros instead of raw transmute" },
+  { path = "std::sync::PoisonError::into_inner", reason = "Never recover poisoned mutex state; abort via lock_unpoisoned" },
+  { path = "std::sync::mpsc::channel", reason = "Unbounded channel; use crossbeam_channel::bounded" },
+  { path = "crossbeam_channel::unbounded", reason = "All channels must have an explicit upper bound", allow-invalid = true },
+  { path = "wide::f32x4::fast_trunc_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
+  { path = "wide::f32x4::fast_round_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
+  { path = "wide::f32x8::fast_trunc_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
+  { path = "wide::f32x8::fast_round_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
+  { path = "wide::f32x16::fast_trunc_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
+  { path = "wide::f32x16::fast_round_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
+  { path = "wide::f64x2::fast_trunc_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
+  { path = "wide::f64x2::fast_round_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
+  { path = "wide::f64x4::fast_trunc_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
+  { path = "wide::f64x4::fast_round_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
+  { path = "wide::f64x8::fast_trunc_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
+  { path = "wide::f64x8::fast_round_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
+]

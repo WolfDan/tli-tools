@@ -1,5 +1,5 @@
 {
-  description = "Tartarus Architect Overlay — Native Rust GPUI desktop overlay, Monte Carlo solver, CV scanner & UE4 Pak extractor";
+  description = "TLI Tools — Data-oriented TigerStyle Rust workspace";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -34,72 +34,39 @@
 
       inherit (pkgs) lib;
 
-      # Nightly toolchain required for edition = "2024", rust-version = "1.95",
-      # and `#![feature(portable_simd)]` in tartarus-scan / tartarus-overlay.
-      rustToolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain:
-        toolchain.default.override {
-          extensions = [
-            "rust-src"
-            "rust-analyzer"
-            "clippy"
-            "rustfmt"
-          ];
-        });
+      # Stable Rust toolchain supporting edition = "2024", slice::as_chunks,
+      # and strict TigerStyle clippy/rustfmt verification without nightly churn.
+      rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        extensions = [
+          "rust-src"
+          "rust-analyzer"
+          "clippy"
+          "rustfmt"
+        ];
+      };
 
       craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
 
       baseFileset = lib.fileset.unions [
         ./Cargo.toml
         ./Cargo.lock
+        ./clippy.toml
+        ./rustfmt.toml
         (lib.fileset.maybeMissing ./.cargo)
         (lib.fileset.maybeMissing ./.config)
         (craneLib.fileset.commonCargoSources ./crates)
       ];
 
-      # Filtered workspace source tree (excludes README, assets, flake files, tests, etc.)
+      # Filtered workspace source tree (excludes README, flake files, git metadata, etc.)
       src = lib.fileset.toSource {
         root = ./.;
         fileset = baseFileset;
       };
 
-      # Source tree including `./tests` fixtures for nextest runs
-      testSrc = lib.fileset.toSource {
-        root = ./.;
-        fileset = lib.fileset.unions [
-          baseFileset
-          (lib.fileset.maybeMissing ./tests)
-        ];
+      commonEnv = lib.optionalAttrs (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) {
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "${pkgs.clang}/bin/clang";
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C target-cpu=x86-64-v3 -C link-arg=-fuse-ld=${pkgs.mold}/bin/mold";
       };
-
-      # Shared native & dlopen'd runtime libraries required by gpui-ce, wgpu, wayland, x11rb, and ksni
-      runtimeLibs = with pkgs; [
-        vulkan-loader
-        libGL
-        wayland
-        libxkbcommon
-        fontconfig
-        freetype
-        dbus
-        libx11
-        libxcursor
-        libxi
-        libxrandr
-        libxext
-        libxfixes
-        libxtst
-        libxcb
-        libxrender
-      ];
-
-      commonEnv =
-        {
-          # Required by bindgen (used by gpui-ce and gpui_ce_media)
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-        }
-        // lib.optionalAttrs (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) {
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "${pkgs.clang}/bin/clang";
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C target-feature=+ssse3,+sse4.2,+avx2,+fma,+aes -C link-arg=-fuse-ld=${pkgs.mold}/bin/mold";
-        };
 
       commonArgs =
         commonEnv
@@ -109,17 +76,10 @@
 
           nativeBuildInputs =
             [
-              pkgs.pkg-config
               pkgs.clang
             ]
             ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               pkgs.mold
-            ];
-
-          buildInputs =
-            runtimeLibs
-            ++ [
-              pkgs.wayland-protocols
             ];
         };
 
@@ -139,47 +99,29 @@
           doCheck = false;
         };
 
-      # 1. Main GPUI Desktop Overlay
-      tartarus-overlay = craneLib.buildPackage (individualCrateArgs
+      # Data-oriented domain library crate
+      data = craneLib.buildPackage (individualCrateArgs
         // {
-          pname = "tartarus-overlay";
-          cargoExtraArgs = "-p tartarus-overlay";
-          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [pkgs.makeWrapper];
-          postInstall = ''
-            wrapProgram $out/bin/tartarus-overlay \
-              --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath runtimeLibs}"
-          '';
+          pname = "data";
+          cargoExtraArgs = "-p data";
           meta = {
-            description = "Native GPUI desktop overlay and Monte Carlo solver for Torchlight: Infinite Tartarus (S16)";
-            mainProgram = "tartarus-overlay";
+            description = "Data-oriented domain crate for TLI Tools";
           };
         });
 
-      # 2. UE 4.27 Pak v12 & Oodle Asset Extractor CLI
-      tartarus-extract = craneLib.buildPackage (individualCrateArgs
+      # Data-oriented TigerStyle Unreal Engine .pak archive reader crate
+      pak = craneLib.buildPackage (individualCrateArgs
         // {
-          pname = "tartarus-extract";
-          cargoExtraArgs = "-p tartarus-extract";
+          pname = "pak";
+          cargoExtraArgs = "-p pak";
           meta = {
-            description = "Programmatic UE 4.27 Pak v12 & Oodle asset/texture extractor for Torchlight: Infinite";
-            mainProgram = "tartarus-extract";
-          };
-        });
-
-      # 3. S16 Game Database, Visual Asset Catalog & CV Table Generator CLI
-      tartarus-data = craneLib.buildPackage (individualCrateArgs
-        // {
-          pname = "tartarus-data";
-          cargoExtraArgs = "-p tartarus-data";
-          meta = {
-            description = "Authoritative S16 Tartarus game database, visual asset catalog renderer, and Rust CV table generator";
-            mainProgram = "tartarus-data";
+            description = "Data-oriented TigerStyle Unreal Engine .pak archive reader";
           };
         });
 
       # Helper script to regenerate and verify the cargo-hakari workspace-hack crate
       hakariRegenApp = pkgs.writeShellApplication {
-        name = "tartarus-hakari-regen";
+        name = "tli-hakari-regen";
         runtimeInputs = [
           rustToolchain
           pkgs.cargo-hakari
@@ -198,13 +140,13 @@
       };
     in {
       checks = {
-        # Build all workspace binary packages as part of `nix flake check`
-        inherit tartarus-overlay tartarus-extract tartarus-data;
+        # Build all workspace packages as part of `nix flake check`
+        inherit data pak;
 
         # Verify `workspace-hack` is up-to-date and properly wired across all crates
-        tartarus-hakari = craneLib.mkCargoDerivation {
+        tli-hakari = craneLib.mkCargoDerivation {
           inherit src;
-          pname = "tartarus-hakari";
+          pname = "tli-hakari";
           cargoArtifacts = null;
           doInstallCargoArtifacts = false;
 
@@ -220,38 +162,37 @@
         };
 
         # Run clippy across all workspace crates & targets, reusing cached artifacts
-        tartarus-clippy = craneLib.cargoClippy (commonArgs
+        tli-clippy = craneLib.cargoClippy (commonArgs
           // {
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--workspace --all-targets -- --deny warnings";
           });
 
         # Verify Rustdoc builds cleanly without warnings
-        tartarus-doc = craneLib.cargoDoc (commonArgs
+        tli-doc = craneLib.cargoDoc (commonArgs
           // {
             inherit cargoArtifacts;
             cargoDocExtraArgs = "--workspace --no-deps";
           });
 
         # Check Rust formatting with rustfmt
-        tartarus-fmt = craneLib.cargoFmt {
+        tli-fmt = craneLib.cargoFmt {
           inherit src;
         };
 
         # Check TOML formatting with taplo
-        tartarus-toml-fmt = craneLib.taploFmt {
+        tli-toml-fmt = craneLib.taploFmt {
           src = lib.sources.sourceFilesBySuffices src [".toml"];
         };
 
         # Audit Cargo.lock against RustSec advisory-db
-        tartarus-audit = craneLib.cargoAudit {
+        tli-audit = craneLib.cargoAudit {
           inherit src advisory-db;
         };
 
-        # Run the full test suite in release mode with cargo-nextest
-        tartarus-nextest = craneLib.cargoNextest (commonArgs
+        # Run the full test suite with cargo-nextest
+        tli-nextest = craneLib.cargoNextest (commonArgs
           // {
-            src = testSrc;
             inherit cargoArtifacts;
             partitions = 1;
             partitionType = "count";
@@ -261,24 +202,19 @@
       };
 
       packages = {
-        default = tartarus-overlay;
-        inherit tartarus-overlay tartarus-extract tartarus-data;
+        default = data;
+        inherit data pak;
         deps = cargoArtifacts;
       };
 
       apps = {
-        default = flake-utils.lib.mkApp {
-          drv = tartarus-overlay;
-        };
-        extract = flake-utils.lib.mkApp {
-          drv = tartarus-extract;
-        };
-        data = flake-utils.lib.mkApp {
-          drv = tartarus-data;
-        };
-        hakari = flake-utils.lib.mkApp {
-          drv = hakariRegenApp;
-        };
+        hakari =
+          (flake-utils.lib.mkApp {
+            drv = hakariRegenApp;
+          })
+          // {
+            meta.description = "Regenerate and verify the cargo-hakari workspace-hack crate";
+          };
       };
 
       formatter = pkgs.alejandra;
@@ -286,7 +222,7 @@
       devShells.default = craneLib.devShell (commonEnv
         // {
           # Automatically inherits inputsFrom all checks (cargo-hakari, cargo-nextest,
-          # cargo-audit, taplo, pkg-config, clang, mold, runtimeLibs, and rustToolchain)
+          # cargo-audit, taplo, clang, mold, and rustToolchain)
           checks = self.checks.${system};
 
           packages = with pkgs; [
@@ -299,12 +235,9 @@
             cargo-deny
             alejandra
             nixd
-            vulkan-tools
-            wayland-utils
             ripgrep
           ];
 
-          LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
         });
     });

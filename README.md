@@ -1,42 +1,49 @@
-# Tartarus Architect Overlay
+# TLI Tools
 
-Native Rust desktop overlay, Monte Carlo solver, computer-vision screenshot scanner, and `.pak` asset extractor for the **Tartarus** prison mode (S16) in *Torchlight: Infinite*.
+Data-oriented, TigerStyle Rust workspace engineered for deterministic memory bounds, zero-copy binary layouts, and hardware-accelerated SIMD batch processing.
 
 ## Workspace Crates
 
-| Crate | Description |
-| --- | --- |
-| [`crates/tartarus-core`](crates/tartarus-core) | Zero-heap Data-Oriented simulation engine (`SimState`, 31 active Torture Instruments, 4 Warden's Gifts, 17 Prison Incidents, 5 Trial Objectives, 4 Start Events) and multi-threaded Rayon Monte Carlo Rollout / UCB1 solver. |
-| [`crates/tartarus-scan`](crates/tartarus-scan) | Pure-Rust computer-vision scanner and stateful [`RunTracker`](crates/tartarus-scan/src/tracker.rs) that localizes the 16-cell board, reads beasts, tiers, locks, nests, marks, doors, relics, and decision prompts, and merges frames into the live board model. |
-| [`crates/tartarus-overlay`](crates/tartarus-overlay) | Native `eframe` / `egui` transparent desktop overlay with live game log watching (`UE_game.log`), automatic burst capture (`xcap` / PipeWire / X11), interactive board editor, and system tray controls. |
-| [`crates/tartarus-extract`](crates/tartarus-extract) | Pure-Rust Unreal Engine 4 `.pak` v9 virtual filesystem (`AES-256-ECB` + Oodle via `oozextract` + Zlib), Lua 5.3 bytecode disassembler (`config_s16_gameplay_*.out`), localization parser, and `UTexture2D` (`BC1`/`BC3`/`BC7`/`BGRA8`) decoder. |
-| [`crates/tartarus-data`](crates/tartarus-data) | Authoritative S16 game database extractor, visual catalog renderer (`assets/s16/`), and static Rust CV template generator (`crates/tartarus-scan/src/cv_data.rs`). |
+| Crate | Package | Description |
+| --- | --- | --- |
+| [`crates/data`](crates/data) | `data` | Data-oriented domain crate for TLI Tools. |
+| [`crates/pak`](crates/pak) | `pak` | Data-oriented TigerStyle Unreal Engine `.pak` archive reader (`v8A`–`v11` and Torchlight Infinite `v12`). |
+| [`crates/workspace-hack`](crates/workspace-hack) | `workspace-hack` | Unified cross-platform dependency feature set managed automatically by `cargo-hakari`. |
 
-## Running & Building
-
-With Nix Flakes enabled:
+## Development & Verification (NixOS / Nix Flakes)
 
 ```bash
-# Run the desktop overlay directly
-nix run
-
 # Enter the development shell
 nix develop
 
-# Run the regression test suite
-nix develop --command cargo test --workspace --release
+# Run tests across the workspace
+nix develop --command cargo test --workspace
+
+# Run strict TigerStyle Clippy verification
+nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+
+# Regenerate and verify cargo-hakari workspace-hack after changing dependencies
+nix run .#hakari
+
+# Run the full Crane verification suite (build, hakari, clippy, rustdoc, rustfmt, taplo, audit, nextest)
+nix flake check
 ```
 
-## Regenerating S16 Assets & CV Reference Data
+## Local Game Archive Integration Tests (`pak`)
 
-To regenerate the visual catalog sheets in [`assets/s16/`](assets/s16) and the static CV reference tables in [`crates/tartarus-scan/src/cv_data.rs`](crates/tartarus-scan/src/cv_data.rs) directly from a local *Torchlight: Infinite* installation:
+Live `.pak` integration tests in [`crates/pak/tests/torchlight_infinite.rs`](crates/pak/tests/torchlight_infinite.rs) are marked `#[ignore]` so `cargo test` and `nix flake check` remain hermetic across machines without the game installed.
 
-```bash
-nix develop --command cargo run --release -p tartarus-data -- --pak-dir "/path/to/Torchlight Infinite/UE_game/Torchlight/Content/Paks"
-```
+To run them against a local Torchlight Infinite installation:
 
-To regenerate the 31-relic Monte Carlo synergy table in [`crates/tartarus-core/src/tool_combos.rs`](crates/tartarus-core/src/tool_combos.rs):
-
-```bash
-nix develop --command cargo run --release -p tartarus-core --example gen_tool_combos
-```
+1. Copy [`.envrc.example`](.envrc.example) to `.envrc` (which is ignored by [`.gitignore`](.gitignore) so local paths and keys are never committed to source control):
+   ```bash
+   cp .envrc.example .envrc
+   ```
+2. Set `TLI_GAME_DIR` to your local Torchlight Infinite root directory and `TLI_AES_KEY` to the 256-bit hex AES key, then approve the file with `direnv`:
+   ```bash
+   direnv allow
+   ```
+3. Run the ignored integration suite:
+   ```bash
+   nix develop --command cargo test -p pak --test torchlight_infinite -- --ignored
+   ```

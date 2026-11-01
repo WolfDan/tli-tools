@@ -1,2 +1,0 @@
-[build]
-rustflags = ["-C", "target-feature=+ssse3,+sse4.2,+aes"]

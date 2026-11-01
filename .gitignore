@@ -2,7 +2,5 @@
 /target/
 /result
 /result-*
-/extracted_assets/
 /.direnv/
-tartarus-*.idx
-tartarus-*.idx.tmp.*
+/.envrc

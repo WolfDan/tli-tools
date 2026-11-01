@@ -1,0 +1,5 @@
+use flake
+
+# Optional: Local Torchlight Infinite installation path and AES-256 key for live `.pak` tests.
+export TLI_GAME_DIR="/path/to/Steam/steamapps/common/Torchlight Infinite"
+export TLI_AES_KEY="0x0000000000000000000000000000000000000000000000000000000000000000"
