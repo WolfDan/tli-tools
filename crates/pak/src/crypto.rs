@@ -78,3 +78,27 @@ pub(crate) fn compute_sha1(bytes: &[u8]) -> Sha1Hash {
     let digest = Sha1::digest(bytes);
     Sha1Hash::from_bytes(digest.into())
 }
+
+/// Incremental SHA-1 state for streaming payload verification without full-entry buffering.
+pub(crate) struct Sha1Hasher {
+    inner: Sha1,
+}
+
+impl Sha1Hasher {
+    #[inline]
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self { inner: Sha1::new() }
+    }
+
+    #[inline]
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
+        self.inner.update(bytes);
+    }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn finalize(self) -> Sha1Hash {
+        Sha1Hash::from_bytes(self.inner.finalize().into())
+    }
+}

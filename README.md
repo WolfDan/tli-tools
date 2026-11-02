@@ -8,6 +8,7 @@ Data-oriented, TigerStyle Rust workspace engineered for deterministic memory bou
 | --- | --- | --- |
 | [`crates/data`](crates/data) | `data` | Data-oriented domain crate for TLI Tools. |
 | [`crates/pak`](crates/pak) | `pak` | Data-oriented TigerStyle Unreal Engine `.pak` archive reader (`v8A`–`v11` and Torchlight Infinite `v12`). |
+| [`crates/pak_vfs`](crates/pak_vfs) | `pak_vfs` | High-performance, low-memory Virtual File System unifying ordered Unreal Engine and Torchlight Infinite `.pak` mounts. |
 | [`crates/workspace-hack`](crates/workspace-hack) | `workspace-hack` | Unified cross-platform dependency feature set managed automatically by `cargo-hakari`. |
 
 ## Development & Verification (NixOS / Nix Flakes)
@@ -29,9 +30,9 @@ nix run .#hakari
 nix flake check
 ```
 
-## Local Game Archive Integration Tests (`pak`)
+## Local Game Archive Integration Tests (`pak` and `pak_vfs`)
 
-Live `.pak` integration tests in [`crates/pak/tests/torchlight_infinite.rs`](crates/pak/tests/torchlight_infinite.rs) are marked `#[ignore]` so `cargo test` and `nix flake check` remain hermetic across machines without the game installed.
+Live `.pak` integration tests in [`crates/pak/tests/torchlight_infinite.rs`](crates/pak/tests/torchlight_infinite.rs) and [`crates/pak_vfs/tests/torchlight_infinite.rs`](crates/pak_vfs/tests/torchlight_infinite.rs) are marked `#[ignore]` so `cargo test` and `nix flake check` remain hermetic across machines without the game installed.
 
 To run them against a local Torchlight Infinite installation:
 
@@ -43,7 +44,7 @@ To run them against a local Torchlight Infinite installation:
    ```bash
    direnv allow
    ```
-3. Run the ignored integration suite:
+3. Run the ignored integration suites:
    ```bash
-   nix develop --command cargo test -p pak --test torchlight_infinite -- --ignored
+   direnv exec . nix develop --command cargo test -p pak -p pak_vfs -- --ignored --nocapture
    ```

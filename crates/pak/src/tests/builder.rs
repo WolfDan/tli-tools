@@ -543,6 +543,7 @@ fn append_split_index_and_footer(
 }
 
 fn build_phi_bytes(records: &[WrittenEntryRecord], locations: &[i32], seed: u64) -> Vec<u8> {
+    assert_eq!(records.len(), locations.len());
     let mut phi = Vec::new();
     let cnt = u32::try_from(records.len()).expect("fits");
     phi.extend_from_slice(&cnt.to_le_bytes());
@@ -560,6 +561,7 @@ fn build_phi_bytes(records: &[WrittenEntryRecord], locations: &[i32], seed: u64)
 }
 
 fn build_fdi_bytes(records: &[WrittenEntryRecord], locations: &[i32]) -> Vec<u8> {
+    assert_eq!(records.len(), locations.len());
     let kept: Vec<(&WrittenEntryRecord, i32)> = records
         .iter()
         .zip(locations.iter().copied())

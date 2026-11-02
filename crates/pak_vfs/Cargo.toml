@@ -1,0 +1,20 @@
+[package]
+name = "pak_vfs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Low-memory data-oriented virtual file system over Unreal Engine .pak archives"
+
+[lints]
+workspace = true
+
+[dependencies]
+arrayvec = "0.7.8"
+fnv = "1.0.7"
+pak = { version = "0.1.0", path = "../pak" }
+thiserror = "2.0.21"
+workspace-hack = { version = "0.1.0", path = "../workspace-hack" }
+
+[dev-dependencies]
+fastrand = "2.5.0"

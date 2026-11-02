@@ -43,8 +43,10 @@ pub const ENTRY_UNCOMPRESSED_BYTES_MAX_DEFAULT: u64 = 4 * 1024 * 1024 * 1024;
 pub const SCRATCH_IO_BYTES_INITIAL_DEFAULT: u32 = 256 * 1024;
 /// Default maximum `ReadScratch` I/O buffer capacity (`256 MiB`).
 pub const SCRATCH_IO_BYTES_MAX_DEFAULT: u32 = 256 * 1024 * 1024;
+/// Default maximum `ReadScratch` single-block decoded window capacity (`4 MiB`).
+pub const SCRATCH_BLOCK_BYTES_MAX_DEFAULT: u32 = 4 * 1024 * 1024;
 
-/// Dense 0-based handle into `PakArchive`'s Struct-of-Arrays entry catalog (`0..entry_count`).
+/// Dense 0-based handle into `PakArchive` and `PakPayloadReader`'s entry catalog (`0..entry_count`).
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntryId(u32);
@@ -56,7 +58,8 @@ impl EntryId {
         Self(index)
     }
 
-    /// Returns the 0-based dense index of this entry within its originating [`crate::PakArchive`].
+    /// Returns the 0-based dense index of this entry within its originating [`crate::PakArchive`]
+    /// or [`crate::PakPayloadReader`].
     #[inline]
     #[must_use]
     pub const fn index(self) -> u32 {
@@ -132,14 +135,7 @@ impl EncryptionKeyGuid {
     #[inline]
     #[must_use]
     pub const fn is_zero(&self) -> bool {
-        let mut i: usize = 0;
-        while i < 16 {
-            if self.0[i] != 0 {
-                return false;
-            }
-            i += 1;
-        }
-        true
+        u128::from_ne_bytes(self.0) == 0
     }
 }
 
@@ -201,6 +197,7 @@ impl AesKey {
         let (pairs, rem) = raw.as_chunks::<2>();
         assert!(rem.is_empty());
         let mut out = [0_u8; 32];
+        assert_eq!(out.len(), pairs.len());
         for (dst, pair) in out.iter_mut().zip(pairs.iter()) {
             let hi = decode_hex_nibble(pair[0])?;
             let lo = decode_hex_nibble(pair[1])?;
@@ -224,9 +221,9 @@ impl core::fmt::Debug for AesKey {
 
 const fn decode_hex_nibble(byte: u8) -> Result<u8, PakError> {
     match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        b'0'..=b'9' => Ok(byte.strict_sub(b'0')),
+        b'a'..=b'f' => Ok(byte.strict_sub(b'a').strict_add(10)),
+        b'A'..=b'F' => Ok(byte.strict_sub(b'A').strict_add(10)),
         _ => Err(PakError::InvalidAesKey {
             kind: KeyParseErrorKind::InvalidHexDigit,
         }),
@@ -288,7 +285,7 @@ bitflags::bitflags! {
     }
 }
 
-/// Validated upper bounds enforced during [`crate::PakArchive::open_with_options`].
+/// Validated upper bounds enforced during [`crate::PakArchive::open_with_options`] and [`crate::PakPayloadReader::open_streaming`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PakLimits {
     index_bytes_max: u32,
@@ -363,14 +360,7 @@ impl PakLimits {
     }
 }
 
-impl Default for PakLimits {
-    #[inline]
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
-/// Configuration options for opening a [`crate::PakArchive`].
+/// Configuration options for opening a [`crate::PakArchive`] or [`crate::PakPayloadReader`].
 #[derive(Clone, Debug)]
 pub struct OpenOptions {
     key: Option<AesKey>,
@@ -422,7 +412,7 @@ impl OpenOptions {
     }
 }
 
-/// Read-only metadata snapshot describing a single entry in a [`crate::PakArchive`].
+/// Read-only metadata snapshot describing a single entry in a [`crate::PakArchive`] or [`crate::PakPayloadReader`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntryMeta {
     pub(crate) header_offset: u64,
@@ -498,7 +488,7 @@ impl EntryMeta {
     }
 }
 
-/// Caller-owned destination descriptor for [`crate::PakArchive::read_batch_into`].
+/// Caller-owned destination descriptor for [`crate::PakArchive::read_batch_into`] and [`crate::PakPayloadReader::read_batch_into`].
 #[derive(Debug)]
 pub struct BatchReadRequest<'a> {
     pub(crate) id: EntryId,
@@ -519,14 +509,31 @@ impl<'a> BatchReadRequest<'a> {
     }
 }
 
-/// Per-item outcome written by [`crate::PakArchive::read_batch_into`].
+/// Per-item outcome written by [`crate::PakArchive::read_batch_into`] and [`crate::PakPayloadReader::read_batch_into`].
 #[must_use]
 #[derive(Debug)]
 pub enum BatchReadOutcome {
-    /// Initial placeholder state before [`crate::PakArchive::read_batch_into`] populates the slot.
+    /// Initial placeholder state before [`crate::PakArchive::read_batch_into`] or [`crate::PakPayloadReader::read_batch_into`] populates the slot.
     Pending,
     /// Entry was read, decrypted, and decompressed into the request's destination slice.
     Ok { bytes_written: u64 },
     /// Reading or decompressing this specific entry failed without aborting the batch.
     Err(PakError),
+}
+
+/// Borrowed entry descriptor yielded sequentially during [`crate::PakPayloadReader::open_streaming`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamingEntry<'a> {
+    /// Entry whose relative directory and filename strings were present in the directory index.
+    ///
+    /// For legacy `v8–v9` flat directory indexes, `dir` is `""` and `file` holds the relative path;
+    /// for `v10–v12` `FullDirectoryIndex`, `dir` and `file` hold the validated UTF-8 directory and
+    /// leaf filename slices prior to path joining.
+    Named {
+        id: EntryId,
+        dir: &'a str,
+        file: &'a str,
+    },
+    /// Entry present only in `PathHashIndex` whose string path was pruned from `FullDirectoryIndex`.
+    Pruned { id: EntryId },
 }

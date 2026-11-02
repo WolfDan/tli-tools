@@ -1,15 +1,15 @@
 //! Zero-allocation UE4 UTF-16LE FNV-1a path hashing, contiguous `PathArena`, and flat hash lookup.
 
 use core::hash::Hasher as _;
+use core::num::NonZeroU16;
 
 use fnv::FnvHasher;
 
 use crate::error::{LimitKind, PakError};
-use crate::low_u32;
 use crate::types::{
     ENTRIES_COUNT_HARD_MAX, EntryId, PATH_BYTES_MAX, PATH_UTF16_UNITS_MAX, PathHash,
 };
-use crate::u32_to_usize;
+use crate::{bounded_len_u32, u32_to_usize};
 
 const FNV1A_64_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 
@@ -29,7 +29,7 @@ fn normalize_fold_char(ch: char) -> char {
     let mut lower = ch.to_lowercase();
     match (lower.next(), lower.next()) {
         (Some(single), None) => single,
-        _ => ch,
+        (None, _) | (Some(_), Some(_)) => ch,
     }
 }
 
@@ -57,12 +57,8 @@ pub(crate) fn compute_ue4_path_hash(rel_path: &str, seed: u64) -> Result<PathHas
     for ch in trimmed.chars() {
         let folded = normalize_fold_char(ch);
         let units = folded.encode_utf16(&mut unit_buf);
-        let added = u32::try_from(units.len()).map_err(|_| PakError::LimitExceeded {
-            kind: LimitKind::PathUtf16Units,
-            actual: u64::MAX,
-            max: u64::from(PATH_UTF16_UNITS_MAX),
-        })?;
-        utf16_units = utf16_units.saturating_add(added);
+        let added = bounded_len_u32(units.len());
+        utf16_units = utf16_units.strict_add(added);
         if utf16_units > PATH_UTF16_UNITS_MAX {
             return Err(PakError::LimitExceeded {
                 kind: LimitKind::PathUtf16Units,
@@ -128,7 +124,7 @@ pub(crate) fn normalize_join_dir_file_into(
         if out.len() >= u32_to_usize(PATH_BYTES_MAX) {
             return Err(PakError::LimitExceeded {
                 kind: LimitKind::PathBytes,
-                actual: u64::from(PATH_BYTES_MAX) + 1,
+                actual: u64::from(PATH_BYTES_MAX).strict_add(1),
                 max: u64::from(PATH_BYTES_MAX),
             });
         }
@@ -138,19 +134,22 @@ pub(crate) fn normalize_join_dir_file_into(
 }
 
 #[inline]
-fn trim_leading_sep_bytes(mut bytes: &[u8]) -> &[u8] {
-    while let Some((&first, rest)) = bytes.split_first() {
-        if first == b'/' || first == b'\\' {
-            bytes = rest;
-        } else {
-            break;
-        }
+fn trim_leading_sep_bytes(bytes: &[u8]) -> &[u8] {
+    match bytes.iter().position(|&b| b != b'/' && b != b'\\') {
+        Some(idx) => &bytes[idx..],
+        None => &[],
     }
-    bytes
 }
 
 fn push_normalized_bytes(src: &[u8], out: &mut Vec<u8>) -> Result<(), PakError> {
-    let new_len = out.len().saturating_add(src.len());
+    let new_len = out
+        .len()
+        .checked_add(src.len())
+        .ok_or(PakError::LimitExceeded {
+            kind: LimitKind::PathBytes,
+            actual: u64::MAX,
+            max: u64::from(PATH_BYTES_MAX),
+        })?;
     if new_len > u32_to_usize(PATH_BYTES_MAX) {
         let actual = u64::try_from(new_len).map_err(|_| PakError::LimitExceeded {
             kind: LimitKind::PathBytes,
@@ -169,10 +168,24 @@ fn push_normalized_bytes(src: &[u8], out: &mut Vec<u8>) -> Result<(), PakError> 
     Ok(())
 }
 
+const _: () = assert!(PATH_BYTES_MAX < 0xFFFF);
+
+/// Niche-optimized 8-byte `(offset, len)` span into [`PathArena`] where `len + 1` is stored in
+/// [`NonZeroU16`] so `Option<PathSpan>` also occupies 8 bytes without any dummy padding field.
 #[derive(Clone, Copy, Debug)]
 struct PathSpan {
     offset: u32,
-    len: u32,
+    len_plus_one: NonZeroU16,
+}
+const _: () = assert!(core::mem::size_of::<PathSpan>() == 8);
+const _: () = assert!(core::mem::size_of::<Option<PathSpan>>() == 8);
+
+impl PathSpan {
+    #[inline]
+    #[must_use]
+    const fn len(self) -> u16 {
+        self.len_plus_one.get().strict_sub(1)
+    }
 }
 
 /// Contiguous immutable UTF-8 path storage eliminating per-entry `String` heap allocations.
@@ -186,10 +199,9 @@ impl PathArena {
     #[inline]
     #[must_use]
     pub(crate) fn get(&self, id: EntryId) -> Option<&str> {
-        let span = self.spans[u32_to_usize(id.index())];
-        let PathSpan { offset, len } = span?;
-        let start = u32_to_usize(offset);
-        let end = start.strict_add(u32_to_usize(len));
+        let span = self.spans[u32_to_usize(id.index())]?;
+        let start = u32_to_usize(span.offset);
+        let end = start.strict_add(usize::from(span.len()));
         Some(&self.text[start..end])
     }
 }
@@ -209,11 +221,19 @@ impl PathArenaBuilder {
     }
 
     pub(crate) fn push_path(&mut self, path: &str) -> Result<(), PakError> {
-        let len = u32::try_from(path.len()).map_err(|_| PakError::LimitExceeded {
-            kind: LimitKind::PathBytes,
-            actual: u64::MAX,
-            max: u64::from(PATH_BYTES_MAX),
-        })?;
+        let Ok(len_u16) = u16::try_from(path.len()) else {
+            let actual = u64::try_from(path.len()).map_err(|_| PakError::LimitExceeded {
+                kind: LimitKind::PathBytes,
+                actual: u64::MAX,
+                max: u64::from(PATH_BYTES_MAX),
+            })?;
+            return Err(PakError::LimitExceeded {
+                kind: LimitKind::PathBytes,
+                actual,
+                max: u64::from(PATH_BYTES_MAX),
+            });
+        };
+        let len = u32::from(len_u16);
         if len > PATH_BYTES_MAX {
             return Err(PakError::LimitExceeded {
                 kind: LimitKind::PathBytes,
@@ -221,18 +241,24 @@ impl PathArenaBuilder {
                 max: u64::from(PATH_BYTES_MAX),
             });
         }
-        let offset = u32::try_from(self.text.len()).map_err(|_| PakError::LimitExceeded {
-            kind: LimitKind::PathArenaBytes,
-            actual: u64::from(u32::MAX) + 1,
-            max: u64::from(u32::MAX),
-        })?;
+        let Some(len_plus_one) = NonZeroU16::new(len_u16.strict_add(1)) else {
+            return Err(PakError::LimitExceeded {
+                kind: LimitKind::PathBytes,
+                actual: u64::from(len),
+                max: u64::from(PATH_BYTES_MAX),
+            });
+        };
+        let offset = bounded_len_u32(self.text.len());
         let _end = offset.checked_add(len).ok_or(PakError::LimitExceeded {
             kind: LimitKind::PathArenaBytes,
-            actual: u64::from(offset) + u64::from(len),
+            actual: u64::from(offset).strict_add(u64::from(len)),
             max: u64::from(u32::MAX),
         })?;
         self.text.push_str(path);
-        self.spans.push(Some(PathSpan { offset, len }));
+        self.spans.push(Some(PathSpan {
+            offset,
+            len_plus_one,
+        }));
         Ok(())
     }
 
@@ -260,7 +286,6 @@ const _: () = assert!(core::mem::size_of::<HashBucket>() == 16);
 #[derive(Debug)]
 pub(crate) struct PathLookupTable {
     buckets: Box<[HashBucket]>,
-    mask: u32,
     occupied_count: u32,
 }
 
@@ -269,30 +294,39 @@ impl PathLookupTable {
         assert!(entry_count <= ENTRIES_COUNT_HARD_MAX);
         let min_slots = (entry_count.saturating_mul(2)).max(2);
         let table_len = min_slots.next_power_of_two();
-        assert!(table_len >= 2);
         assert!(table_len > entry_count);
         let buckets = vec![HashBucket::Empty; u32_to_usize(table_len)].into_boxed_slice();
         Self {
             buckets,
-            mask: table_len - 1,
             occupied_count: 0,
         }
     }
 
     #[inline]
+    const fn table_len(&self) -> u32 {
+        bounded_len_u32(self.buckets.len())
+    }
+
+    #[inline]
+    const fn mask(&self) -> u32 {
+        self.table_len().strict_sub(1)
+    }
+
+    #[inline]
     fn start_slot(&self, hash: PathHash) -> u32 {
         let raw = hash.as_u64();
-        let folded = low_u32(raw ^ (raw >> 32));
-        folded & self.mask
+        let folded = ((raw ^ (raw >> 32)) & 0xFFFF_FFFF) as u32;
+        folded & self.mask()
     }
 
     pub(crate) fn insert(&mut self, hash: PathHash, entry: EntryId) {
-        let table_len = self.mask.strict_add(1);
+        let table_len = self.table_len();
+        let mask = self.mask();
         assert!(self.occupied_count < table_len);
         let start = self.start_slot(hash);
         let mut probed: u32 = 0;
         for step in 0..table_len {
-            let slot = start.wrapping_add(step) & self.mask;
+            let slot = start.wrapping_add(step) & mask;
             let slot_idx = u32_to_usize(slot);
             match self.buckets[slot_idx] {
                 HashBucket::Empty => {
@@ -312,8 +346,7 @@ impl PathLookupTable {
                 }
             }
         }
-        assert!(self.occupied_count < table_len);
-        assert!(probed <= self.occupied_count);
+        assert!(probed < table_len);
     }
 
     #[must_use]
@@ -323,11 +356,12 @@ impl PathLookupTable {
         hash: PathHash,
         arena: &PathArena,
     ) -> Option<EntryId> {
-        let table_len = self.mask.strict_add(1);
+        let table_len = self.table_len();
+        let mask = self.mask();
         let start = self.start_slot(hash);
         let mut probed: u32 = 0;
         for step in 0..table_len {
-            let slot = start.wrapping_add(step) & self.mask;
+            let slot = start.wrapping_add(step) & mask;
             match self.buckets[u32_to_usize(slot)] {
                 HashBucket::Empty => return None,
                 HashBucket::Occupied {
@@ -348,18 +382,18 @@ impl PathLookupTable {
                 }
             }
         }
-        assert!(self.occupied_count < table_len);
-        assert!(probed <= self.occupied_count);
+        assert!(probed < table_len);
         None
     }
 
     #[must_use]
     pub(crate) fn find_by_hash(&self, hash: PathHash) -> Option<EntryId> {
-        let table_len = self.mask.strict_add(1);
+        let table_len = self.table_len();
+        let mask = self.mask();
         let start = self.start_slot(hash);
         let mut probed: u32 = 0;
         for step in 0..table_len {
-            let slot = start.wrapping_add(step) & self.mask;
+            let slot = start.wrapping_add(step) & mask;
             match self.buckets[u32_to_usize(slot)] {
                 HashBucket::Empty => return None,
                 HashBucket::Occupied {
@@ -373,8 +407,7 @@ impl PathLookupTable {
                 }
             }
         }
-        assert!(self.occupied_count < table_len);
-        assert!(probed <= self.occupied_count);
+        assert!(probed < table_len);
         None
     }
 }

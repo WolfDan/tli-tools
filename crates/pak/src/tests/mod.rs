@@ -12,8 +12,7 @@ use crate::u32_to_usize;
 
 pub(crate) fn test_aes_key() -> AesKey {
     let mut raw = [0_u8; 32];
-    for (idx, slot) in raw.iter_mut().enumerate() {
-        let byte = u8::try_from(idx).expect("idx < 32");
+    for (byte, slot) in (0_u8..32).zip(raw.iter_mut()) {
         *slot = byte.wrapping_mul(7).wrapping_add(0x3D);
     }
     AesKey::from_bytes(raw)

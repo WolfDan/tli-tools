@@ -4,7 +4,7 @@ If you're running in NixOS, always use `nix develop` to run `cargo`.
 
 Always activate and follow `.agents/skills/tigerstyle-rust/SKILL.md` whenever planning, writing, refactoring, or reviewing Rust code.
 
-Write data-oriented Rust: use contiguous tables, slices, and Struct-of-Arrays for hot data planes, algebraic sum types (`enum`) and private-field newtypes for domain state so invalid states are unrepresentable at compile time, and SIMD (`as_chunks::<N>()` + `wide`) strictly on genuine bulk numeric or byte streams—never invent speculative framework wrappers or single-scalar SIMD theater.
+Write data-oriented Rust: group contiguous tables by access temperature (`Box<[Row]>` for point-lookup records, hot `Box<[Key]>` + cold `Box<[Payload]>` for searched tables, and standalone SoA columns strictly for selective slice scans or `as_chunks::<N>()` SIMD lane loads—never "shred-and-reassemble" co-accessed fields into separate arrays), use algebraic sum types (`enum`) and private-field newtypes so invalid states are unrepresentable at compile time, and use SIMD (`as_chunks::<N>()` + `wide`) strictly on genuine bulk numeric or byte streams—never invent speculative framework wrappers or single-scalar SIMD theater.
 
 Always diagnose and solve the root architectural or type-system cause of an issue; never apply surface-level syntactic patches, silent fallbacks, or file/module-wide lint suppressions.
 

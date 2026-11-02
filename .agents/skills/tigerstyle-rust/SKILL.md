@@ -96,10 +96,16 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
    * Iterate over pre-bounded slices via `.iter().zip(...)`, `.chunks_exact()`, or `.as_chunks::<N>()`. This hoists bounds checks, eliminates off-by-one indexing bugs, and unlocks LLVM autovectorization.
    * **Preserve slice totality & tail completeness:** `assert_eq!(a.len(), b.len())` before `.zip()`ing parallel SoA columns (since `.zip()` silently truncates mismatched lengths), always process or `assert!(rem.is_empty())` on both `.as_chunks::<N>()` and `.chunks_exact(N)` / `.chunks_exact_mut(N)` remainders, and keep batch/slice kernels total over empty slices (`&[]` = 0 work; never `assert!(!slice.is_empty())` unless non-emptiness is encoded in a wrapper type).
 
-4. **Flat Contiguous Memory — Zero Pointer Chasing & Zero Index-Chasing Graphs**
-   * Ban `Box<Node>`, `Arc<Mutex<T>>` graphs, and `Vec<Box<dyn Trait>>` vtable indirection.
-   * **Equally ban recreating linked lists or OOP object graphs out of arena indices** (`slab[node.next_id]`), which still thrash CPU caches.
-   * Store records inline by value in contiguous tables/slices (`Box<[T]>`, `FixedVec<T>`, or Struct-of-Arrays for hot scans) ordered for linear hardware prefetching. Use `enum`s for static dispatch. Reserve `SlotId(u32)` handles strictly for O(1) direct table lookups (e.g., active I/O or connection slots). Always verify full key equality after any hash or SIMD fingerprint match.
+4. **Flat Contiguous Memory & Access-Temperature Layout — Zero Pointer/Index Chasing & Zero "Shred-and-Reassemble" SoA**
+   * Ban `Box<Node>`, `Arc<Mutex<T>>` graphs, `Vec<Box<dyn Trait>>` vtable indirection, and **arena index-chasing graphs** (`slab[node.next_id]`), which all thrash CPU caches. Store records inline by value in contiguous slices (`Box<[T]>`, `FixedVec<T>`) ordered for linear hardware prefetching and use `enum`s for static dispatch. Reserve `SlotId(u32)` handles strictly for O(1) direct table lookups (e.g., active I/O or connection slots).
+   * **Ban "Shred-and-Reassemble" on point-lookup tables:** If fields `A`, `B`, and `C` are always read or written at the exact same index `i` at the exact same time (e.g., inside `get(id)` / `meta(idx)`), they share the same access temperature and **must live in one contiguous `Box<[Row]>`**. Never split a record into `K` separate `Box<[Field]>` arrays if no loop in the crate scans those arrays independently and the accessor merely indexes `self.a[i], self.b[i], self.c[i]` to reconstruct a struct. Only split co-accessed fields by alignment tier (`u64` vs `u8`/`u16`/`u32`) if `size_of::<Row>()` wastes `>= 4` bytes of alignment padding per row even after optimal field ordering.
+   * **Group searched tables by access temperature (Hot `Key` vs Cold `Payload`), not one array per primitive field:** When a table is probed or scanned (hash lookup, binary search, directory scan), split into at most **two** parallel arrays based on *when* fields are touched:
+     * `keys: Box<[Key]>` (**Hot** — touched on every probe/comparison): Pack all fields compared together during a lookup (such as `(dir, stem, ext)`) into a single `Key` struct so verifying a candidate `idx` touches 1 cache line and 1 bounds check, not 3. Always verify full `Key` equality after any hash or SIMD fingerprint match.
+     * `payloads: Box<[Payload]>` (**Cold** — touched only once after a match succeeds): Store result data (plus variable-length side slabs like `blocks: Box<[Block]>`) in a parallel array so failed probes/scans never pull payload bytes into L1 cache.
+   * **Never split fields beyond `Row` or `Key` + `Payload` into standalone `Box<[Field]>` columns without a selective scan or SIMD lane load:** A field may be split out of `Row`, `Key`, or `Payload` into its own standalone `Box<[Field]>` column *only* when:
+     1. **Selective scan/search:** At least one function iterates or binary-searches `&col[start..end]` and skips sibling columns on non-matching elements, **or**
+     2. **Contiguous SIMD lane loads:** A vectorized kernel iterates `col.as_chunks::<N>()` to load `N` contiguous scalar lanes into SIMD registers where an AoS struct (`Vec2 { x, y }`) would interleave fields across lanes.
+   * **Top-down slice narrowing vs bottom-up inline parent links — never standalone `parent_ids: Box<[ParentId]>` columns:** When parent records partition child records into contiguous `start..end` ranges, top-down lookups (`(parent_id, child_key) -> child`) must narrow directly to `&children[start..end]` rather than probing a global table and checking `dirs[idx] == dir`. If bottom-up traversal (`child_id -> parent_id`, such as path reconstruction from a bare ID) is also required, store `parent: ParentId` **inline inside the child's `Row` / `Payload` / `Key` struct**—never as a standalone `Box<[ParentId]>` column.
 
 5. **Value Returns, Niche Types, & Explicit Fallible Teardown**
    * Never port Zig's `fn init(out: *Self)` into `&mut MaybeUninit<T>` or raw out-pointers. Return values directly (`T` or `Result<T, E>`), relying on Rust move semantics / RVO. Pass `&mut Scratch` strictly to reuse pre-allocated backing capacity across hot calls—never expose hidden-allocation convenience wrappers that call `Scratch::new()` internally.
@@ -124,6 +130,7 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
      }
      ```
    * Fieldless `#[repr(u8)]` / `#[repr(u16)]` / `#[repr(u32)]` `enum` discriminants may use `op as u8` directly.
+   * For intentional bitfield or word-half extraction (`u64 -> u32`, `u32 -> u16`, `u32 -> u8`), apply an inline constant mask or right-shift to the target width in the cast expression (`((bits >> 6) & 0xFFFF) as u16`, `(x >> 32) as u32`, `(x & 0xFFFF_FFFF) as u32`) so Clippy statically proves the `as` cast in-range without any `#[expect]`—never write unreachable `u16::try_from(x & 0xFFFF)` error branches or `.to_le_bytes()` array-slicing hacks.
    * Rust's scalar `float as int` (`x as i32`, `x as u8`) is guaranteed saturating and maps `NaN -> 0` across all targets since Rust 1.45. When an intentional scalar float-to-int or int-to-float conversion is genuinely required, isolate it in a small named helper with a narrow `#[expect(clippy::cast_possible_truncation, reason = "...")]` (plus `clippy::cast_sign_loss` for unsigned targets like `u8`/`u32`, or `clippy::cast_precision_loss` for `u32 -> f32`)—never dodge semantic cast lints with `wide::*::splat` or bit-twiddling hacks.
 
 2. **`#[repr(transparent)]` Newtypes, Private Invariants, & Big-Endian Naming**
@@ -275,7 +282,7 @@ multiple_unsafe_ops_per_block = "deny"
 mem_forget = "deny"
 
 # Semantic cast safety (blocks narrowing, sign-loss, wrap, lossless `as` where `From` exists,
-# precision-loss, and raw pointer `as`, while allowing `#[repr(u8)]` `enum as u8` and `u32_to_usize`)
+# precision-loss, and raw pointer `as`, while allowing `#[repr(u8)]` `enum as u8`, inline-masked/shifted bit-extractions, and `u32_to_usize`)
 cast_possible_truncation = "deny"
 cast_possible_wrap = "deny"
 cast_sign_loss = "deny"
@@ -330,6 +337,6 @@ disallowed-methods = [
 4. Audit every modified module to confirm:
    * Public/external functions are total (`Result`, `.checked_*` math, checked slice narrowing, empty-slice `&[]` totality, zero `assert!` on untrusted input).
    * Invariant-bearing structs/newtypes have private fields (`is_finite()` enforced on constrained floats, no invalid `Default` impls), and resources with fallible/durable teardown expose `close(self) -> Result<(), Error>`.
-   * Zero silent fallbacks (`unwrap_or*`, `map_or`, `.ok()`, `let _ =`, bare `if let Ok`, error-discarding `let Ok(...) else`, dummy-default `match` arms, clamped/wrapped invalid indices, `from_utf8_lossy`, `Unknown(u8)` domain enum catch-alls, `Result<T, String>`, `PoisonError::into_inner`, ignored chunk remainders, unasserted parallel `.zip()` lengths, or silent bounded-loop exhaustion).
+   * Zero silent fallbacks (`unwrap_or*`, `map_or`, `.ok()`, `let _ =`, bare `if let Ok`, error-discarding `let Ok(...) else`, dummy-default `match` arms, clamped/wrapped invalid indices, `from_utf8_lossy`, `Unknown(u8)` domain enum catch-alls, unreachable `try_from(x & MASK)` or `.to_le_bytes()` cast-dodge hacks, `Result<T, String>`, `PoisonError::into_inner`, ignored chunk remainders, unasserted parallel `.zip()` lengths, or silent bounded-loop exhaustion).
    * Zero tautology assertions or quota-padding checks; all `assert!`s verify real cross-state or paired boundary invariants.
-   * Zero post-startup heap growth in hot paths (no hidden `Scratch::new()` wrappers), zero `(_offset, _len)` plumbing, and zero recursion.
+   * Zero post-startup heap growth in hot paths (no hidden `Scratch::new()` wrappers), zero "shred-and-reassemble" fake SoA (point-lookup fields share a `Row`; searched tables split at most into hot `Box<[Key]>` + cold `Box<[Payload]>`; standalone `Box<[Field]>` columns exist only for selective slice scans or contiguous `as_chunks::<N>()` SIMD loads), zero standalone `parent_ids: Box<[ParentId]>` columns (use `&children[start..end]` slice narrowing for top-down lookups, and keep bottom-up `parent: ParentId` inline in the child struct), zero `(_offset, _len)` plumbing, and zero recursion.

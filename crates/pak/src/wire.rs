@@ -1,17 +1,16 @@
 //! Zero-copy binary wire layouts and slice-shrinking decoders for `.pak` footers and entries.
 
-use arrayvec::ArrayString;
+use arrayvec::{ArrayString, ArrayVec};
 use zerocopy::byteorder::little_endian::{I32, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use crate::align_up_16;
 use crate::error::{EncryptedSectionKind, LimitKind, PakError, WireContext};
 use crate::types::{
-    BLOCKS_PER_ENTRY_COUNT_MAX, CompressionMethod, EncryptionKeyGuid, EntryFlags, FOOTER_V8A_BYTES,
-    FOOTER_V8B_V10_V11_BYTES, FOOTER_V9_V12_BYTES, PATH_UTF16_UNITS_MAX, PakDialect, PakVersion,
-    Sha1Hash,
+    BLOCKS_PER_ENTRY_COUNT_MAX, COMPRESSION_METHODS_COUNT_MAX, CompressionMethod,
+    EncryptionKeyGuid, EntryFlags, FOOTER_V8A_BYTES, FOOTER_V8B_V10_V11_BYTES, FOOTER_V9_V12_BYTES,
+    PATH_UTF16_UNITS_MAX, PakDialect, PakVersion, Sha1Hash,
 };
-use crate::u32_to_usize;
+use crate::{align_up_16, bounded_len_u32, u32_to_usize};
 
 pub(crate) const MAGIC_UE4: u32 = 0x5A6F_12E1;
 pub(crate) const MAGIC_TLI_V12: u32 = 0x6B2A_56B8;
@@ -92,11 +91,13 @@ pub(crate) struct RawEntryTail {
 const _: () = assert!(core::mem::size_of::<RawEntryTail>() == 5);
 
 /// Single compression block offset (relative to entry `payload_offset`) and unpadded byte length.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CompressionBlock {
     pub(crate) rel_offset: u64,
     pub(crate) compressed_bytes: u32,
 }
+const _: () = assert!(core::mem::size_of::<CompressionBlock>() == 16);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MethodSlot {
@@ -105,11 +106,10 @@ enum MethodSlot {
     Unsupported(ArrayString<32>),
 }
 
-/// Validated footer compression method lookup table (`1..=slot_count`).
-#[derive(Clone, Copy, Debug)]
+/// Validated footer compression method lookup table (`1..=slots.len()`).
+#[derive(Clone, Debug)]
 pub(crate) struct MethodTable {
-    slots: [MethodSlot; 5],
-    slot_count: u32,
+    slots: ArrayVec<MethodSlot, { COMPRESSION_METHODS_COUNT_MAX as usize }>,
 }
 
 impl MethodTable {
@@ -117,18 +117,19 @@ impl MethodTable {
         if raw_index == 0 {
             return Ok(CompressionMethod::None);
         }
-        if raw_index > self.slot_count {
+        let table_len = bounded_len_u32(self.slots.len());
+        let slot_idx = u32_to_usize(raw_index.strict_sub(1));
+        let Some(&slot) = self.slots.get(slot_idx) else {
             return Err(PakError::InvalidCompressionMethodIndex {
                 raw_index,
-                table_len: self.slot_count,
+                table_len,
             });
-        }
-        let slot_idx = u32_to_usize(raw_index - 1);
-        match self.slots[slot_idx] {
+        };
+        match slot {
             MethodSlot::Known(method) => Ok(method),
             MethodSlot::Empty => Err(PakError::InvalidCompressionMethodIndex {
                 raw_index,
-                table_len: self.slot_count,
+                table_len,
             }),
             MethodSlot::Unsupported(name) => Err(PakError::UnsupportedCompressionMethod { name }),
         }
@@ -136,7 +137,7 @@ impl MethodTable {
 }
 
 /// Parsed and validated `FPakInfo` footer metadata.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ParsedFooter {
     pub(crate) dialect: PakDialect,
     pub(crate) version: PakVersion,
@@ -149,7 +150,7 @@ pub(crate) struct ParsedFooter {
     pub(crate) methods: MethodTable,
 }
 
-/// Decoded per-entry metadata ready for structural boundary checks before SoA insertion.
+/// Decoded per-entry metadata ready for structural boundary checks before `EntryTable` insertion.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DecodedEntry {
     pub(crate) header_offset: u64,
@@ -228,8 +229,10 @@ pub(crate) fn take_fstring_into(
             u32::try_from(raw_len).map_err(|_| PakError::CorruptWireLayout { context })?;
         return take_fstring_utf8(buf, byte_count, max_utf8_bytes, limit_kind, context, out);
     }
-    let neg_i64 = -i64::from(raw_len);
-    let unit_count = u32::try_from(neg_i64).map_err(|_| PakError::CorruptWireLayout { context })?;
+    let neg_i32 = raw_len
+        .checked_neg()
+        .ok_or(PakError::CorruptWireLayout { context })?;
+    let unit_count = u32::try_from(neg_i32).map_err(|_| PakError::CorruptWireLayout { context })?;
     take_fstring_utf16(buf, unit_count, max_utf8_bytes, limit_kind, context, out)
 }
 
@@ -322,7 +325,7 @@ pub(crate) fn parse_footer_tail(tail: &[u8]) -> Result<ParsedFooter, PakError> {
     ];
     for candidate in &probes {
         if let Some(Ok(footer)) = candidate {
-            return Ok(*footer);
+            return Ok(footer.clone());
         }
     }
     for candidate in probes {
@@ -350,23 +353,21 @@ fn decode_wire_bool(raw: u8) -> Result<bool, PakError> {
 }
 
 fn parse_method_table(buf: &mut &[u8], slot_count: u32) -> Result<MethodTable, PakError> {
-    assert!(slot_count == 4 || slot_count == 5);
-    let mut slots = [MethodSlot::Empty; 5];
-    for slot in slots.iter_mut().take(u32_to_usize(slot_count)) {
+    assert!(slot_count >= 4);
+    assert!(slot_count <= COMPRESSION_METHODS_COUNT_MAX);
+    let mut slots = ArrayVec::<MethodSlot, { COMPRESSION_METHODS_COUNT_MAX as usize }>::new();
+    for _ in 0..slot_count {
         let raw_bytes = take::<[u8; 32]>(buf, WireContext::Footer)?;
-        *slot = parse_method_slot(raw_bytes)?;
+        slots.push(parse_method_slot(raw_bytes)?);
     }
-    Ok(MethodTable { slots, slot_count })
+    Ok(MethodTable { slots })
 }
 
 fn parse_method_slot(raw: &[u8; 32]) -> Result<MethodSlot, PakError> {
-    let mut prefix: &[u8] = raw;
-    for (idx, &byte) in raw.iter().enumerate() {
-        if byte == 0 {
-            prefix = &raw[..idx];
-            break;
-        }
-    }
+    let prefix = match raw.iter().position(|&b| b == 0) {
+        Some(idx) => &raw[..idx],
+        None => &raw[..],
+    };
     if prefix.is_empty() {
         return Ok(MethodSlot::Empty);
     }
@@ -570,9 +571,22 @@ pub(crate) fn inline_header_bytes(
         PakDialect::TorchlightInfiniteV12 => 54,
     };
     if has_compression {
-        base + 4 + u32::from(block_count) * 16
+        let block_bytes = u32::from(block_count).strict_mul(16);
+        base.strict_add(4).strict_add(block_bytes)
     } else {
         base
+    }
+}
+
+pub(crate) const INLINE_HEADER_HASH_PREFIX_BYTES_MAX: u32 = 49;
+
+/// Exact byte prefix of an inline `FPakEntry` header required by [`parse_inline_entry_sha1`].
+#[inline]
+#[must_use]
+pub(crate) const fn inline_header_hash_prefix_bytes(dialect: PakDialect) -> u32 {
+    match dialect {
+        PakDialect::StandardUe4 => 48,
+        PakDialect::TorchlightInfiniteV12 => 49,
     }
 }
 
@@ -590,6 +604,7 @@ pub(crate) fn parse_inline_entry_sha1(
 
 struct UnencodedBlocksSpec {
     hdr_bytes: u32,
+    block_count: u16,
     is_encrypted: bool,
     uncompressed_bytes: u64,
     method: CompressionMethod,
@@ -611,29 +626,26 @@ pub(crate) fn decode_unencoded_entry(
     let core = take::<RawEntryCore>(buf, WireContext::UnencodedEntry)?;
     let raw_method = core.compression_method.get();
     let method = methods.resolve(raw_method)?;
-    let (raw_count, raw_blocks_slice) = if raw_method != 0 {
+    let (block_count, raw_blocks_slice) = if raw_method != 0 {
         let count = take_u32_le(buf, WireContext::UnencodedEntry)?;
-        if count > BLOCKS_PER_ENTRY_COUNT_MAX {
+        let Ok(count_u16) = u16::try_from(count) else {
             return Err(PakError::LimitExceeded {
                 kind: LimitKind::BlocksPerEntryCount,
                 actual: u64::from(count),
                 max: u64::from(BLOCKS_PER_ENTRY_COUNT_MAX),
             });
-        }
+        };
         let byte_len = count.checked_mul(16).ok_or(PakError::CorruptWireLayout {
             context: WireContext::UnencodedEntry,
         })?;
         let slice = take_slice(buf, byte_len, WireContext::UnencodedEntry)?;
-        (count, slice)
+        (count_u16, slice)
     } else {
         (0, &[][..])
     };
     let tail = take::<RawEntryTail>(buf, WireContext::UnencodedEntry)?;
     let flags = EntryFlags::from_bits_retain(tail.flags);
     let is_encrypted = flags.contains(EntryFlags::ENCRYPTED);
-    let block_count = u16::try_from(raw_count).map_err(|_| PakError::CorruptWireLayout {
-        context: WireContext::UnencodedEntry,
-    })?;
     let hdr_bytes = inline_header_bytes(dialect, raw_method != 0, block_count);
     let header_offset = core.offset.get();
     let payload_offset =
@@ -646,6 +658,7 @@ pub(crate) fn decode_unencoded_entry(
         raw_blocks_slice,
         UnencodedBlocksSpec {
             hdr_bytes,
+            block_count,
             is_encrypted,
             uncompressed_bytes: core.uncompressed_size.get(),
             method,
@@ -681,7 +694,7 @@ fn push_unencoded_blocks(
     }
     let hdr_u64 = u64::from(spec.hdr_bytes);
     let mut prev_end: u64 = 0;
-    while !raw_blocks_bytes.is_empty() {
+    for _ in 0..spec.block_count {
         let blk = take::<RawCompressedBlock>(&mut raw_blocks_bytes, WireContext::UnencodedEntry)?;
         let start = blk.start.get();
         let end = blk.end.get();
@@ -728,6 +741,7 @@ fn push_unencoded_blocks(
             spec.blocks_total_max,
         )?;
     }
+    assert!(raw_blocks_bytes.is_empty());
     Ok(prev_end)
 }
 
@@ -740,36 +754,20 @@ struct EncodedBlocksSpec {
     blocks_total_max: u32,
 }
 
-/// Decodes a UE4 `v10–v12` bit-packed `EncodedPakEntries` record starting at `byte_offset`,
+/// Decodes a UE4 `v10–v12` bit-packed `EncodedPakEntries` record from a pre-sliced buffer `buf`,
 /// appending any compression blocks directly into `blocks_out`.
 pub(crate) fn decode_encoded_entry(
-    encoded_table: &[u8],
-    byte_offset: u32,
+    mut buf: &[u8],
     dialect: PakDialect,
     methods: &MethodTable,
     blocks_total_max: u32,
     blocks_out: &mut Vec<CompressionBlock>,
 ) -> Result<DecodedEntry, PakError> {
-    let mut buf =
-        encoded_table
-            .get(u32_to_usize(byte_offset)..)
-            .ok_or(PakError::OutOfBoundsRange {
-                offset: u64::from(byte_offset),
-                byte_len: 4,
-                container_bytes: u64::try_from(encoded_table.len()).map_err(|_| {
-                    PakError::CorruptWireLayout {
-                        context: WireContext::EncodedEntry,
-                    }
-                })?,
-            })?;
     let bits = take_u32_le(&mut buf, WireContext::EncodedEntry)?;
     let raw_method = (bits >> 23) & 0x3F;
     let method = methods.resolve(raw_method)?;
     let is_encrypted = ((bits >> 22) & 1) != 0;
-    let block_count =
-        u16::try_from((bits >> 6) & 0xFFFF).map_err(|_| PakError::CorruptWireLayout {
-            context: WireContext::EncodedEntry,
-        })?;
+    let block_count = ((bits >> 6) & 0xFFFF) as u16;
     let block_size_code = bits & 0x3F;
     let compression_block_bytes = if block_size_code == 0x3F {
         take_u32_le(&mut buf, WireContext::EncodedEntry)?

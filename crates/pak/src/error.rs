@@ -59,6 +59,7 @@ pub enum LimitKind {
     PathBytes,
     PathUtf16Units,
     PathArenaBytes,
+    ScratchBlockBytes,
 }
 
 impl core::fmt::Display for LimitKind {
@@ -74,6 +75,7 @@ impl core::fmt::Display for LimitKind {
             Self::PathBytes => "path byte length",
             Self::PathUtf16Units => "path UTF-16 code unit count",
             Self::PathArenaBytes => "path arena total byte length",
+            Self::ScratchBlockBytes => "scratch decoded block byte length",
         };
         f.write_str(label)
     }

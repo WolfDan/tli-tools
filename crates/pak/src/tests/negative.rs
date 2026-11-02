@@ -285,3 +285,54 @@ fn read_batch_into_panics_on_mismatched_outcomes_len() {
     let mut outcomes: [BatchReadOutcome; 0] = [];
     archive.read_batch_into(&mut reqs, &mut scratch, &mut outcomes);
 }
+
+#[test]
+#[should_panic(expected = "EntryId out of bounds")]
+fn read_entry_range_into_panics_on_out_of_bounds_entry_id() {
+    let tmp = TempPakFile::from_bytes(&build_synthetic_pak(&SyntheticPakSpec::new(
+        PakVersion::V12,
+    )));
+    let archive = PakArchive::open(tmp.path(), None).expect("open");
+    let mut scratch = ReadScratch::with_default_limits();
+    archive
+        .read_entry_range_into(EntryId::new(0), 0, &mut scratch, &mut [])
+        .expect("must panic on out-of-bounds EntryId before returning");
+}
+
+#[test]
+fn failed_partial_block_decode_invalidates_cached_block() {
+    let mut spec = SyntheticPakSpec::new(PakVersion::V12);
+    let mut e_good = SyntheticEntry::plain("Check", "Good.bin", &[0x33; 64]);
+    e_good.method = CompressionMethod::Zlib;
+    e_good.block_size = 64;
+
+    let mut e_bad = SyntheticEntry::plain("Check", "Bad.bin", &[0x44; 64]);
+    e_bad.method = CompressionMethod::Zlib;
+    e_bad.block_size = 64;
+    e_bad.precompressed_blocks = Some(vec![vec![0xDE, 0xAD, 0xBE, 0xEF]]);
+
+    spec.entries = vec![e_good, e_bad];
+    let tmp = TempPakFile::from_bytes(&build_synthetic_pak(&spec));
+    let archive = PakArchive::open(tmp.path(), None).expect("open");
+    let mut scratch = ReadScratch::with_default_limits();
+
+    let id_good = archive.find("Check/Good.bin").expect("ok").expect("good");
+    let id_bad = archive.find("Check/Bad.bin").expect("ok").expect("bad");
+
+    let mut out = [0_u8; 8];
+    archive
+        .read_entry_range_into(id_good, 4, &mut scratch, &mut out)
+        .expect("populate block cache");
+    assert_eq!(out, [0x33; 8]);
+
+    assert!(matches!(
+        archive.read_entry_range_into(id_bad, 4, &mut scratch, &mut out),
+        Err(PakError::ZlibDecompressFailed { .. })
+    ));
+
+    out.fill(0);
+    archive
+        .read_entry_range_into(id_good, 8, &mut scratch, &mut out)
+        .expect("re-decode good block cleanly after failed decode");
+    assert_eq!(out, [0x33; 8]);
+}

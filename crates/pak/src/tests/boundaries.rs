@@ -289,6 +289,10 @@ fn scratch_limits_and_capacity_boundaries() {
 
     let mut scratch_too_small =
         ReadScratch::with_limits(ScratchLimits::try_new(0, span - 1).expect("limits"));
+    // Streaming SHA-1 verification succeeds even when `io_bytes_max` is smaller than the entry.
+    archive
+        .verify_entry_sha1(id, &mut scratch_too_small)
+        .expect("streaming sha1 must succeed with constrained scratch");
     let mut dst = [0_u8; 128];
     let err = archive
         .read_entry_into(id, &mut scratch_too_small, &mut dst)
@@ -301,4 +305,65 @@ fn scratch_limits_and_capacity_boundaries() {
         .read_entry_into(id, &mut scratch_exact, &mut dst)
         .expect("exact scratch max must succeed");
     assert_eq!(dst, [0x42; 128]);
+}
+
+#[test]
+fn scratch_block_bytes_and_range_boundaries() {
+    let base = ScratchLimits::DEFAULT;
+    assert!(matches!(
+        base.with_block_bytes_max(0),
+        Err(PakError::LimitExceeded {
+            kind: LimitKind::ScratchBlockBytes,
+            actual: 0,
+            max: 1
+        })
+    ));
+
+    let mut spec = SyntheticPakSpec::new(PakVersion::V12);
+    let mut entry = SyntheticEntry::plain("S", "Range.bin", &[0x7E; 128]);
+    entry.method = CompressionMethod::Zlib;
+    entry.block_size = 64;
+    spec.entries.push(entry);
+    let tmp = TempPakFile::from_bytes(&build_synthetic_pak(&spec));
+    let archive = PakArchive::open(tmp.path(), None).expect("open");
+    let id = archive.entry_id_at(0).expect("id 0");
+
+    let lim_63 = base.with_block_bytes_max(63).expect("63 valid");
+    let mut scratch_63 = ReadScratch::with_limits(lim_63);
+    let mut partial = [0_u8; 10];
+    assert!(matches!(
+        archive.read_entry_range_into(id, 4, &mut scratch_63, &mut partial),
+        Err(PakError::LimitExceeded {
+            kind: LimitKind::ScratchBlockBytes,
+            actual: 64,
+            max: 63
+        })
+    ));
+
+    let lim_64 = base.with_block_bytes_max(64).expect("64 valid");
+    let mut scratch_64 = ReadScratch::with_limits(lim_64);
+    archive
+        .read_entry_range_into(id, 4, &mut scratch_64, &mut partial)
+        .expect("exact 64B block_bytes_max must succeed");
+    assert_eq!(partial, [0x7E; 10]);
+
+    archive
+        .read_entry_range_into(id, 118, &mut scratch_64, &mut partial)
+        .expect("exact end boundary 118 + 10 == 128");
+    assert!(matches!(
+        archive.read_entry_range_into(id, 119, &mut scratch_64, &mut partial),
+        Err(PakError::OutOfBoundsRange {
+            offset: 119,
+            byte_len: 10,
+            container_bytes: 128
+        })
+    ));
+    assert!(matches!(
+        archive.read_entry_range_into(id, u64::MAX, &mut scratch_64, &mut [0_u8; 1]),
+        Err(PakError::OutOfBoundsRange {
+            offset: u64::MAX,
+            byte_len: 1,
+            container_bytes: 128
+        })
+    ));
 }

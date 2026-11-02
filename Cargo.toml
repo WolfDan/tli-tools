@@ -1,7 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/data", "crates/pak", "crates/workspace-hack"]
-default-members = ["crates/data", "crates/pak"]
+members = [
+  "crates/data",
+  "crates/pak",
+  "crates/pak_vfs",
+  "crates/workspace-hack",
+]
+default-members = ["crates/data", "crates/pak", "crates/pak_vfs"]
 
 [workspace.package]
 version = "0.1.0"
@@ -48,7 +53,7 @@ multiple_unsafe_ops_per_block = "deny"
 mem_forget = "deny"
 
 # Semantic cast safety (blocks narrowing, sign-loss, wrap, lossless `as` where `From` exists,
-# precision-loss, and raw pointer `as`, while allowing `#[repr(u8)]` `enum as u8` and `u32_to_usize`)
+# precision-loss, and raw pointer `as`, while allowing `#[repr(u8)]` `enum as u8`, inline-masked/shifted bit-extractions, and `u32_to_usize`)
 cast_possible_truncation = "deny"
 cast_possible_wrap = "deny"
 cast_sign_loss = "deny"

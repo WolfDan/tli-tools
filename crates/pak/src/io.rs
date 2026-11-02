@@ -94,7 +94,10 @@ fn sys_read_exact_at(file: &File, mut offset: u64, mut dst: &mut [u8]) -> std::i
         offset = offset
             .checked_add(read_u64)
             .ok_or_else(|| std::io::Error::other("positioned read offset overflowed u64"))?;
-        dst = &mut dst[bytes_read..];
+        let (_, remaining) = dst
+            .split_at_mut_checked(bytes_read)
+            .ok_or_else(|| std::io::Error::other("positioned read count exceeded buffer"))?;
+        dst = remaining;
     }
     if dst.is_empty() {
         return Ok(());

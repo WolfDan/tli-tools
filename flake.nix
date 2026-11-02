@@ -119,6 +119,16 @@
           };
         });
 
+      # Data-oriented TigerStyle Virtual File System over Unreal Engine .pak archives
+      pak_vfs = craneLib.buildPackage (individualCrateArgs
+        // {
+          pname = "pak_vfs";
+          cargoExtraArgs = "-p pak_vfs";
+          meta = {
+            description = "High-performance, low-memory Virtual File System over Unreal Engine .pak archives";
+          };
+        });
+
       # Helper script to regenerate and verify the cargo-hakari workspace-hack crate
       hakariRegenApp = pkgs.writeShellApplication {
         name = "tli-hakari-regen";
@@ -141,7 +151,7 @@
     in {
       checks = {
         # Build all workspace packages as part of `nix flake check`
-        inherit data pak;
+        inherit data pak pak_vfs;
 
         # Verify `workspace-hack` is up-to-date and properly wired across all crates
         tli-hakari = craneLib.mkCargoDerivation {
@@ -203,7 +213,7 @@
 
       packages = {
         default = data;
-        inherit data pak;
+        inherit data pak pak_vfs;
         deps = cargoArtifacts;
       };
 

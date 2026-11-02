@@ -4,13 +4,16 @@
 //! and Torchlight Infinite's custom `v12` `.pak` dialect (`magic = 0x6B2A56B8`).
 //!
 //! # Design
-//! - **Metadata-only open:** [`PakArchive::open`] reads only the trailing footer and index tables,
-//!   flattening all metadata into immutable Struct-of-Arrays `Box<[T]>` columns with zero payload caching.
-//! - **Lock-free concurrency:** [`PakArchive`] is `Send + Sync` and reads directly via positioned OS
-//!   syscalls (`pread` on Unix, `OVERLAPPED` `seek_read` on Windows).
+//! - **Metadata-only open:** [`PakArchive::open`], [`PakArchive::open_with_options`], and
+//!   [`PakPayloadReader::open_streaming`] read only the trailing footer and index tables,
+//!   flattening all metadata into immutable contiguous `Box<[T]>` tables grouped by access
+//!   temperature with zero payload caching.
+//! - **Lock-free concurrency:** [`PakArchive`] and [`PakPayloadReader`] are `Send + Sync` and read
+//!   directly via positioned OS syscalls (`pread` on Unix, `OVERLAPPED` `seek_read` on Windows).
 //! - **Explicit scratch reuse:** Callers allocate [`ReadScratch`] once per thread and reuse it across
-//!   [`PakArchive::read_entry_into`] and [`PakArchive::read_batch_into`] calls for zero post-startup
-//!   heap allocations.
+//!   [`PakArchive::read_entry_into`], [`PakArchive::read_entry_range_into`],
+//!   [`PakArchive::read_batch_into`], and [`PakArchive::verify_entry_sha1`] (and their
+//!   [`PakPayloadReader`] counterparts) for zero post-startup heap allocations.
 
 mod archive;
 mod crypto;
@@ -24,7 +27,7 @@ mod tests;
 mod types;
 mod wire;
 
-pub use archive::{EntryIter, PakArchive};
+pub use archive::{EntryIter, PakArchive, PakPayloadReader};
 pub use error::{
     EncryptedSectionKind, IndexSectionKind, KeyParseErrorKind, LimitKind, PakError, WireContext,
 };
@@ -37,7 +40,8 @@ pub use types::{
     EntryId, EntryMeta, FOOTER_BYTES_MAX, FOOTER_V8A_BYTES, FOOTER_V8B_V10_V11_BYTES,
     FOOTER_V9_V12_BYTES, INDEX_BYTES_MAX_DEFAULT, MOUNT_POINT_BYTES_MAX, OpenOptions,
     PATH_BYTES_MAX, PATH_UTF16_UNITS_MAX, PakDialect, PakLimits, PakVersion, PathHash,
-    SCRATCH_IO_BYTES_INITIAL_DEFAULT, SCRATCH_IO_BYTES_MAX_DEFAULT, Sha1Hash,
+    SCRATCH_BLOCK_BYTES_MAX_DEFAULT, SCRATCH_IO_BYTES_INITIAL_DEFAULT,
+    SCRATCH_IO_BYTES_MAX_DEFAULT, Sha1Hash, StreamingEntry,
 };
 
 const _: () = assert!(usize::BITS >= 32);
@@ -49,12 +53,16 @@ pub const fn u32_to_usize(x: u32) -> usize {
     x as usize
 }
 
-/// Extracts the lower 32 bits of a `u64` without narrowing `as` casts.
+/// Converts a pre-validated slice/table length (`<= u32::MAX`) to `u32`.
 #[inline(always)]
 #[must_use]
-pub(crate) const fn low_u32(x: u64) -> u32 {
-    let b = x.to_le_bytes();
-    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Invariant: bounded table length is validated <= u32::MAX"
+)]
+pub(crate) const fn bounded_len_u32(len: usize) -> u32 {
+    assert!(len <= u32_to_usize(u32::MAX));
+    len as u32
 }
 
 /// Rounds `x` up to the next 16-byte AES block boundary, returning `None` on `u64` overflow.
@@ -65,6 +73,6 @@ pub(crate) const fn align_up_16(x: u64) -> Option<u64> {
     if rem == 0 {
         Some(x)
     } else {
-        x.checked_add(16 - rem)
+        x.checked_add(16_u64.strict_sub(rem))
     }
 }
