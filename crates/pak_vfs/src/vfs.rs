@@ -269,7 +269,7 @@ impl PakVfs {
     #[must_use]
     pub fn resolve_ue_mount_root(&self, alias: &str) -> Option<DirId> {
         let trimmed = alias.trim_matches(['/', '\\']);
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || trimmed.len() > u32_to_usize(self.limits.path_bytes_max()) {
             return None;
         }
         self.mount_aliases.resolve(trimmed, &self.arena)
@@ -278,7 +278,7 @@ impl PakVfs {
     /// Looks up a winning file by Unreal logical mount path (such as `"/Game/Art/Hero.uasset"`,
     /// `"/Engine/..."`, or `"/<PluginName>/..."`) with zero heap allocation.
     pub fn find_ue(&self, ue_path: &str) -> Result<Option<FileId>, VfsError> {
-        let (alias, rel_path) = split_ue_logical_path(ue_path)?;
+        let (alias, rel_path) = split_ue_logical_path(ue_path, self.limits)?;
         let Some(prefix) = self.mount_aliases.resolve_prefix(alias, &self.arena) else {
             let _validated = parse_relative_file_tail(DirPrefixState::ROOT, rel_path, self.limits)?;
             return Ok(None);
@@ -290,7 +290,7 @@ impl PakVfs {
     /// Looks up a virtual directory by Unreal logical mount path (such as `"/Game"`, `"/Game/UI"`,
     /// or `"/Engine/Materials"`) in `O(1)` time with zero heap allocation.
     pub fn find_ue_dir(&self, ue_dir_path: &str) -> Result<Option<DirId>, VfsError> {
-        let (alias, rel_path) = split_ue_logical_path(ue_dir_path)?;
+        let (alias, rel_path) = split_ue_logical_path(ue_dir_path, self.limits)?;
         let Some(prefix) = self.mount_aliases.resolve_prefix(alias, &self.arena) else {
             let _validated = parse_relative_dir_tail(DirPrefixState::ROOT, rel_path, self.limits)?;
             return Ok(None);
@@ -311,7 +311,7 @@ impl PakVfs {
         &self,
         ue_package_path: &str,
     ) -> Result<Option<ResolvedPackage>, VfsError> {
-        let (alias, rel_path) = split_ue_logical_path(ue_package_path)?;
+        let (alias, rel_path) = split_ue_logical_path(ue_package_path, self.limits)?;
         let Some(prefix) = self.mount_aliases.resolve_prefix(alias, &self.arena) else {
             let _validated = parse_relative_file_tail(DirPrefixState::ROOT, rel_path, self.limits)?;
             return Ok(None);
@@ -661,23 +661,24 @@ impl PakVfs {
                 .pak_record(eref.pak_id)
                 .reader
                 .entry_meta(eref.entry_id);
-            let disk_offset = match req.window {
-                ReadWindow::WholeFile => meta.payload_offset(),
+            let (disk_offset, in_file_offset) = match req.window {
+                ReadWindow::WholeFile => (meta.payload_offset(), 0),
                 ReadWindow::ByteRange { offset }
                     if meta.compression_method() == CompressionMethod::None =>
                 {
-                    meta.payload_offset().saturating_add(offset)
+                    (meta.payload_offset().saturating_add(offset), offset)
                 }
-                ReadWindow::ByteRange { .. } => meta.payload_offset(),
+                ReadWindow::ByteRange { offset } => (meta.payload_offset(), offset),
             };
             let pushed = order.try_push(BatchOrderSlot {
                 local_idx,
                 pak_id: eref.pak_id,
                 disk_offset,
+                in_file_offset,
             });
             assert!(pushed.is_ok());
         }
-        order.sort_unstable_by_key(|s| (s.pak_id, s.disk_offset, s.local_idx));
+        order.sort_unstable_by_key(|s| (s.pak_id, s.disk_offset, s.in_file_offset, s.local_idx));
 
         for slot in &order {
             let i = u32_to_usize(slot.local_idx);
@@ -712,6 +713,7 @@ struct BatchOrderSlot {
     local_idx: u32,
     pak_id: PakId,
     disk_offset: u64,
+    in_file_offset: u64,
 }
 
 /// Exact-size iterator over discovered [`MountAlias`] entries in a [`PakVfs`].

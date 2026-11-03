@@ -473,11 +473,16 @@ impl FileTable {
         let dir_keys = &self.keys[start..end];
         let rel = dir_keys
             .partition_point(|k| cmp_folded_str(arena.get(k.stem_span()), query_stem).is_lt());
+        let tail = &dir_keys[rel..];
+        let (&first_key, _) = tail.split_first()?;
+        if !eq_folded_str(arena.get(first_key.stem_span()), query_stem) {
+            return None;
+        }
         let first_idx = dir_range.start.strict_add(bounded_len_u32(rel));
-        for (fid_u32, key) in
-            (first_idx..dir_range.start.strict_add(dir_range.count)).zip(dir_keys[rel..].iter())
+        for (fid_u32, &key) in
+            (first_idx..dir_range.start.strict_add(dir_range.count)).zip(tail.iter())
         {
-            if !eq_folded_str(arena.get(key.stem_span()), query_stem) {
+            if fid_u32 > first_idx && !same_key_stem(key, first_key, query_stem, arena) {
                 break;
             }
             if eq_folded_opt_str(exts.get(key.ext_slot, arena), query_ext) {
@@ -519,9 +524,12 @@ impl FileTable {
         arena: &StringArena,
     ) -> Option<ResolvedPackage> {
         assert_eq!(self.keys.len(), self.payloads.len());
+        let anchor_ref = self.entry_ref(anchor);
+        if !anchor_ref.known_ext.is_package_member() {
+            return None;
+        }
         let anchor_idx = anchor.index();
         let anchor_key = self.key(anchor);
-        let anchor_ref = self.entry_ref(anchor);
         let dir_range = dirs.file_range(anchor_ref.dir);
         let dir_start = dir_range.start;
         let dir_end = dir_range.start.strict_add(dir_range.count);

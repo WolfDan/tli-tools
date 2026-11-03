@@ -118,7 +118,7 @@ fn path_bytes_utf16_units_and_mount_point_boundaries() {
         }
     ));
 
-    let mut out = Vec::new();
+    let mut out = String::new();
     for &units in &[
         0_u32,
         PATH_UTF16_UNITS_MAX - 1,

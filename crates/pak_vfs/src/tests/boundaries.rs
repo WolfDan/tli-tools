@@ -238,3 +238,29 @@ fn read_range_exact_eof_boundaries() {
         Err(VfsError::OutOfBoundsRange { .. })
     ));
 }
+
+#[test]
+fn ue_mount_alias_and_project_name_path_byte_bounds() {
+    let lim_pb10 = VfsLimits::DEFAULT.with_path_bytes_max(10).expect("ok");
+    let vfs =
+        PakVfs::open_mounts(&[], &VfsOpenOptions::new(None).with_limits(lim_pb10)).expect("open");
+    assert!(matches!(
+        vfs.find_ue("/AliasOver10Bytes/f.tx"),
+        Err(VfsError::LimitExceeded {
+            kind: VfsLimitKind::PathBytes,
+            ..
+        })
+    ));
+
+    let max_proj = "p".repeat(VFS_PATH_BYTES_HARD_MAX as usize);
+    assert!(
+        VfsOpenOptions::new(None)
+            .with_game_project_name(&max_proj)
+            .is_ok()
+    );
+    let over_proj = "p".repeat(VFS_PATH_BYTES_HARD_MAX as usize + 1);
+    assert!(matches!(
+        VfsOpenOptions::new(None).with_game_project_name(&over_proj),
+        Err(VfsError::InvalidProjectName)
+    ));
+}

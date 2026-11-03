@@ -104,23 +104,23 @@ const fn normalize_ascii_byte(byte: u8) -> u8 {
 }
 
 /// Normalizes a single relative path (`\` -> `/`, leading separators stripped) into `out`.
-pub(crate) fn normalize_rel_path_into(raw: &[u8], out: &mut Vec<u8>) -> Result<(), PakError> {
+pub(crate) fn normalize_rel_path_into(raw: &str, out: &mut String) -> Result<(), PakError> {
     out.clear();
-    let trimmed = trim_leading_sep_bytes(raw);
-    push_normalized_bytes(trimmed, out)
+    let trimmed = raw.trim_start_matches(['/', '\\']);
+    push_normalized_str(trimmed, out)
 }
 
 /// Joins a `FullDirectoryIndex` `(dir_name, file_name)` pair into a canonical relative UTF-8 path.
 pub(crate) fn normalize_join_dir_file_into(
-    dir: &[u8],
-    file: &[u8],
-    out: &mut Vec<u8>,
+    dir: &str,
+    file: &str,
+    out: &mut String,
 ) -> Result<(), PakError> {
     out.clear();
-    let dir_trim = trim_leading_sep_bytes(dir);
-    let file_trim = trim_leading_sep_bytes(file);
-    push_normalized_bytes(dir_trim, out)?;
-    if !out.is_empty() && !file_trim.is_empty() && out.last().copied() != Some(b'/') {
+    let dir_trim = dir.trim_start_matches(['/', '\\']);
+    let file_trim = file.trim_start_matches(['/', '\\']);
+    push_normalized_str(dir_trim, out)?;
+    if !out.is_empty() && !file_trim.is_empty() && !out.ends_with('/') {
         if out.len() >= u32_to_usize(PATH_BYTES_MAX) {
             return Err(PakError::LimitExceeded {
                 kind: LimitKind::PathBytes,
@@ -128,20 +128,12 @@ pub(crate) fn normalize_join_dir_file_into(
                 max: u64::from(PATH_BYTES_MAX),
             });
         }
-        out.push(b'/');
+        out.push('/');
     }
-    push_normalized_bytes(file_trim, out)
+    push_normalized_str(file_trim, out)
 }
 
-#[inline]
-fn trim_leading_sep_bytes(bytes: &[u8]) -> &[u8] {
-    match bytes.iter().position(|&b| b != b'/' && b != b'\\') {
-        Some(idx) => &bytes[idx..],
-        None => &[],
-    }
-}
-
-fn push_normalized_bytes(src: &[u8], out: &mut Vec<u8>) -> Result<(), PakError> {
+fn push_normalized_str(src: &str, out: &mut String) -> Result<(), PakError> {
     let new_len = out
         .len()
         .checked_add(src.len())
@@ -162,8 +154,11 @@ fn push_normalized_bytes(src: &[u8], out: &mut Vec<u8>) -> Result<(), PakError> 
             max: u64::from(PATH_BYTES_MAX),
         });
     }
-    for &b in src {
-        out.push(if b == b'\\' { b'/' } else { b });
+    for (idx, part) in src.split('\\').enumerate() {
+        if idx > 0 {
+            out.push('/');
+        }
+        out.push_str(part);
     }
     Ok(())
 }

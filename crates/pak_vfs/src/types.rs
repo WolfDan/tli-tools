@@ -6,6 +6,7 @@ use std::path::Path;
 use pak::{AesKey, CompressionMethod, EntryId, EntryMeta, OpenOptions, PakDialect, PakVersion};
 
 use crate::error::{VfsError, VfsLimitKind};
+use crate::u32_to_usize;
 
 /// Default upper bound on mounted `.pak` archives (`1,024`).
 pub const PAKS_COUNT_MAX_DEFAULT: u16 = 1_024;
@@ -361,6 +362,7 @@ impl VfsOpenOptions {
         if project_name.is_empty()
             || project_name == "."
             || project_name == ".."
+            || project_name.len() > u32_to_usize(VFS_PATH_BYTES_HARD_MAX)
             || project_name.contains(['/', '\\', '\0'])
         {
             return Err(VfsError::InvalidProjectName);

@@ -125,6 +125,13 @@ fn collect_dir_entry(
     limits: VfsLimits,
     out: &mut Vec<DiscoveredPak>,
 ) -> Result<(), VfsError> {
+    let os_name = entry.file_name();
+    let Some(file_name) = os_name.to_str() else {
+        return Ok(());
+    };
+    if !has_pak_extension(file_name) {
+        return Ok(());
+    }
     let path = entry.path();
     let meta = fs::metadata(&path).map_err(|source| VfsError::Io {
         action: VfsIoAction::StatPakFile,
@@ -132,15 +139,6 @@ fn collect_dir_entry(
         source,
     })?;
     if !meta.is_file() {
-        return Ok(());
-    }
-    let Some(os_name) = path.file_name() else {
-        return Ok(());
-    };
-    let Some(file_name) = os_name.to_str() else {
-        return Ok(());
-    };
-    if !has_pak_extension(file_name) {
         return Ok(());
     }
     if out.len() >= usize::from(limits.paks_count_max()) {

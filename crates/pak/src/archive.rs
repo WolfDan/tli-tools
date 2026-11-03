@@ -4,6 +4,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use arrayvec::ArrayVec;
 use flate2::{Decompress, FlushDecompress, Status};
 use oozextract::Extractor;
 
@@ -25,6 +26,13 @@ use crate::wire::{
 use crate::{align_up_16, bounded_len_u32, u32_to_usize};
 
 const SHA1_STREAM_CHUNK_BYTES_MAX: u32 = 4 * 1024 * 1024;
+const BATCH_SORT_CHUNK_MAX: u32 = 64;
+
+#[derive(Clone, Copy)]
+struct PakBatchOrderSlot {
+    local_idx: u32,
+    payload_offset: u64,
+}
 
 const fn assert_send_sync<T: Send + Sync>() {}
 const _: () = assert_send_sync::<PakPayloadReader>();
@@ -369,9 +377,11 @@ impl PakPayloadReader {
         cipher.decrypt_in_place(EncryptedSectionKind::EntryPayload, buf)
     }
 
-    /// Executes a batch of entry reads reusing `scratch` and recording per-item outcomes into `outcomes`.
+    /// Executes a batch of entry reads reusing `scratch` and recording per-item outcomes into `outcomes`,
+    /// using 64-item stack-sorted `payload_offset` elevator scheduling with zero heap allocation.
     ///
-    /// Total over empty slices (`&mut []`). Asserts `requests.len() == outcomes.len()`.
+    /// Total over empty slices (`&mut []`). Asserts `requests.len() == outcomes.len()` and validates
+    /// all [`EntryId`] handles upfront before performing any I/O.
     pub fn read_batch_into(
         &self,
         requests: &mut [BatchReadRequest<'_>],
@@ -379,8 +389,44 @@ impl PakPayloadReader {
         outcomes: &mut [BatchReadOutcome],
     ) {
         assert_eq!(requests.len(), outcomes.len());
-        for (req, slot) in requests.iter_mut().zip(outcomes.iter_mut()) {
-            *slot = match self.read_entry_into(req.id, scratch, req.dst) {
+        for req in requests.iter() {
+            assert!(
+                req.id.index() < self.entries.len(),
+                "EntryId out of bounds for this PakPayloadReader"
+            );
+        }
+        let chunk_max = u32_to_usize(BATCH_SORT_CHUNK_MAX);
+        for (req_chunk, out_chunk) in requests
+            .chunks_mut(chunk_max)
+            .zip(outcomes.chunks_mut(chunk_max))
+        {
+            self.execute_sorted_batch_chunk(req_chunk, scratch, out_chunk);
+        }
+    }
+
+    fn execute_sorted_batch_chunk(
+        &self,
+        req_chunk: &mut [BatchReadRequest<'_>],
+        scratch: &mut ReadScratch,
+        out_chunk: &mut [BatchReadOutcome],
+    ) {
+        assert_eq!(req_chunk.len(), out_chunk.len());
+        assert!(req_chunk.len() <= u32_to_usize(BATCH_SORT_CHUNK_MAX));
+        let mut order = ArrayVec::<PakBatchOrderSlot, { BATCH_SORT_CHUNK_MAX as usize }>::new();
+        let chunk_len = bounded_len_u32(req_chunk.len());
+        for (local_idx, req) in (0..chunk_len).zip(req_chunk.iter()) {
+            let payload_offset = self.entries.record(req.id).payload_offset;
+            let pushed = order.try_push(PakBatchOrderSlot {
+                local_idx,
+                payload_offset,
+            });
+            assert!(pushed.is_ok());
+        }
+        order.sort_unstable_by_key(|s| (s.payload_offset, s.local_idx));
+        for slot in &order {
+            let idx = u32_to_usize(slot.local_idx);
+            let req = &mut req_chunk[idx];
+            out_chunk[idx] = match self.read_entry_into(req.id, scratch, req.dst) {
                 Ok(bytes_written) => BatchReadOutcome::Ok { bytes_written },
                 Err(err) => BatchReadOutcome::Err(err),
             };

@@ -392,6 +392,8 @@ fn package_resolution_asset_map_and_multidot() {
     spec.entries
         .push(TestPakEntry::plain("Art", "Hero.uptnl", b"ptn"));
     spec.entries
+        .push(TestPakEntry::plain("Art", "Hero.ini", b"ini"));
+    spec.entries
         .push(TestPakEntry::plain("Art", "Hero.v2.uasset", b"v2h"));
     spec.entries
         .push(TestPakEntry::plain("Art", "Hero.v2.uexp", b"v2e"));
@@ -420,6 +422,11 @@ fn package_resolution_asset_map_and_multidot() {
         vfs.package_for_file(hero.ubulk().expect("ubulk")),
         Some(hero)
     );
+    let hero_ini = vfs
+        .find("UE_game/Content/Art/Hero.ini")
+        .expect("ok")
+        .expect("Hero.ini");
+    assert_eq!(vfs.package_for_file(hero_ini), None);
 
     let v2 = vfs
         .resolve_ue_package("/Game/Art/Hero.v2")

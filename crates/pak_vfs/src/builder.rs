@@ -11,8 +11,8 @@ use crate::lookup::DirLookupTable;
 use crate::mount_alias::{MountAliasTable, discover_mount_aliases};
 use crate::path::{
     FNV1A_64_OFFSET_BASIS, add_segment_byte_budget, cmp_folded_str, cmp_folded_then_exact,
-    eq_folded_opt_str, eq_folded_str, extend_path_hash, extend_stem_ext_hash, hash_folded_bytes,
-    parse_mount_prefix, split_stem_ext, validate_named_segment,
+    eq_folded_opt_str, eq_folded_str, extend_path_hash, hash_folded_bytes, parse_mount_prefix,
+    split_stem_ext, validate_named_segment,
 };
 use crate::table::{DirNode, DirTable, FileKey, FileTable, IdRange, PakEntryRef};
 use crate::types::{
@@ -176,15 +176,20 @@ struct StagingDirNode {
     parent: Option<u32>,
     name_span: ArenaSpan,
     depth: u16,
+    has_subdirs: bool,
+    has_files: bool,
     norm_bytes: u32,
     dir_hash: Option<u64>,
 }
+const _: () = assert!(core::mem::size_of::<StagingDirNode>() == 40);
 
 impl StagingDirNode {
     const ROOT: Self = Self {
         parent: None,
         name_span: ArenaSpan::EMPTY,
         depth: 0,
+        has_subdirs: false,
+        has_files: false,
         norm_bytes: 0,
         dir_hash: None,
     };
@@ -357,7 +362,11 @@ impl StagingState {
 
     fn intern_child_dir(&mut self, parent_dir: u32, seg: &str) -> Result<u32, VfsError> {
         validate_named_segment(seg)?;
-        if let Some(existing) = self.dir_map.find(parent_dir, seg, &self.dirs, &self.text) {
+        let edge_hash = dir_edge_hash(parent_dir, seg);
+        if let Some(existing) = self
+            .dir_map
+            .find_with_hash(parent_dir, seg, edge_hash, &self.dirs, &self.text)
+        {
             return Ok(existing);
         }
         let parent_node = self.dirs[u32_to_usize(parent_dir)];
@@ -380,36 +389,35 @@ impl StagingState {
             });
         }
         let dir_hash = extend_path_hash(parent_node.dir_hash, seg);
-        let (seg_stem, seg_ext) = split_stem_ext(seg);
-        let probe_key = StagingFileKey {
-            path_hash: dir_hash,
-            staging_dir: parent_dir,
-            stem: seg_stem,
-            ext: seg_ext,
-        };
-        if self
-            .winner_map
-            .contains(probe_key, &self.files, &self.text, &self.exts)
-        {
-            return Err(VfsError::PathNamespaceConflict);
+        if parent_node.has_files {
+            let (seg_stem, seg_ext) = split_stem_ext(seg);
+            let probe_key = StagingFileKey {
+                path_hash: dir_hash,
+                staging_dir: parent_dir,
+                stem: seg_stem,
+                ext: seg_ext,
+            };
+            if self
+                .winner_map
+                .contains(probe_key, &self.files, &self.text, &self.exts)
+            {
+                return Err(VfsError::PathNamespaceConflict);
+            }
         }
         let name_span = self.push_staging_str(seg)?;
         let new_idx = cur_dir_count;
+        self.dirs[u32_to_usize(parent_dir)].has_subdirs = true;
         self.dirs.push(StagingDirNode {
             parent: Some(parent_dir),
             name_span,
             depth: next_depth,
+            has_subdirs: false,
+            has_files: false,
             norm_bytes,
             dir_hash: Some(dir_hash),
         });
-        self.dir_map.insert(
-            parent_dir,
-            seg,
-            new_idx,
-            &self.dirs,
-            &self.text,
-            self.limits,
-        )?;
+        self.dir_map
+            .insert_with_hash(edge_hash, new_idx, &self.dirs, &self.text, self.limits)?;
         Ok(new_idx)
     }
 
@@ -424,7 +432,7 @@ impl StagingState {
         let _total_bytes =
             add_segment_byte_budget(parent_node.norm_bytes, leaf, parent_dir != 0, self.limits)?;
         let (stem, ext) = split_stem_ext(leaf);
-        let path_hash = extend_stem_ext_hash(parent_node.dir_hash, stem, ext);
+        let path_hash = extend_path_hash(parent_node.dir_hash, leaf);
         let probe_key = StagingFileKey {
             path_hash,
             staging_dir: parent_dir,
@@ -437,10 +445,17 @@ impl StagingState {
         {
             return Ok(false);
         }
-        if self
-            .dir_map
-            .find(parent_dir, leaf, &self.dirs, &self.text)
-            .is_some()
+        if parent_node.has_subdirs
+            && self
+                .dir_map
+                .find_with_hash(
+                    parent_dir,
+                    leaf,
+                    dir_edge_hash(parent_dir, leaf),
+                    &self.dirs,
+                    &self.text,
+                )
+                .is_some()
         {
             return Err(VfsError::PathNamespaceConflict);
         }
@@ -455,6 +470,7 @@ impl StagingState {
         let ext_slot = self.exts.intern(ext, self.limits)?;
         let stem_span = self.push_staging_str(stem)?;
         let file_idx = cur_file_count;
+        self.dirs[u32_to_usize(parent_dir)].has_files = true;
         self.files.push(StagingFile {
             staging_dir: parent_dir,
             stem_span,
@@ -533,14 +549,14 @@ impl StagingDirMap {
         self.table_len().strict_sub(1)
     }
 
-    fn find(
+    fn find_with_hash(
         &self,
         parent_dir: u32,
         seg: &str,
+        key_hash: u64,
         nodes: &[StagingDirNode],
         text: &str,
     ) -> Option<u32> {
-        let key_hash = dir_edge_hash(parent_dir, seg);
         let target_hi = hash_hi32(key_hash);
         let table_len = self.table_len();
         let mask = self.mask();
@@ -564,10 +580,9 @@ impl StagingDirMap {
         None
     }
 
-    fn insert(
+    fn insert_with_hash(
         &mut self,
-        parent_dir: u32,
-        seg: &str,
+        key_hash: u64,
         dir_idx: u32,
         nodes: &[StagingDirNode],
         text: &str,
@@ -577,7 +592,6 @@ impl StagingDirMap {
         if self.occupied.saturating_mul(2) >= table_len {
             self.grow(nodes, text, limits)?;
         }
-        let key_hash = dir_edge_hash(parent_dir, seg);
         self.insert_raw(key_hash, dir_idx);
         Ok(())
     }

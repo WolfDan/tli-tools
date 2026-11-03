@@ -152,6 +152,15 @@ impl KnownExt {
             Self::Other
         }
     }
+
+    #[inline]
+    #[must_use]
+    pub(crate) const fn is_package_member(self) -> bool {
+        match self {
+            Self::Uasset | Self::Umap | Self::Uexp | Self::Ubulk | Self::Uptnl => true,
+            Self::None | Self::Uplugin | Self::Other => false,
+        }
+    }
 }
 
 #[repr(C)]
@@ -272,16 +281,12 @@ impl ExtBuilder {
         let Some(ext_str) = ext else {
             return Ok(None);
         };
-        let mut folded_match: Option<ExtSlotId> = None;
         for entry in &self.entries {
-            let existing = self.slice(entry.span);
-            if existing == ext_str {
+            if self.slice(entry.span) == ext_str {
                 return Ok(Some(entry.slot));
             }
-            if folded_match.is_none() && eq_folded_str(existing, ext_str) {
-                folded_match = Some(entry.canonical_slot);
-            }
         }
+        let folded_match = self.find_folded_canonical(ext_str);
         let cur_count = self.count();
         if cur_count >= limits.exts_count_max() {
             return Err(VfsError::LimitExceeded {
@@ -328,6 +333,15 @@ impl ExtBuilder {
             known: KnownExt::classify(Some(ext_str)),
         });
         Ok(Some(slot))
+    }
+
+    fn find_folded_canonical(&self, ext_str: &str) -> Option<ExtSlotId> {
+        for entry in &self.entries {
+            if eq_folded_str(self.slice(entry.span), ext_str) {
+                return Some(entry.canonical_slot);
+            }
+        }
+        None
     }
 
     #[inline]

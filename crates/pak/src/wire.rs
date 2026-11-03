@@ -217,7 +217,7 @@ pub(crate) fn take_fstring_into(
     max_utf8_bytes: u32,
     limit_kind: LimitKind,
     context: WireContext,
-    out: &mut Vec<u8>,
+    out: &mut String,
 ) -> Result<(), PakError> {
     out.clear();
     let raw_len = take_i32_le(buf, context)?;
@@ -242,7 +242,7 @@ fn take_fstring_utf8(
     max_utf8_bytes: u32,
     limit_kind: LimitKind,
     context: WireContext,
-    out: &mut Vec<u8>,
+    out: &mut String,
 ) -> Result<(), PakError> {
     let content_bytes = byte_count
         .checked_sub(1)
@@ -260,8 +260,9 @@ fn take_fstring_utf8(
         return Err(PakError::CorruptWireLayout { context });
     }
     let content = &raw[..content_end];
-    core::str::from_utf8(content).map_err(|_| PakError::InvalidUtf8String { context })?;
-    out.extend_from_slice(content);
+    let text =
+        core::str::from_utf8(content).map_err(|_| PakError::InvalidUtf8String { context })?;
+    out.push_str(text);
     Ok(())
 }
 
@@ -271,7 +272,7 @@ fn take_fstring_utf16(
     max_utf8_bytes: u32,
     limit_kind: LimitKind,
     context: WireContext,
-    out: &mut Vec<u8>,
+    out: &mut String,
 ) -> Result<(), PakError> {
     let content_units = unit_count
         .checked_sub(1)
@@ -296,7 +297,7 @@ fn take_fstring_utf16(
     let mut encode_buf = [0_u8; 4];
     for ch_res in char::decode_utf16(pairs[..term_idx].iter().map(|p| u16::from_le_bytes(*p))) {
         let ch = ch_res.map_err(|_| PakError::InvalidUtf16String { context })?;
-        let encoded = ch.encode_utf8(&mut encode_buf).as_bytes();
+        let encoded = ch.encode_utf8(&mut encode_buf);
         let new_len = out
             .len()
             .checked_add(encoded.len())
@@ -310,7 +311,7 @@ fn take_fstring_utf16(
                 max: u64::from(max_utf8_bytes),
             });
         }
-        out.extend_from_slice(encoded);
+        out.push_str(encoded);
     }
     Ok(())
 }
@@ -323,17 +324,17 @@ pub(crate) fn parse_footer_tail(tail: &[u8]) -> Result<ParsedFooter, PakError> {
         probe_ue4_v9(tail),
         probe_ue4_v8a(tail),
     ];
-    for candidate in &probes {
-        if let Some(Ok(footer)) = candidate {
-            return Ok(footer.clone());
-        }
-    }
+    let mut first_err = None;
     for candidate in probes {
-        if let Some(Err(err)) = candidate {
-            return Err(err);
+        match candidate {
+            Some(Ok(footer)) => return Ok(footer),
+            Some(Err(err)) => {
+                first_err.get_or_insert(err);
+            }
+            None => {}
         }
     }
-    Err(PakError::InvalidFooterMagic)
+    Err(first_err.unwrap_or(PakError::InvalidFooterMagic))
 }
 
 fn tail_suffix(tail: &[u8], suffix_bytes: u32) -> Option<&[u8]> {

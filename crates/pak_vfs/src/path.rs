@@ -119,21 +119,6 @@ pub(crate) fn extend_path_hash(parent_hash: Option<u64>, seg: &str) -> u64 {
     hash_folded_bytes(base, seg)
 }
 
-/// Appends `leaf = "{stem}"` or `"{stem}.{ext}"` onto `dir_hash` without formatting a string.
-#[inline]
-#[must_use]
-pub(crate) fn extend_stem_ext_hash(dir_hash: Option<u64>, stem: &str, ext: Option<&str>) -> u64 {
-    let after_stem = extend_path_hash(dir_hash, stem);
-    match ext {
-        Some(ext_str) => {
-            let mut hasher = FnvHasher::with_key(after_stem);
-            hasher.write(b".");
-            hash_folded_bytes(hasher.finish(), ext_str)
-        }
-        None => after_stem,
-    }
-}
-
 /// Bijectively splits a validated leaf filename into `(stem, Option<ext>)`.
 ///
 /// Splits at the final `'.'` strictly when both `stem` and `ext` are non-empty, guaranteeing
@@ -284,7 +269,10 @@ pub(crate) fn parse_relative_dir_tail<'a>(
 }
 
 /// Splits an Unreal logical path `"/<MountAlias>/<RelPath>"` into `("<MountAlias>", "<RelPath>")`.
-pub(crate) fn split_ue_logical_path(ue_path: &str) -> Result<(&str, &str), VfsError> {
+pub(crate) fn split_ue_logical_path(
+    ue_path: &str,
+    limits: VfsLimits,
+) -> Result<(&str, &str), VfsError> {
     if ue_path.as_bytes().contains(&0) {
         return Err(VfsError::InvalidVirtualPath {
             reason: PathErrorKind::ContainsNul,
@@ -306,6 +294,7 @@ pub(crate) fn split_ue_logical_path(ue_path: &str) -> Result<(&str, &str), VfsEr
         });
     }
     validate_named_segment(alias)?;
+    let _alias_bytes = add_segment_byte_budget(0, alias, false, limits)?;
     Ok((alias, rest))
 }
 

@@ -303,12 +303,13 @@ fn collect_uplugin_aliases(
     out: &mut Vec<CandidateAlias>,
 ) {
     assert_eq!(files.payloads.len(), files.keys.len());
+    let file_count = files.len();
     let arena_text = arena.as_str();
-    for (eref, key) in files.payloads.iter().zip(files.keys.iter()) {
+    for (idx_u32, eref) in (0..file_count).zip(files.payloads.iter()) {
         if eref.known_ext != KnownExt::Uplugin {
             continue;
         }
-        let stem_span = key.stem_span();
+        let stem_span = files.keys[u32_to_usize(idx_u32)].stem_span();
         let plugin_name = arena.get(stem_span);
         if eq_folded_str(plugin_name, "Engine") || eq_folded_str(plugin_name, "Game") {
             continue;

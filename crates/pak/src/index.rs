@@ -291,6 +291,9 @@ fn validate_entry_blocks(
     if entry.block_count == 0 {
         return Err(PakError::CorruptWireLayout { context });
     }
+    if entry.block_count == 1 && u32::try_from(entry.uncompressed_bytes).is_err() {
+        return Err(PakError::CorruptWireLayout { context });
+    }
     if entry.block_count > 1 {
         if entry.compression_block_bytes == 0 {
             return Err(PakError::CorruptWireLayout { context });
@@ -309,7 +312,7 @@ fn validate_entry_blocks(
     }
     let mut prev_end: u64 = 0;
     for blk in blocks {
-        if blk.rel_offset < prev_end {
+        if blk.compressed_bytes == 0 || blk.rel_offset < prev_end {
             return Err(PakError::CorruptWireLayout { context });
         }
         let blk_end = blk
@@ -442,7 +445,7 @@ fn load_legacy_index(
     )?;
     let limits = options.limits();
     let mut cur = raw.as_slice();
-    let mut str_buf = Vec::with_capacity(128);
+    let mut str_buf = String::with_capacity(128);
     take_fstring_into(
         &mut cur,
         MOUNT_POINT_BYTES_MAX,
@@ -450,9 +453,7 @@ fn load_legacy_index(
         WireContext::LegacyDirectoryIndex,
         &mut str_buf,
     )?;
-    let mount_point = decode_validated_utf8(&str_buf, WireContext::LegacyDirectoryIndex)?
-        .to_owned()
-        .into_boxed_str();
+    let mount_point = str_buf.into_boxed_str();
     let entry_count = take_entry_count(&mut cur, limits, WireContext::LegacyDirectoryIndex)?;
     let (entries, paths, lookup) =
         parse_legacy_entries(&mut cur, entry_count, file.file_bytes(), footer, limits)?;
@@ -472,8 +473,9 @@ fn parse_legacy_entries(
     footer: &ParsedFooter,
     limits: PakLimits,
 ) -> Result<(EntryTable, PathArena, PathLookupTable), PakError> {
-    let mut str_buf = Vec::with_capacity(128);
-    let mut norm_buf = Vec::with_capacity(128);
+    ensure_min_wire_records(cur, entry_count, 57, WireContext::LegacyDirectoryIndex)?;
+    let mut str_buf = String::with_capacity(128);
+    let mut norm_buf = String::with_capacity(128);
     let mut table = EntryTableBuilder::with_capacity(entry_count, footer.dialect);
     let mut paths = PathArenaBuilder::with_capacity(entry_count);
     let mut lookup = PathLookupTable::with_entry_capacity(entry_count);
@@ -486,7 +488,7 @@ fn parse_legacy_entries(
             &mut str_buf,
         )?;
         normalize_rel_path_into(&str_buf, &mut norm_buf)?;
-        let rel_path = decode_validated_utf8(&norm_buf, WireContext::LegacyDirectoryIndex)?;
+        let rel_path = norm_buf.as_str();
         let blk_start = table.current_block_start();
         let decoded = decode_unencoded_entry(
             cur,
@@ -536,7 +538,7 @@ fn parse_primary_index<'a>(
     footer: &ParsedFooter,
     limits: PakLimits,
 ) -> Result<ParsedPrimaryIndex<'a>, PakError> {
-    let mut str_buf = Vec::with_capacity(128);
+    let mut str_buf = String::with_capacity(128);
     take_fstring_into(
         &mut cur,
         MOUNT_POINT_BYTES_MAX,
@@ -544,9 +546,7 @@ fn parse_primary_index<'a>(
         WireContext::PrimaryIndex,
         &mut str_buf,
     )?;
-    let mount_point = decode_validated_utf8(&str_buf, WireContext::PrimaryIndex)?
-        .to_owned()
-        .into_boxed_str();
+    let mount_point = str_buf.into_boxed_str();
     let declared_entries = take_entry_count(&mut cur, limits, WireContext::PrimaryIndex)?;
     let path_hash_seed = take_u64_le(&mut cur, WireContext::PrimaryIndex)?;
     let path_hash_hdr = take_optional_subindex(&mut cur)?;
@@ -582,6 +582,7 @@ fn parse_unencoded_pool(
     methods: &MethodTable,
     blocks_total_max: u32,
 ) -> Result<UnencodedPool, PakError> {
+    ensure_min_wire_records(cur, count, 53, WireContext::UnencodedEntry)?;
     let mut items = Vec::with_capacity(u32_to_usize(count));
     let mut blocks = Vec::new();
     for _ in 0..count {
@@ -622,8 +623,27 @@ fn take_entry_count(
     Ok(count)
 }
 
-fn decode_validated_utf8(bytes: &[u8], context: WireContext) -> Result<&str, PakError> {
-    core::str::from_utf8(bytes).map_err(|_| PakError::InvalidUtf8String { context })
+#[inline]
+fn ensure_min_wire_records(
+    cur: &[u8],
+    count: u32,
+    min_record_bytes: usize,
+    context: WireContext,
+) -> Result<(), PakError> {
+    if cur.len() / min_record_bytes < u32_to_usize(count) {
+        return Err(PakError::CorruptWireLayout { context });
+    }
+    Ok(())
+}
+
+#[inline]
+fn split_capacity_hint(primary: &ParsedPrimaryIndex<'_>) -> u32 {
+    let max_encoded = bounded_len_u32(primary.encoded_entries.len() / 12);
+    let max_unencoded = bounded_len_u32(primary.unencoded_list.items.len());
+    let max_locs = max_encoded.saturating_add(max_unencoded);
+    primary
+        .declared_entries
+        .min(max_locs.saturating_mul(2).max(64))
 }
 
 fn load_split_index(
@@ -647,6 +667,7 @@ fn load_split_index(
     )?;
     let limits = options.limits();
     let primary = parse_primary_index(&primary_raw, footer, limits)?;
+    let cap_hint = split_capacity_hint(&primary);
     let mut ctx = SplitBuildContext {
         env: SplitIndexEnv {
             file_bytes: file.file_bytes(),
@@ -656,11 +677,11 @@ fn load_split_index(
             unencoded_pool: &primary.unencoded_list,
         },
         seed: primary.path_hash_seed,
-        table: EntryTableBuilder::with_capacity(primary.declared_entries, footer.dialect),
-        paths: PathArenaBuilder::with_capacity(primary.declared_entries),
-        entry_hashes: Vec::with_capacity(u32_to_usize(primary.declared_entries)),
-        pending_hashes: Vec::with_capacity(u32_to_usize(primary.declared_entries)),
-        loc_map: LocationMap::with_capacity(primary.declared_entries),
+        table: EntryTableBuilder::with_capacity(cap_hint, footer.dialect),
+        paths: PathArenaBuilder::with_capacity(cap_hint),
+        entry_hashes: Vec::with_capacity(u32_to_usize(cap_hint)),
+        pending_hashes: Vec::with_capacity(u32_to_usize(cap_hint)),
+        loc_map: LocationMap::with_capacity(cap_hint),
     };
     if let Some(fdi_hdr) = primary.full_dir_hdr {
         let fdi_raw = read_index_section(
@@ -842,9 +863,10 @@ fn populate_from_full_directory(
             max: u64::from(dir_max),
         });
     }
-    let mut dir_buf = Vec::with_capacity(128);
-    let mut file_buf = Vec::with_capacity(64);
-    let mut norm_buf = Vec::with_capacity(192);
+    ensure_min_wire_records(cur, dir_count, 8, WireContext::FullDirectoryIndex)?;
+    let mut dir_buf = String::with_capacity(128);
+    let mut file_buf = String::with_capacity(64);
+    let mut norm_buf = String::with_capacity(192);
     for _ in 0..dir_count {
         take_fstring_into(
             &mut cur,
@@ -861,6 +883,7 @@ fn populate_from_full_directory(
                 max: u64::from(ctx.env.limits.entries_count_max()),
             });
         }
+        ensure_min_wire_records(cur, file_count, 8, WireContext::FullDirectoryIndex)?;
         for _ in 0..file_count {
             take_fstring_into(
                 &mut cur,
@@ -871,7 +894,7 @@ fn populate_from_full_directory(
             )?;
             let location = take_i32_le(&mut cur, WireContext::FullDirectoryIndex)?;
             normalize_join_dir_file_into(&dir_buf, &file_buf, &mut norm_buf)?;
-            let rel_path = decode_validated_utf8(&norm_buf, WireContext::FullDirectoryIndex)?;
+            let rel_path = norm_buf.as_str();
             let id = ctx.decode_location(location, WireContext::FullDirectoryIndex)?;
             let hash = compute_ue4_path_hash(rel_path, ctx.seed)?;
             ctx.paths.push_path(rel_path)?;
@@ -895,6 +918,7 @@ fn populate_from_path_hash_index(
             max: u64::from(ctx.env.limits.entries_count_max()),
         });
     }
+    ensure_min_wire_records(cur, count, 12, WireContext::PathHashIndex)?;
     for _ in 0..count {
         let rec = take::<RawPathHashRecord>(&mut cur, WireContext::PathHashIndex)?;
         let hash = PathHash::from_raw(rec.hash.get());
@@ -962,7 +986,7 @@ where
     )?;
     let limits = options.limits();
     let mut cur = raw.as_slice();
-    let mut str_buf = Vec::with_capacity(128);
+    let mut str_buf = String::with_capacity(128);
     take_fstring_into(
         &mut cur,
         MOUNT_POINT_BYTES_MAX,
@@ -970,9 +994,7 @@ where
         WireContext::LegacyDirectoryIndex,
         &mut str_buf,
     )?;
-    let mount_point = decode_validated_utf8(&str_buf, WireContext::LegacyDirectoryIndex)?
-        .to_owned()
-        .into_boxed_str();
+    let mount_point = str_buf.into_boxed_str();
     let entry_count = take_entry_count(&mut cur, limits, WireContext::LegacyDirectoryIndex)?;
     let entries = stream_legacy_entries(
         &mut cur,
@@ -1002,7 +1024,8 @@ where
     E: From<PakError>,
     F: FnMut(&str, StreamingEntry<'_>) -> Result<(), E>,
 {
-    let mut str_buf = Vec::with_capacity(128);
+    ensure_min_wire_records(cur, entry_count, 57, WireContext::LegacyDirectoryIndex)?;
+    let mut str_buf = String::with_capacity(128);
     let mut table = EntryTableBuilder::with_capacity(entry_count, footer.dialect);
     for _ in 0..entry_count {
         take_fstring_into(
@@ -1012,7 +1035,6 @@ where
             WireContext::LegacyDirectoryIndex,
             &mut str_buf,
         )?;
-        let rel_path = decode_validated_utf8(&str_buf, WireContext::LegacyDirectoryIndex)?;
         let blk_start = table.current_block_start();
         let decoded = decode_unencoded_entry(
             cur,
@@ -1033,7 +1055,7 @@ where
             StreamingEntry::Named {
                 id,
                 dir: "",
-                file: rel_path,
+                file: &str_buf,
             },
         )?;
     }
@@ -1047,12 +1069,17 @@ struct StreamingSplitContext<'a> {
 }
 
 impl StreamingSplitContext<'_> {
-    fn decode_location(
+    fn resolve_or_decode_location(
         &mut self,
         location: i32,
         context: WireContext,
     ) -> Result<EntryId, PakError> {
-        decode_split_location(&mut self.table, self.env, location, context)
+        if let Some(existing_id) = self.loc_map.get(location) {
+            return Ok(existing_id);
+        }
+        let new_id = decode_split_location(&mut self.table, self.env, location, context)?;
+        self.loc_map.insert(location, new_id, self.env.limits)?;
+        Ok(new_id)
     }
 }
 
@@ -1083,6 +1110,7 @@ where
     let limits = options.limits();
     let primary = parse_primary_index(&primary_raw, footer, limits)?;
     let mount_point_str = &*primary.mount_point;
+    let cap_hint = split_capacity_hint(&primary);
     let mut ctx = StreamingSplitContext {
         env: SplitIndexEnv {
             file_bytes: file.file_bytes(),
@@ -1091,8 +1119,8 @@ where
             encoded_entries: primary.encoded_entries,
             unencoded_pool: &primary.unencoded_list,
         },
-        table: EntryTableBuilder::with_capacity(primary.declared_entries, footer.dialect),
-        loc_map: LocationMap::with_capacity(primary.declared_entries),
+        table: EntryTableBuilder::with_capacity(cap_hint, footer.dialect),
+        loc_map: LocationMap::with_capacity(cap_hint),
     };
     if let Some(fdi_hdr) = primary.full_dir_hdr {
         let fdi_raw = read_index_section(
@@ -1151,8 +1179,9 @@ where
             max: u64::from(dir_max),
         }));
     }
-    let mut dir_buf = Vec::with_capacity(128);
-    let mut file_buf = Vec::with_capacity(64);
+    ensure_min_wire_records(cur, dir_count, 8, WireContext::FullDirectoryIndex)?;
+    let mut dir_buf = String::with_capacity(128);
+    let mut file_buf = String::with_capacity(64);
     for _ in 0..dir_count {
         take_fstring_into(
             &mut cur,
@@ -1161,7 +1190,7 @@ where
             WireContext::FullDirectoryIndex,
             &mut dir_buf,
         )?;
-        let dir_str = decode_validated_utf8(&dir_buf, WireContext::FullDirectoryIndex)?;
+        let dir_trim = dir_buf.trim_start_matches(['/', '\\']);
         let file_count = take_u32_le(&mut cur, WireContext::FullDirectoryIndex)?;
         if file_count > ctx.env.limits.entries_count_max() {
             return Err(E::from(PakError::LimitExceeded {
@@ -1170,6 +1199,7 @@ where
                 max: u64::from(ctx.env.limits.entries_count_max()),
             }));
         }
+        ensure_min_wire_records(cur, file_count, 8, WireContext::FullDirectoryIndex)?;
         for _ in 0..file_count {
             take_fstring_into(
                 &mut cur,
@@ -1179,16 +1209,14 @@ where
                 &mut file_buf,
             )?;
             let location = take_i32_le(&mut cur, WireContext::FullDirectoryIndex)?;
-            let file_str = decode_validated_utf8(&file_buf, WireContext::FullDirectoryIndex)?;
-            validate_joined_rel_len(dir_str, file_str)?;
-            let id = ctx.decode_location(location, WireContext::FullDirectoryIndex)?;
-            ctx.loc_map.insert(location, id, ctx.env.limits)?;
+            validate_joined_rel_len(dir_trim, &file_buf)?;
+            let id = ctx.resolve_or_decode_location(location, WireContext::FullDirectoryIndex)?;
             on_entry(
                 mount_point,
                 StreamingEntry::Named {
                     id,
-                    dir: dir_str,
-                    file: file_str,
+                    dir: &dir_buf,
+                    file: &file_buf,
                 },
             )?;
         }
@@ -1196,8 +1224,7 @@ where
     Ok(())
 }
 
-fn validate_joined_rel_len(dir_str: &str, file_str: &str) -> Result<(), PakError> {
-    let dir_trim = dir_str.trim_start_matches(['/', '\\']);
+fn validate_joined_rel_len(dir_trim: &str, file_str: &str) -> Result<(), PakError> {
     let file_trim = file_str.trim_start_matches(['/', '\\']);
     let needs_sep =
         !dir_trim.is_empty() && !file_trim.is_empty() && !dir_trim.ends_with(['/', '\\']);
@@ -1243,11 +1270,17 @@ where
             max: u64::from(ctx.env.limits.entries_count_max()),
         }));
     }
+    ensure_min_wire_records(cur, count, 12, WireContext::PathHashIndex)?;
     for _ in 0..count {
         let rec = take::<RawPathHashRecord>(&mut cur, WireContext::PathHashIndex)?;
         let location = rec.location.get();
         if ctx.loc_map.get(location).is_none() {
-            let new_id = ctx.decode_location(location, WireContext::PathHashIndex)?;
+            let new_id = decode_split_location(
+                &mut ctx.table,
+                ctx.env,
+                location,
+                WireContext::PathHashIndex,
+            )?;
             ctx.loc_map.insert(location, new_id, ctx.env.limits)?;
             on_entry(mount_point, StreamingEntry::Pruned { id: new_id })?;
         }

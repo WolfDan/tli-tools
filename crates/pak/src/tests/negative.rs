@@ -159,7 +159,7 @@ fn detects_corrupted_payload_sha1_and_corrupt_codec_streams() {
 
 #[test]
 fn rejects_invalid_utf8_utf16_and_referenced_unsupported_codec() {
-    let mut out = Vec::new();
+    let mut out = String::new();
     let mut bad_utf8 = Vec::new();
     bad_utf8.extend_from_slice(&3_i32.to_le_bytes());
     bad_utf8.extend_from_slice(&[b'a', 0xFF, 0x00]);
@@ -233,6 +233,31 @@ fn rejects_compressed_size_exceeding_disk_span() {
         PakArchive::open_with_options(tmp.path(), &opts),
         Err(PakError::CorruptWireLayout {
             context: WireContext::LegacyDirectoryIndex
+        })
+    ));
+
+    let cnt_off = 61 + 4;
+    assert_eq!(&bytes[cnt_off..cnt_off + 4], &1_i32.to_le_bytes());
+    bytes[cnt_off..cnt_off + 4].copy_from_slice(&1_000_i32.to_le_bytes());
+    let tmp_inflated = TempPakFile::from_bytes(&bytes);
+    assert!(matches!(
+        PakArchive::open_with_options(tmp_inflated.path(), &opts),
+        Err(PakError::CorruptWireLayout {
+            context: WireContext::LegacyDirectoryIndex
+        })
+    ));
+
+    let mut zero_blk_spec = SyntheticPakSpec::new(PakVersion::V12);
+    let mut e_zero_blk = SyntheticEntry::plain("Z", "EmptyBlk.bin", &[0xAA; 32]);
+    e_zero_blk.method = CompressionMethod::Zlib;
+    e_zero_blk.block_size = 64;
+    e_zero_blk.precompressed_blocks = Some(vec![Vec::new()]);
+    zero_blk_spec.entries.push(e_zero_blk);
+    let tmp_zero_blk = TempPakFile::from_bytes(&build_synthetic_pak(&zero_blk_spec));
+    assert!(matches!(
+        PakArchive::open(tmp_zero_blk.path(), None),
+        Err(PakError::CorruptWireLayout {
+            context: WireContext::FullDirectoryIndex
         })
     ));
 }
