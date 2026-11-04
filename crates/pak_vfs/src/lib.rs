@@ -65,17 +65,3 @@ pub(crate) const fn bounded_len_u16(len: usize) -> u16 {
     assert!(len <= u32_to_usize(0xFFFF));
     len as u16
 }
-
-/// Extracts the low 32 bits of a `u64` hash.
-#[inline(always)]
-#[must_use]
-pub(crate) const fn hash_lo32(hash: u64) -> u32 {
-    (hash & 0xFFFF_FFFF) as u32
-}
-
-/// Extracts the high 32 bits of a `u64` hash.
-#[inline(always)]
-#[must_use]
-pub(crate) const fn hash_hi32(hash: u64) -> u32 {
-    (hash >> 32) as u32
-}

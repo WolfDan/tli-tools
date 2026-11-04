@@ -1,18 +1,18 @@
-//! Zero-allocation virtual path normalization, stem/extension splitting, and streaming FNV-1a hashing.
+//! Zero-allocation virtual path normalization, stem/extension splitting, and streaming `FxHasher` hashing.
 
 use core::cmp::Ordering;
 use core::hash::Hasher as _;
 
 use arrayvec::ArrayVec;
-use fnv::FnvHasher;
+use rustc_hash::FxHasher;
 
 use crate::error::{PathErrorKind, UePathErrorKind, VfsError, VfsLimitKind};
-use crate::types::{DirId, PATH_DEPTH_HARD_MAX, VfsLimits};
+use crate::types::{DirId, PATH_DEPTH_HARD_MAX_USIZE, VfsLimits};
 use crate::{bounded_len_u32, u32_to_usize};
 
-pub(crate) const FNV1A_64_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
+pub(crate) const PATH_HASH_SEED: u64 = 0;
 
-pub(crate) type SegmentStack<'a> = ArrayVec<&'a str, { PATH_DEPTH_HARD_MAX as usize }>;
+pub(crate) type SegmentStack<'a> = ArrayVec<&'a str, PATH_DEPTH_HARD_MAX_USIZE>;
 
 /// Precomputed directory prefix state for root-relative ([`DirPrefixState::ROOT`]) or Unreal
 /// mount-alias-relative (`/<Alias>/...`) path parsing.
@@ -85,14 +85,15 @@ pub(crate) fn cmp_folded_then_exact(a: &str, b: &str) -> Ordering {
     cmp_folded_str(a, b).then_with(|| a.cmp(b))
 }
 
-/// Feeds case-folded UTF-8 bytes of `seg` into an active 64-bit FNV-1a accumulator `state`.
+/// Feeds case-folded UTF-8 bytes of `seg` into an active 64-bit `FxHasher` accumulator `state`.
 #[inline]
 #[must_use]
 pub(crate) fn hash_folded_bytes(state: u64, seg: &str) -> u64 {
-    let mut hasher = FnvHasher::with_key(state);
+    let mut hasher = FxHasher::default();
+    hasher.write_u64(state);
     if seg.is_ascii() {
         for &byte in seg.as_bytes() {
-            hasher.write(&[byte.to_ascii_lowercase()]);
+            hasher.write_u8(byte.to_ascii_lowercase());
         }
     } else {
         let mut encode_buf = [0_u8; 4];
@@ -110,11 +111,12 @@ pub(crate) fn hash_folded_bytes(state: u64, seg: &str) -> u64 {
 pub(crate) fn extend_path_hash(parent_hash: Option<u64>, seg: &str) -> u64 {
     let base = match parent_hash {
         Some(prev) => {
-            let mut hasher = FnvHasher::with_key(prev);
-            hasher.write(b"/");
+            let mut hasher = FxHasher::default();
+            hasher.write_u64(prev);
+            hasher.write_u8(b'/');
             hasher.finish()
         }
-        None => FNV1A_64_OFFSET_BASIS,
+        None => PATH_HASH_SEED,
     };
     hash_folded_bytes(base, seg)
 }
@@ -128,7 +130,7 @@ pub(crate) fn extend_path_hash(parent_hash: Option<u64>, seg: &str) -> u64 {
 pub(crate) fn split_stem_ext(leaf: &str) -> (&str, Option<&str>) {
     if let Some(dot_idx) = leaf.rfind('.') {
         let stem = &leaf[..dot_idx];
-        let ext = &leaf[dot_idx.strict_add(1)..];
+        let ext = &leaf[dot_idx + 1..];
         if !stem.is_empty() && !ext.is_empty() {
             return (stem, Some(ext));
         }
@@ -285,7 +287,7 @@ pub(crate) fn split_ue_logical_path(
             reason: UePathErrorKind::MissingLeadingSlash,
         })?;
     let (alias, rest) = match after_lead.find(['/', '\\']) {
-        Some(sep_idx) => (&after_lead[..sep_idx], &after_lead[sep_idx.strict_add(1)..]),
+        Some(sep_idx) => (&after_lead[..sep_idx], &after_lead[sep_idx + 1..]),
         None => (after_lead, ""),
     };
     if alias.is_empty() {
@@ -334,9 +336,7 @@ pub(crate) fn add_segment_byte_budget(
         });
     }
     let seg_u32 = bounded_len_u32(seg.len());
-    let next = cur_bytes
-        .strict_add(u32::from(needs_slash))
-        .strict_add(seg_u32);
+    let next = cur_bytes + u32::from(needs_slash) + seg_u32;
     if next > max_bytes {
         return Err(VfsError::LimitExceeded {
             kind: VfsLimitKind::PathBytes,
@@ -358,11 +358,11 @@ pub(crate) fn push_dir_segment<'a>(
     if cur_depth >= max_depth {
         return Err(VfsError::LimitExceeded {
             kind: VfsLimitKind::PathDepth,
-            actual: u64::from(cur_depth).strict_add(1),
+            actual: u64::from(cur_depth) + 1,
             max: u64::from(max_depth),
         });
     }
     let push_res = stack.try_push(seg);
     assert!(push_res.is_ok());
-    Ok(cur_depth.strict_add(1))
+    Ok(cur_depth + 1)
 }

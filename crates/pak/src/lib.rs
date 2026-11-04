@@ -73,6 +73,6 @@ pub(crate) const fn align_up_16(x: u64) -> Option<u64> {
     if rem == 0 {
         Some(x)
     } else {
-        x.checked_add(16_u64.strict_sub(rem))
+        x.checked_add(16_u64 - rem)
     }
 }

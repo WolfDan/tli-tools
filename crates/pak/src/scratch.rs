@@ -237,9 +237,8 @@ fn ensure_io_buf(
             });
         }
     };
+    grow_bounded_vec(io_buf, req_u32, io_bytes_max);
     let req_usize = u32_to_usize(req_u32);
-    let max_usize = u32_to_usize(io_bytes_max);
-    grow_bounded_vec(io_buf, req_usize, max_usize);
     Ok(&mut io_buf[..req_usize])
 }
 
@@ -255,17 +254,24 @@ fn ensure_block_buf(
             max: u64::from(block_bytes_max),
         });
     }
+    grow_bounded_vec(block_buf, required_bytes, block_bytes_max);
     let req_usize = u32_to_usize(required_bytes);
-    let max_usize = u32_to_usize(block_bytes_max);
-    grow_bounded_vec(block_buf, req_usize, max_usize);
     Ok(&mut block_buf[..req_usize])
 }
 
-fn grow_bounded_vec(buf: &mut Vec<u8>, req_usize: usize, max_usize: usize) {
+fn grow_bounded_vec(buf: &mut Vec<u8>, required_bytes: u32, max_bytes: u32) {
+    assert!(required_bytes <= max_bytes);
+    let req_usize = u32_to_usize(required_bytes);
+    let max_usize = u32_to_usize(max_bytes);
     if buf.len() < req_usize {
         if buf.capacity() < req_usize {
-            let target_cap = req_usize.saturating_mul(2).min(max_usize);
-            let additional = target_cap.strict_sub(buf.len());
+            let target_u32 = if required_bytes <= max_bytes / 2 {
+                required_bytes * 2
+            } else {
+                max_bytes
+            };
+            let target_cap = u32_to_usize(target_u32);
+            let additional = target_cap - buf.len();
             buf.reserve_exact(additional);
         }
         buf.resize(req_usize, 0);

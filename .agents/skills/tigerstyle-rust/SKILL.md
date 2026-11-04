@@ -41,7 +41,7 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
 
 2. **Startup Memory & Encapsulated Fixed-Capacity Containers — Never Sibling `(items, items_len)` Fields**
    * Ban raw array + manual length sibling fields inside domain structs.
-   * **Fixed length at startup** (I/O page blocks, ring-buffer backing arrays, hash buckets, lookup tables): use **`Box<[T]>`** (`vec![init; len].into_boxed_slice()`). It is 16 bytes and statically incapable of `push`, `resize`, or `realloc`.
+   * **Fixed length at startup** (I/O page blocks, ring-buffer backing arrays, dense `0..N` ID-indexed tables, `[T; 256]` LUTs): use **`Box<[T]>`** (`vec![init; len].into_boxed_slice()`). It is 16 bytes and statically incapable of `push`, `resize`, or `realloc`.
    * **Variable count `0..=CAP` (small/inline)**: use **`arrayvec::{ArrayVec, ArrayString}`**.
    * **Variable count `0..=CAP` (large startup heap pool)**: encapsulate `Vec<T>` with a **private explicit `cap: u32` field** (never rely on `Vec::capacity()` for logical bounds, because `std::alloc` permits over-allocation and ZST capacity is `usize::MAX`):
      ```rust
@@ -91,6 +91,10 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
          pub fn as_mut_slice(&mut self) -> &mut [T] { &mut self.inner }
      }
      ```
+   * **Key-value hash maps & sets (`K -> V`) — Never Hand-Roll Linear Probing:**
+     * Rust's `std::collections::HashMap` is `hashbrown`'s SwissTable (a single flat allocation with a dense 1-byte `ctrl` fingerprint prefix probed 16 slots at a time via SIMD, where failed probes never touch `(K, V)` cache lines).
+     * For all self-contained keys (`u32`, `i32`, composite structs/tuples `(i32, i32, i32)`, and `Box<str>` queried zero-alloc via `&str` through `Borrow<str>`), use **`rustc_hash::{FxHashMap, FxHashSet, FxBuildHasher}`** directly—pre-sized upfront via `FxHashMap::with_capacity_and_hasher(u32_to_usize(cap), FxBuildHasher)` and bounded by an explicit `_MAX` entry limit when populated from external input (use `std`'s seeded `RandomState` only if keys come from unverified attacker-controlled network input).
+     * Reserve **`hashbrown::HashTable<u32>`** strictly for index tables where slots store compact `u32` IDs or spans (`RowId(u32)`, `SymbolId(u32)`, `Span`) whose equality/hashing requires passing external context (`&[u8]` string arena, `&[Key]` slice) at lookup time that Rust's `Eq`/`Borrow` traits cannot accept. Never hand-roll scalar linear-probing loops over `Box<[Option<Slot>]>` or fall back to `O(log N)` `binary_search` on `Box<[K]>` + `Box<[V]>` for key-value lookups.
 
 3. **Slice Iterators & Chunks — Never C-Style `for i in 0..len { arr[i] }`**
    * Iterate over pre-bounded slices via `.iter().zip(...)`, `.chunks_exact()`, or `.as_chunks::<N>()`. This hoists bounds checks, eliminates off-by-one indexing bugs, and unlocks LLVM autovectorization.
@@ -99,13 +103,15 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
 4. **Flat Contiguous Memory & Access-Temperature Layout — Zero Pointer/Index Chasing & Zero "Shred-and-Reassemble" SoA**
    * Ban `Box<Node>`, `Arc<Mutex<T>>` graphs, `Vec<Box<dyn Trait>>` vtable indirection, and **arena index-chasing graphs** (`slab[node.next_id]`), which all thrash CPU caches. Store records inline by value in contiguous slices (`Box<[T]>`, `FixedVec<T>`) ordered for linear hardware prefetching and use `enum`s for static dispatch. Reserve `SlotId(u32)` handles strictly for O(1) direct table lookups (e.g., active I/O or connection slots).
    * **Ban "Shred-and-Reassemble" on point-lookup tables:** If fields `A`, `B`, and `C` are always read or written at the exact same index `i` at the exact same time (e.g., inside `get(id)` / `meta(idx)`), they share the same access temperature and **must live in one contiguous `Box<[Row]>`**. Never split a record into `K` separate `Box<[Field]>` arrays if no loop in the crate scans those arrays independently and the accessor merely indexes `self.a[i], self.b[i], self.c[i]` to reconstruct a struct. Only split co-accessed fields by alignment tier (`u64` vs `u8`/`u16`/`u32`) if `size_of::<Row>()` wastes `>= 4` bytes of alignment padding per row even after optimal field ordering.
-   * **Group searched tables by access temperature (Hot `Key` vs Cold `Payload`), not one array per primitive field:** When a table is probed or scanned (hash lookup, binary search, directory scan), split into at most **two** parallel arrays based on *when* fields are touched:
-     * `keys: Box<[Key]>` (**Hot** — touched on every probe/comparison): Pack all fields compared together during a lookup (such as `(dir, stem, ext)`) into a single `Key` struct so verifying a candidate `idx` touches 1 cache line and 1 bounds check, not 3. Always verify full `Key` equality after any hash or SIMD fingerprint match.
-     * `payloads: Box<[Payload]>` (**Cold** — touched only once after a match succeeds): Store result data (plus variable-length side slabs like `blocks: Box<[Block]>`) in a parallel array so failed probes/scans never pull payload bytes into L1 cache.
+   * **Group searched tables by access temperature (Hot `Key` vs Cold `Payload`), not one array per primitive field:**
+     * For standard `K -> Row` key-value tables with self-contained keys, use **`FxHashMap<K, Row>` directly** (SwissTable already separates its hot 1-byte `ctrl` SIMD metadata array from `(K, Row)` slots in a single flat allocation, and keeping `(K, Row)` colocated avoids a second cache-line fetch on hits; do **not** split self-contained `K -> Row` maps into `HashTable<u32>` + `Box<[K]>` + `Box<[Row]>` or sorted `Box<[K]>` + `binary_search`).
+     * When a `0..count` positional table is scanned/binary-searched over contiguous ranges (`&keys[start..end]`) or indexed by an external-context `hashbrown::HashTable<u32>` (e.g., arena-backed symbol/catalog tables that are also indexed by `u32` ID), split into at most **two** parallel arrays based on *when* fields are touched:
+       * `keys: Box<[Key]>` (**Hot** — touched on every probe/comparison): Pack all fields compared together during a lookup (such as `(parent_id, name_span, kind)`) into a single `Key` struct so verifying a candidate `idx` touches 1 cache line and 1 bounds check, not 3. Always verify full `Key` equality after any hash or SIMD fingerprint match.
+       * `payloads: Box<[Payload]>` (**Cold** — touched only once after a match succeeds): Store result data (plus variable-length side slabs) in a parallel array so failed probes/scans never pull payload bytes into L1 cache.
    * **Never split fields beyond `Row` or `Key` + `Payload` into standalone `Box<[Field]>` columns without a selective scan or SIMD lane load:** A field may be split out of `Row`, `Key`, or `Payload` into its own standalone `Box<[Field]>` column *only* when:
      1. **Selective scan/search:** At least one function iterates or binary-searches `&col[start..end]` and skips sibling columns on non-matching elements, **or**
      2. **Contiguous SIMD lane loads:** A vectorized kernel iterates `col.as_chunks::<N>()` to load `N` contiguous scalar lanes into SIMD registers where an AoS struct (`Vec2 { x, y }`) would interleave fields across lanes.
-   * **Top-down slice narrowing vs bottom-up inline parent links — never standalone `parent_ids: Box<[ParentId]>` columns:** When parent records partition child records into contiguous `start..end` ranges, top-down lookups (`(parent_id, child_key) -> child`) must narrow directly to `&children[start..end]` rather than probing a global table and checking `dirs[idx] == dir`. If bottom-up traversal (`child_id -> parent_id`, such as path reconstruction from a bare ID) is also required, store `parent: ParentId` **inline inside the child's `Row` / `Payload` / `Key` struct**—never as a standalone `Box<[ParentId]>` column.
+   * **Top-down slice narrowing vs bottom-up inline parent links — never standalone `parent_ids: Box<[ParentId]>` columns:** When parent records partition child records into contiguous `start..end` ranges, top-down lookups (`(parent_id, child_key) -> child`) must narrow directly to `&children[start..end]` rather than probing a global table and checking `parents[idx] == parent_id`. If bottom-up traversal (`child_id -> parent_id`, such as path reconstruction from a bare ID) is also required, store `parent: ParentId` **inline inside the child's `Row` / `Payload` / `Key` struct**—never as a standalone `Box<[ParentId]>` column.
 
 5. **Value Returns, Niche Types, & Explicit Fallible Teardown**
    * Never port Zig's `fn init(out: *Self)` into `&mut MaybeUninit<T>` or raw out-pointers. Return values directly (`T` or `Result<T, E>`), relying on Rust move semantics / RVO. Pass `&mut Scratch` strictly to reuse pre-allocated backing capacity across hot calls—never expose hidden-allocation convenience wrappers that call `Scratch::new()` internally.
@@ -118,7 +124,7 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
 
 1. **Explicitly Sized Types (`u32`, `u64`, `u128`) & Semantic Cast Discipline**
    * **Ban `usize` in structs, wire/disk formats, state machines, and domain APIs.** Allow `usize` strictly at local slice-indexing boundaries.
-   * Use `T::from(...)` for lossless widening (`cast_lossless = "deny"`) and `TryFrom -> Result` (never `.unwrap_or(0)`) for fallible narrowing.
+   * Use `T::from(...)` for lossless widening (`cast_lossless = "deny"`) and `TryFrom -> Result` (never `.unwrap_or(0)`) for fallible range narrowing (where out-of-range values are errors).
    * Define one canonical crate-root `u32_to_usize` bridge alongside a static pointer-width check. **`u32_to_usize` is the *only* permitted `as usize` cast** (`u64 -> usize` must always use `usize::try_from(x)` because `cast_possible_truncation` only flags `u64 as usize` on 32-bit targets):
      ```rust
      const _: () = assert!(usize::BITS >= 32);
@@ -144,7 +150,7 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
    * **Bounded loops must never silently fall off the end:** If a search, probe, retry, or convergence loop (`for _ in 0..STEPS_MAX`) reaches `STEPS_MAX` without satisfying its termination condition, it must explicitly return `Err(Error::StepLimitExceeded)` or fail an `assert!`—never continue silently with partial or unconverged state.
 
 4. **Totality at External Boundaries vs Production `assert!` on Internal Invariants**
-   * **Public/external boundaries MUST be total:** Functions accepting untrusted `&[u8]`, `&str`, or external numbers must validate bounds and use **fallible `.checked_add` / `.checked_sub` / `.checked_mul` / `.checked_div` mapped to `Err(...)`**—never `assert!` or bare `+ - * / %` on untrusted external input (which turns malformed payloads into a `panic = "abort"` DoS under `overflow-checks = true`). Prefer constructing a private-field validated wrapper (`BoundedBatch<'a, T>`) at the boundary so internal kernels receive pre-validated inputs by type.
+   * **Public/external boundaries MUST be total:** Functions accepting untrusted `&[u8]`, `&str`, or external numbers must validate bounds and use **fallible `.checked_add` / `.checked_sub` / `.checked_mul` / `.checked_div` mapped to `Err(...)`**—never `assert!`, `.saturating_*`, or bare `+ - * / %` on unvalidated external input (which turns malformed payloads into a `panic = "abort"` DoS or silent corruption). Prefer constructing a private-field validated wrapper (`BoundedBatch<'a, T>`) at the boundary so internal kernels receive pre-validated inputs by type.
    * **Keep `assert!` active in release** (`[profile.release] panic = "abort"`), never downgraded to `debug_assert!`, for internal contracts and state invariants.
    * **Split compound assertions:** Write `assert!(a); assert!(b);` instead of `assert!(a && b);`.
    * **Pair assertions across boundaries:** Assert invariants right before encoding/writing and immediately after reading/decoding.
@@ -153,7 +159,7 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
 5. **Zero Silent Fallbacks & Strict Error Discipline**
    * **Ban `.unwrap()`, `.expect()`, and `panic!`** in production code (`unwrap_used`, `expect_used`, and `panic` are denied; `assert!` and `assert_eq!` remain allowed for internal invariants).
    * **Equally ban silent fallbacks and error-discarding control flow:**
-     * Never use `unwrap_or`, `unwrap_or_default`, `unwrap_or_else`, `map_or`, `.ok()`, or `let _ = ...` to swallow fallible conversions, parses, lookups, or mutations.
+     * Never use `unwrap_or`, `unwrap_or_default`, `unwrap_or_else`, `map_or`, `map_or_else`, `.ok()`, or `let _ = ...` to swallow fallible conversions, parses, lookups, or mutations (mechanically denied via `disallowed-methods` and `let_underscore_must_use`).
      * Never discard errors via `if let Ok(...)` (without handling `Err`) or `let Ok(...) = ... else { continue | break | return Ok(...) }`.
      * Never disguise a silent fallback as an explicit `match` / `if-else` returning dummy defaults (`0`, `""`, `&[]`, `Ok(Vec::new())`) on `Err`/`None`, clamp or bitmask-wrap invalid indices (`idx.min(len - 1)`, `slice[idx & mask]` outside power-of-two ring/hash tables), decode wire text via `from_utf8_lossy` / `from_utf16_lossy`, or add catch-all `Unknown(u8)` variants to domain enums to dodge boundary validation.
      * Every `Err` must propagate with `?`, record an explicit per-item failure into a batch output slot (`out[i] = Outcome::Corrupt`), or exhaustively `match` specific expected error variants (**no wildcard `_ =>` arms** on internal enums).
@@ -166,7 +172,10 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
    * Never wrap violated internal invariants (programmer bugs) in `Err(...)`—`assert!` and abort immediately. If `std::sync::Mutex` is used, define one crate-level `lock_unpoisoned` helper carrying `#[expect(clippy::expect_used, reason = "Lock poisoning is an unrecoverable invariant failure; release aborts on panic")]`; `PoisonError::into_inner()` is banned.
 
 6. **Overflow & Binary Layout Safety**
-   * Enable `overflow-checks = true` in `[profile.release]` and `[profile.bench]` as an internal invariant safety net, and use explicit `.checked_*`, `.saturating_*` (only when saturation is the genuine domain spec, never to hide bugs), or `.strict_*` arithmetic in critical math.
+   * Enable `overflow-checks = true` in `[profile.release]` and `[profile.bench]` and pick arithmetic operators/methods strictly by boundary:
+     1. **Untrusted wire/file/caller boundary (`-> Result`):** Use `.checked_add` / `.checked_sub` / `.checked_mul` / `.checked_div` mapped to `Err(...)` when validating raw external offsets, lengths, or counts—never bare `+ - * / %` or `.saturating_*` on unvalidated external numbers.
+     2. **Everything else (pre-validated internal indices, offsets, counts, loops):** Use normal `+`, `-`, `*` directly (backed by `overflow-checks = true` across all profiles)—never use `.saturating_*` on internal indices, offsets, or counters, and never use `.strict_*` (rewrite any existing `.strict_add` / `.strict_sub` / `.strict_mul` into plain `+`, `-`, `*`). *(Prefer passing `NonZeroU32` or returning `Result` via `NonZeroU32::new(x).ok_or(...)?`; when constructing `NonZeroU32` from a pre-validated `x > 0` inside an infallible `const fn`, `NonZeroU32::MIN.saturating_add(x - 1)` is an accepted trap-on-zero idiom.)*
+     3. **Hashes, ciphers, and genuine clamping specs:** Use `.wrapping_*` for intentional modular hash/cipher math, and `.saturating_*` *only* when clamping at `0` or `MAX` is the genuine domain spec (such as pixel channels, audio samples, or heuristic initial capacity hints clamped to `_MAX`).
    * Wire/disk structs must use `#[repr(C)]` + `zerocopy` (`FromBytes` / `TryFromBytes`, `IntoBytes`, `Immutable`, `KnownLayout`, `Unaligned`, `little_endian::*`) + `const _: () = assert!(size_of::<Header>() == EXPECTED);` so any implicit padding fails compilation. Raw `core::mem::transmute` and `core::mem::forget` are banned.
 
 ---
@@ -228,6 +237,7 @@ Every core systems capability in the table below has **strictly one** approved c
 | **Concrete Error Enums & `source()` Chains** | `thiserror` | Core (all library/domain/subsystem error enums) |
 | **Inline Fixed-Capacity Buffers/Strings** | `arrayvec` | Core (0 deps; pair with `Box<[T]>` / `FixedVec<T>` on heap) |
 | **Typed Fixed-Width Bitfields** | `bitflags` | Core (0 deps, 0 proc-macros, `#[repr(transparent)]`) |
+| **O(1) SwissTable Hash Maps/Sets & Arena Index Tables** | `rustc-hash` (+ `hashbrown`) | Core `FxHashMap` / `FxHashSet` / `FxBuildHasher` for `K -> V` lookups (0 deps, 0 proc-macros); situational `hashbrown::HashTable<u32>` strictly when key `Eq`/`Hash` requires external arena/slice context |
 | **Portable Cross-Platform SIMD** | `wide` | Situational (0 proc-macros; `as_chunks::<N>()` + `trunc_int()`) |
 | **Cross-Platform Completion I/O** | `compio-driver` (+ `compio-buf`) | Situational (explicit `ProactorBuilder` bounds + buffer pool) |
 | **Fast 32-Bit Checksums** | `crc32fast` | Situational (non-cryptographic frame/block integrity) |
@@ -278,8 +288,12 @@ allow_attributes_without_reason = "deny"
 disallowed_methods = "deny"
 let_underscore_must_use = "deny"
 assertions_on_constants = "deny"
+infinite_loop = "deny"
 multiple_unsafe_ops_per_block = "deny"
+undocumented_unsafe_blocks = "deny"
 mem_forget = "deny"
+rc_buffer = "deny"
+rc_mutex = "deny"
 
 # Semantic cast safety (blocks narrowing, sign-loss, wrap, lossless `as` where `From` exists,
 # precision-loss, and raw pointer `as`, while allowing `#[repr(u8)]` `enum as u8`, inline-masked/shifted bit-extractions, and `u32_to_usize`)
@@ -298,7 +312,6 @@ wildcard_enum_match_arm = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
-undocumented_unsafe_blocks = "deny"
 large_stack_arrays = "deny"
 too_many_lines = "deny"
 ```
@@ -312,9 +325,23 @@ allow-panic-in-tests = true
 
 disallowed-methods = [
     { path = "core::mem::transmute", reason = "Use zerocopy traits/macros instead of raw transmute" },
+    { path = "std::process::exit", reason = "Bypasses Drop and close() teardown; return Err from main() instead" },
     { path = "std::sync::PoisonError::into_inner", reason = "Never recover poisoned mutex state; abort via lock_unpoisoned" },
     { path = "std::sync::mpsc::channel", reason = "Unbounded channel; use crossbeam_channel::bounded" },
     { path = "crossbeam_channel::unbounded", reason = "All channels must have an explicit upper bound", allow-invalid = true },
+    { path = "alloc::string::String::from_utf8_lossy", reason = "Silently replaces invalid UTF-8; validate with core::str::from_utf8" },
+    { path = "alloc::string::String::from_utf16_lossy", reason = "Silently replaces invalid UTF-16; validate explicitly" },
+    { path = "core::result::Result::ok", reason = "Silently discards the error cause; propagate with ? or match specific error variants" },
+    { path = "core::result::Result::unwrap_or", reason = "No silent error fallbacks; propagate with ? (never rewrite into a match returning a dummy default)" },
+    { path = "core::result::Result::unwrap_or_default", reason = "No silent error default fallbacks; propagate with ?" },
+    { path = "core::result::Result::unwrap_or_else", reason = "No silent error fallback closures; propagate with ?" },
+    { path = "core::result::Result::map_or", reason = "No silent error fallbacks; propagate with ?" },
+    { path = "core::result::Result::map_or_else", reason = "No silent error fallbacks; propagate with ?" },
+    { path = "core::option::Option::unwrap_or", reason = "No silent fallbacks; use ok_or/ok_or_else(?) or handle None explicitly without dummy defaults" },
+    { path = "core::option::Option::unwrap_or_default", reason = "No silent default fallbacks; use ok_or/ok_or_else(?) or handle None explicitly" },
+    { path = "core::option::Option::unwrap_or_else", reason = "No silent fallback closures; use ok_or_else(?) or handle None explicitly" },
+    { path = "core::option::Option::map_or", reason = "No silent fallbacks; use ok_or(?) or handle None explicitly without dummy defaults" },
+    { path = "core::option::Option::map_or_else", reason = "No silent fallbacks; use ok_or_else(?) or handle None explicitly without dummy defaults" },
     { path = "wide::f32x4::fast_trunc_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
     { path = "wide::f32x4::fast_round_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
     { path = "wide::f32x8::fast_trunc_int", reason = "Non-portable NaN/overflow behavior; use trunc_int() or round_int()", allow-invalid = true },
@@ -335,8 +362,8 @@ disallowed-methods = [
 2. Run `cargo test` and verify tests cover positive invariants, negative rejections (`Err(...)` on external boundaries, `#[should_panic]` on internal contract violations), and `_MAX` boundary edges (`0`, `MAX - 1`, `MAX`, `MAX + 1`) with zero silent early-`return` skips.
 3. Run `cargo clippy --all-targets -- -D warnings` and resolve all lint errors without file/module-wide `#![expect]` or shortcut suppressions.
 4. Audit every modified module to confirm:
-   * Public/external functions are total (`Result`, `.checked_*` math, checked slice narrowing, empty-slice `&[]` totality, zero `assert!` on untrusted input).
+   * Public/external functions are total (`Result`, `.checked_*` math, checked slice narrowing, empty-slice `&[]` totality, zero `assert!` / `.saturating_*` / bare `+ - * / %` on unvalidated untrusted input).
    * Invariant-bearing structs/newtypes have private fields (`is_finite()` enforced on constrained floats, no invalid `Default` impls), and resources with fallible/durable teardown expose `close(self) -> Result<(), Error>`.
-   * Zero silent fallbacks (`unwrap_or*`, `map_or`, `.ok()`, `let _ =`, bare `if let Ok`, error-discarding `let Ok(...) else`, dummy-default `match` arms, clamped/wrapped invalid indices, `from_utf8_lossy`, `Unknown(u8)` domain enum catch-alls, unreachable `try_from(x & MASK)` or `.to_le_bytes()` cast-dodge hacks, `Result<T, String>`, `PoisonError::into_inner`, ignored chunk remainders, unasserted parallel `.zip()` lengths, or silent bounded-loop exhaustion).
+   * Zero silent fallbacks (`unwrap_or*`, `map_or*`, `.ok()`, `let _ =`, bare `if let Ok`, error-discarding `let Ok(...) else`, dummy-default `match` arms, `.saturating_*` on internal indices/offsets/counters, redundant `.strict_*` calls (rewrite to `+ - *`), clamped/wrapped invalid indices, `from_utf8_lossy`, `Unknown(u8)` domain enum catch-alls, unreachable `try_from(x & MASK)` or `.to_le_bytes()` cast-dodge hacks, `Result<T, String>`, `PoisonError::into_inner`, ignored chunk remainders, unasserted parallel `.zip()` lengths, or silent bounded-loop exhaustion).
    * Zero tautology assertions or quota-padding checks; all `assert!`s verify real cross-state or paired boundary invariants.
-   * Zero post-startup heap growth in hot paths (no hidden `Scratch::new()` wrappers), zero "shred-and-reassemble" fake SoA (point-lookup fields share a `Row`; searched tables split at most into hot `Box<[Key]>` + cold `Box<[Payload]>`; standalone `Box<[Field]>` columns exist only for selective slice scans or contiguous `as_chunks::<N>()` SIMD loads), zero standalone `parent_ids: Box<[ParentId]>` columns (use `&children[start..end]` slice narrowing for top-down lookups, and keep bottom-up `parent: ParentId` inline in the child struct), zero `(_offset, _len)` plumbing, and zero recursion.
+   * Zero post-startup heap growth in hot paths (no hidden `Scratch::new()` wrappers), zero hand-rolled linear-probing hash tables or `binary_search` key-value maps (rewrite self-contained `K -> V` tables to `FxHashMap`/`FxHashSet`, and external-context/arena index tables to `hashbrown::HashTable<u32>`), zero "shred-and-reassemble" fake SoA (point-lookup fields share a `Row`; searched positional/arena tables split at most into hot `Box<[Key]>` + cold `Box<[Payload]>`; standalone `Box<[Field]>` columns exist only for selective slice scans or contiguous `as_chunks::<N>()` SIMD loads), zero standalone `parent_ids: Box<[ParentId]>` columns (use `&children[start..end]` slice narrowing for top-down lookups, and keep bottom-up `parent: ParentId` inline in the child struct), zero `(_offset, _len)` plumbing, and zero recursion.

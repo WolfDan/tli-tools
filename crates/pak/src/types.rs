@@ -221,9 +221,9 @@ impl core::fmt::Debug for AesKey {
 
 const fn decode_hex_nibble(byte: u8) -> Result<u8, PakError> {
     match byte {
-        b'0'..=b'9' => Ok(byte.strict_sub(b'0')),
-        b'a'..=b'f' => Ok(byte.strict_sub(b'a').strict_add(10)),
-        b'A'..=b'F' => Ok(byte.strict_sub(b'A').strict_add(10)),
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok((byte - b'a') + 10),
+        b'A'..=b'F' => Ok((byte - b'A') + 10),
         _ => Err(PakError::InvalidAesKey {
             kind: KeyParseErrorKind::InvalidHexDigit,
         }),

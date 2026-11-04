@@ -42,6 +42,7 @@ pub const VFS_PATH_BYTES_HARD_MAX: u32 = 4_096;
 pub const PATH_DEPTH_MAX_DEFAULT: u16 = 64;
 /// Hard ceiling on directory nesting depth matching inline `ArrayVec<_, 64>` traversal stacks.
 pub const PATH_DEPTH_HARD_MAX: u16 = 64;
+pub(crate) const PATH_DEPTH_HARD_MAX_USIZE: usize = u32_to_usize(64);
 
 /// Default upper bound on discovered Unreal logical mount aliases (`1,024`).
 pub const MOUNT_ALIASES_COUNT_MAX_DEFAULT: u16 = 1_024;
@@ -140,7 +141,7 @@ impl ExtSlotId {
     #[inline]
     #[must_use]
     pub(crate) const fn index(self) -> u16 {
-        self.0.get().strict_sub(1)
+        self.0.get() - 1
     }
 }
 

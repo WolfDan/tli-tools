@@ -1,16 +1,16 @@
 //! Zero-I/O Unreal Engine logical mount alias discovery (`/Game`, `/Engine`, `/<PluginName>`).
 
-use core::num::NonZeroU16;
+use hashbrown::HashTable;
 
 use crate::arena::{ArenaSpan, KnownExt, StringArena, StringArenaBuilder};
 use crate::error::{VfsError, VfsLimitKind};
 use crate::path::{
-    DirPrefixState, FNV1A_64_OFFSET_BASIS, add_segment_byte_budget, cmp_folded_then_exact,
-    eq_folded_str, extend_path_hash, hash_folded_bytes,
+    DirPrefixState, PATH_HASH_SEED, add_segment_byte_budget, cmp_folded_then_exact, eq_folded_str,
+    extend_path_hash, hash_folded_bytes,
 };
 use crate::table::{DirTable, FileTable};
 use crate::types::{DirId, MountAlias, VfsLimits};
-use crate::{bounded_len_u16, bounded_len_u32, hash_lo32, u32_to_usize};
+use crate::{bounded_len_u16, u32_to_usize};
 
 #[derive(Clone, Copy, Debug)]
 struct StoredAlias {
@@ -18,31 +18,11 @@ struct StoredAlias {
     prefix: DirPrefixState,
 }
 
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug)]
-struct OccupiedAliasSlot(NonZeroU16);
-const _: () = assert!(core::mem::size_of::<Option<OccupiedAliasSlot>>() == 2);
-
-impl OccupiedAliasSlot {
-    #[inline]
-    #[must_use]
-    const fn new(alias_idx: u16) -> Self {
-        assert!(alias_idx < u16::MAX);
-        Self(NonZeroU16::MIN.saturating_add(alias_idx))
-    }
-
-    #[inline]
-    #[must_use]
-    const fn alias_idx(self) -> u16 {
-        self.0.get().strict_sub(1)
-    }
-}
-
 /// Immutable table of discovered Unreal Engine logical mount roots (`/Game`, `/Engine`, `/<Plugin>`).
 #[derive(Debug)]
 pub(crate) struct MountAliasTable {
     entries: Box<[StoredAlias]>,
-    buckets: Box<[Option<OccupiedAliasSlot>]>,
+    table: HashTable<u32>,
 }
 
 impl MountAliasTable {
@@ -50,16 +30,6 @@ impl MountAliasTable {
     #[must_use]
     pub(crate) const fn len(&self) -> u16 {
         bounded_len_u16(self.entries.len())
-    }
-
-    #[inline]
-    const fn table_len(&self) -> u32 {
-        bounded_len_u32(self.buckets.len())
-    }
-
-    #[inline]
-    const fn mask(&self) -> u32 {
-        self.table_len().strict_sub(1)
     }
 
     #[inline]
@@ -84,26 +54,12 @@ impl MountAliasTable {
         alias: &str,
         arena: &StringArena,
     ) -> Option<DirPrefixState> {
-        if self.entries.is_empty() {
-            return None;
-        }
-        let hash = hash_folded_bytes(FNV1A_64_OFFSET_BASIS, alias);
-        let table_len = self.table_len();
-        let mask = self.mask();
-        let start = hash_lo32(hash) & mask;
-        let mut probed: u32 = 0;
-        for step in 0..table_len {
-            let slot = u32_to_usize(start.wrapping_add(step) & mask);
-            let occ = self.buckets[slot]?;
-            let entry = self.entries[usize::from(occ.alias_idx())];
-            let stored = arena.get(entry.name_span);
-            if eq_folded_str(stored, alias) {
-                return Some(entry.prefix);
-            }
-            probed = probed.strict_add(1);
-        }
-        assert!(probed < table_len);
-        None
+        let hash = hash_folded_bytes(PATH_HASH_SEED, alias);
+        let idx = *self.table.find(hash, |&i| {
+            let entry = self.entries[u32_to_usize(i)];
+            eq_folded_str(arena.get(entry.name_span), alias)
+        })?;
+        Some(self.entries[u32_to_usize(idx)].prefix)
     }
 }
 
@@ -180,7 +136,7 @@ pub(crate) fn discover_mount_aliases(
             if bounded_len_u16(entries.len()) >= limits.mount_aliases_count_max() {
                 return Err(VfsError::LimitExceeded {
                     kind: VfsLimitKind::MountAliasesCount,
-                    actual: u64::from(limits.mount_aliases_count_max()).strict_add(1),
+                    actual: u64::from(limits.mount_aliases_count_max()) + 1,
                     max: u64::from(limits.mount_aliases_count_max()),
                 });
             }
@@ -218,30 +174,18 @@ fn build_alias_hash_table(
     entries: Vec<StoredAlias>,
     arena: &StringArenaBuilder,
 ) -> MountAliasTable {
-    let count_u16 = bounded_len_u16(entries.len());
-    let min_slots = (u32::from(count_u16).saturating_mul(2)).max(4);
-    let table_len = min_slots.next_power_of_two();
-    let mask = table_len.strict_sub(1);
-    let mut buckets = vec![None; u32_to_usize(table_len)].into_boxed_slice();
-    for (idx_u16, entry) in (0..count_u16).zip(entries.iter()) {
+    let entries = entries.into_boxed_slice();
+    let count_u32 = u32::from(bounded_len_u16(entries.len()));
+    let mut table = HashTable::with_capacity(entries.len());
+    for (idx_u32, entry) in (0..count_u32).zip(entries.iter()) {
         let name = arena.get(entry.name_span);
-        let hash = hash_folded_bytes(FNV1A_64_OFFSET_BASIS, name);
-        let start = hash_lo32(hash) & mask;
-        let mut probed: u32 = 0;
-        for step in 0..table_len {
-            let slot = u32_to_usize(start.wrapping_add(step) & mask);
-            if buckets[slot].is_none() {
-                buckets[slot] = Some(OccupiedAliasSlot::new(idx_u16));
-                break;
-            }
-            probed = probed.strict_add(1);
-        }
-        assert!(probed < table_len);
+        let hash = hash_folded_bytes(PATH_HASH_SEED, name);
+        table.insert_unique(hash, idx_u32, |&i| {
+            let stored = entries[u32_to_usize(i)];
+            hash_folded_bytes(PATH_HASH_SEED, arena.get(stored.name_span))
+        });
     }
-    MountAliasTable {
-        entries: entries.into_boxed_slice(),
-        buckets,
-    }
+    MountAliasTable { entries, table }
 }
 
 fn collect_core_aliases(

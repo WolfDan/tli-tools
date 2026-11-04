@@ -158,7 +158,7 @@ impl DirTable {
         let range = self.node(dir).subdir_range;
         DirSubdirsIter {
             next_idx: range.start,
-            end_idx: range.start.strict_add(range.count),
+            end_idx: range.start + range.count,
         }
     }
 
@@ -172,16 +172,16 @@ impl DirTable {
     ) -> Option<DirId> {
         let range = self.node(parent).subdir_range;
         let start = u32_to_usize(range.start);
-        let end = start.strict_add(u32_to_usize(range.count));
+        let end = start + u32_to_usize(range.count);
         let child_nodes = &self.nodes[start..end];
         let search_res = child_nodes.binary_search_by(|node| {
             let span = node.name_span();
             let s_start = u32_to_usize(span.offset);
-            let s_end = s_start.strict_add(usize::from(span.len));
+            let s_end = s_start + usize::from(span.len);
             cmp_folded_str(&arena_text[s_start..s_end], child_name)
         });
         match search_res {
-            Ok(rel) => Some(DirId::new(range.start.strict_add(bounded_len_u32(rel)))),
+            Ok(rel) => Some(DirId::new(range.start + bounded_len_u32(rel))),
             Err(_) => None,
         }
     }
@@ -210,8 +210,8 @@ impl DirTable {
     pub(crate) fn ancestor_chain(
         &self,
         dir: DirId,
-    ) -> ArrayVec<DirId, { PATH_DEPTH_HARD_MAX as usize }> {
-        let mut rev_chain = ArrayVec::<DirId, { PATH_DEPTH_HARD_MAX as usize }>::new();
+    ) -> ArrayVec<DirId, { crate::types::PATH_DEPTH_HARD_MAX_USIZE }> {
+        let mut rev_chain = ArrayVec::<DirId, { crate::types::PATH_DEPTH_HARD_MAX_USIZE }>::new();
         let mut cur = dir;
         for _ in 0..PATH_DEPTH_HARD_MAX {
             if cur.is_root() {
@@ -276,7 +276,7 @@ impl DirView {
     #[must_use]
     pub const fn subdir_at(&self, offset: u32) -> Option<DirId> {
         if offset < self.subdir_range.count {
-            Some(DirId::new(self.subdir_range.start.strict_add(offset)))
+            Some(DirId::new(self.subdir_range.start + offset))
         } else {
             None
         }
@@ -301,7 +301,7 @@ impl DirView {
     #[must_use]
     pub const fn file_at(&self, offset: u32) -> Option<FileId> {
         if offset < self.file_range.count {
-            Some(FileId::new(self.file_range.start.strict_add(offset)))
+            Some(FileId::new(self.file_range.start + offset))
         } else {
             None
         }
@@ -313,7 +313,7 @@ impl DirView {
     pub const fn files(&self) -> DirFilesIter {
         DirFilesIter {
             next_idx: self.file_range.start,
-            end_idx: self.file_range.start.strict_add(self.file_range.count),
+            end_idx: self.file_range.start + self.file_range.count,
         }
     }
 }
@@ -331,7 +331,7 @@ impl DirSubdirsIter {
     pub(crate) const fn from_range(range: IdRange) -> Self {
         Self {
             next_idx: range.start,
-            end_idx: range.start.strict_add(range.count),
+            end_idx: range.start + range.count,
         }
     }
 }
@@ -345,13 +345,13 @@ impl Iterator for DirSubdirsIter {
             return None;
         }
         let id = DirId::new(self.next_idx);
-        self.next_idx = self.next_idx.strict_add(1);
+        self.next_idx += 1;
         Some(id)
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let rem = u32_to_usize(self.end_idx.strict_sub(self.next_idx));
+        let rem = u32_to_usize(self.end_idx - self.next_idx);
         (rem, Some(rem))
     }
 }
@@ -362,7 +362,7 @@ impl DoubleEndedIterator for DirSubdirsIter {
         if self.next_idx >= self.end_idx {
             return None;
         }
-        self.end_idx = self.end_idx.strict_sub(1);
+        self.end_idx -= 1;
         Some(DirId::new(self.end_idx))
     }
 }
@@ -385,13 +385,13 @@ impl Iterator for DirFilesIter {
             return None;
         }
         let id = FileId::new(self.next_idx);
-        self.next_idx = self.next_idx.strict_add(1);
+        self.next_idx += 1;
         Some(id)
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let rem = u32_to_usize(self.end_idx.strict_sub(self.next_idx));
+        let rem = u32_to_usize(self.end_idx - self.next_idx);
         (rem, Some(rem))
     }
 }
@@ -402,7 +402,7 @@ impl DoubleEndedIterator for DirFilesIter {
         if self.next_idx >= self.end_idx {
             return None;
         }
-        self.end_idx = self.end_idx.strict_sub(1);
+        self.end_idx -= 1;
         Some(FileId::new(self.end_idx))
     }
 }
@@ -469,7 +469,7 @@ impl FileTable {
         arena: &StringArena,
     ) -> Option<FileId> {
         let start = u32_to_usize(dir_range.start);
-        let end = start.strict_add(u32_to_usize(dir_range.count));
+        let end = start + u32_to_usize(dir_range.count);
         let dir_keys = &self.keys[start..end];
         let rel = dir_keys
             .partition_point(|k| cmp_folded_str(arena.get(k.stem_span()), query_stem).is_lt());
@@ -478,10 +478,8 @@ impl FileTable {
         if !eq_folded_str(arena.get(first_key.stem_span()), query_stem) {
             return None;
         }
-        let first_idx = dir_range.start.strict_add(bounded_len_u32(rel));
-        for (fid_u32, &key) in
-            (first_idx..dir_range.start.strict_add(dir_range.count)).zip(tail.iter())
-        {
+        let first_idx = dir_range.start + bounded_len_u32(rel);
+        for (fid_u32, &key) in (first_idx..dir_range.start + dir_range.count).zip(tail.iter()) {
             if fid_u32 > first_idx && !same_key_stem(key, first_key, query_stem, arena) {
                 break;
             }
@@ -532,7 +530,7 @@ impl FileTable {
         let anchor_key = self.key(anchor);
         let dir_range = dirs.file_range(anchor_ref.dir);
         let dir_start = dir_range.start;
-        let dir_end = dir_range.start.strict_add(dir_range.count);
+        let dir_end = dir_range.start + dir_range.count;
         let anchor_stem = arena.get(anchor_key.stem_span());
 
         let mut group_start = anchor_idx;

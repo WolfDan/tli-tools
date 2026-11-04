@@ -60,6 +60,7 @@ impl<'vfs, 'scratch> VfsCursor<'vfs, 'scratch> {
         self.file_bytes == 0
     }
 
+    /// Number of unread logical bytes remaining (`0` if positioned at or past EOF).
     #[inline]
     #[must_use]
     pub const fn remaining(&self) -> u64 {
@@ -77,7 +78,7 @@ impl<'vfs, 'scratch> VfsCursor<'vfs, 'scratch> {
         })?;
         self.vfs
             .read_range_into(self.file, self.pos, self.scratch, dst)?;
-        self.pos = self.pos.strict_add(len_u64);
+        self.pos += len_u64;
         Ok(())
     }
 }
@@ -87,7 +88,7 @@ impl Read for VfsCursor<'_, '_> {
         if buf.is_empty() || self.pos >= self.file_bytes {
             return Ok(0);
         }
-        let avail = self.file_bytes.strict_sub(self.pos);
+        let avail = self.file_bytes - self.pos;
         let to_read_usize = match usize::try_from(avail) {
             Ok(avail_usize) => buf.len().min(avail_usize),
             Err(_) => buf.len(),
@@ -104,7 +105,7 @@ impl Read for VfsCursor<'_, '_> {
         self.vfs
             .read_range_into(self.file, self.pos, self.scratch, &mut buf[..to_read_usize])
             .map_err(std::io::Error::other)?;
-        self.pos = self.pos.strict_add(to_read_u64);
+        self.pos += to_read_u64;
         Ok(to_read_usize)
     }
 }

@@ -333,7 +333,7 @@ fn build_phi(locations: &[i32]) -> Vec<u8> {
     let cnt = u32::try_from(locations.len()).expect("fits");
     phi.extend_from_slice(&cnt.to_le_bytes());
     for (idx, &loc) in (0..cnt).zip(locations.iter()) {
-        let hash = u64::from(idx.strict_add(1));
+        let hash = u64::from(idx + 1);
         phi.extend_from_slice(&hash.to_le_bytes());
         phi.extend_from_slice(&loc.to_le_bytes());
     }
@@ -416,7 +416,7 @@ fn sha1_digest(data: &[u8]) -> [u8; 20] {
         0x1032_5476,
         0xC3D2_E1F0,
     ];
-    let bit_len = (u64::try_from(data.len()).expect("fits")).strict_mul(8);
+    let bit_len = u64::try_from(data.len()).expect("fits") * 8;
     let mut padded = data.to_vec();
     padded.push(0x80);
     for _ in 0..64 {

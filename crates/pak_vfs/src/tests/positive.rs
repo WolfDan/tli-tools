@@ -193,7 +193,7 @@ fn heterogeneous_mount_points_and_case_folding() {
 fn unicode_case_folding_and_hash_bucket_collision_probing() {
     let tmp = TempDir::new("unicode_and_probing");
     let mut spec = TestPakSpec::new_v12("../../../");
-    // 1-to-1 Unicode case folding ('Ä' <-> 'ä') plus 300 sibling entries forcing linear-probe chains.
+    // 1-to-1 Unicode case folding ('Ä' <-> 'ä') plus 300 sibling entries exercising hash-table probing.
     spec.entries
         .push(TestPakEntry::plain("Über/Ärger", "Öl.TXT", b"utf8_ok"));
     for i in 0..300_u32 {
@@ -500,7 +500,7 @@ fn verify_batch_elevator(
                     // Wrong buffer size for whole-file read of 16-byte `raw_id`.
                     VfsReadRequest::whole_file(raw_id, dst)
                 } else if i.is_multiple_of(2) {
-                    let off = u64::from(i.strict_mul(100));
+                    let off = u64::from(i * 100);
                     VfsReadRequest::byte_range(blob_id, off, dst)
                 } else {
                     VfsReadRequest::byte_range(raw_id, 4, dst)
@@ -518,7 +518,7 @@ fn verify_batch_elevator(
             ));
         } else if i.is_multiple_of(2) {
             assert!(matches!(outcome, VfsBatchOutcome::Ok { bytes_read: 8 }));
-            let start = u32_to_usize(i.strict_mul(100));
+            let start = u32_to_usize(i * 100);
             assert_eq!(&buf[..], &payload[start..start + 8]);
         } else {
             assert!(matches!(outcome, VfsBatchOutcome::Ok { bytes_read: 8 }));

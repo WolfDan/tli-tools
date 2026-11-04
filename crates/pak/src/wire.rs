@@ -109,7 +109,7 @@ enum MethodSlot {
 /// Validated footer compression method lookup table (`1..=slots.len()`).
 #[derive(Clone, Debug)]
 pub(crate) struct MethodTable {
-    slots: ArrayVec<MethodSlot, { COMPRESSION_METHODS_COUNT_MAX as usize }>,
+    slots: ArrayVec<MethodSlot, { u32_to_usize(COMPRESSION_METHODS_COUNT_MAX) }>,
 }
 
 impl MethodTable {
@@ -118,7 +118,7 @@ impl MethodTable {
             return Ok(CompressionMethod::None);
         }
         let table_len = bounded_len_u32(self.slots.len());
-        let slot_idx = u32_to_usize(raw_index.strict_sub(1));
+        let slot_idx = u32_to_usize(raw_index - 1);
         let Some(&slot) = self.slots.get(slot_idx) else {
             return Err(PakError::InvalidCompressionMethodIndex {
                 raw_index,
@@ -334,7 +334,10 @@ pub(crate) fn parse_footer_tail(tail: &[u8]) -> Result<ParsedFooter, PakError> {
             None => {}
         }
     }
-    Err(first_err.unwrap_or(PakError::InvalidFooterMagic))
+    match first_err {
+        Some(err) => Err(err),
+        None => Err(PakError::InvalidFooterMagic),
+    }
 }
 
 fn tail_suffix(tail: &[u8], suffix_bytes: u32) -> Option<&[u8]> {
@@ -356,7 +359,7 @@ fn decode_wire_bool(raw: u8) -> Result<bool, PakError> {
 fn parse_method_table(buf: &mut &[u8], slot_count: u32) -> Result<MethodTable, PakError> {
     assert!(slot_count >= 4);
     assert!(slot_count <= COMPRESSION_METHODS_COUNT_MAX);
-    let mut slots = ArrayVec::<MethodSlot, { COMPRESSION_METHODS_COUNT_MAX as usize }>::new();
+    let mut slots = ArrayVec::<MethodSlot, { u32_to_usize(COMPRESSION_METHODS_COUNT_MAX) }>::new();
     for _ in 0..slot_count {
         let raw_bytes = take::<[u8; 32]>(buf, WireContext::Footer)?;
         slots.push(parse_method_slot(raw_bytes)?);
@@ -572,8 +575,8 @@ pub(crate) fn inline_header_bytes(
         PakDialect::TorchlightInfiniteV12 => 54,
     };
     if has_compression {
-        let block_bytes = u32::from(block_count).strict_mul(16);
-        base.strict_add(4).strict_add(block_bytes)
+        let block_bytes = u32::from(block_count) * 16;
+        base + 4 + block_bytes
     } else {
         base
     }
@@ -896,7 +899,7 @@ fn push_block_checked(
     blocks_total_max: u32,
 ) -> Result<(), PakError> {
     if blocks_out.len() >= u32_to_usize(blocks_total_max) {
-        let next_count = u64::from(blocks_total_max).saturating_add(1);
+        let next_count = u64::from(blocks_total_max) + 1;
         return Err(PakError::LimitExceeded {
             kind: LimitKind::BlocksTotalCount,
             actual: next_count,

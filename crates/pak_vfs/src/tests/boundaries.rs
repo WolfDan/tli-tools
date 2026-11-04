@@ -252,13 +252,13 @@ fn ue_mount_alias_and_project_name_path_byte_bounds() {
         })
     ));
 
-    let max_proj = "p".repeat(VFS_PATH_BYTES_HARD_MAX as usize);
+    let max_proj = "p".repeat(crate::u32_to_usize(VFS_PATH_BYTES_HARD_MAX));
     assert!(
         VfsOpenOptions::new(None)
             .with_game_project_name(&max_proj)
             .is_ok()
     );
-    let over_proj = "p".repeat(VFS_PATH_BYTES_HARD_MAX as usize + 1);
+    let over_proj = "p".repeat(crate::u32_to_usize(VFS_PATH_BYTES_HARD_MAX + 1));
     assert!(matches!(
         VfsOpenOptions::new(None).with_game_project_name(&over_proj),
         Err(VfsError::InvalidProjectName)

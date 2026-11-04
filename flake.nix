@@ -129,6 +129,16 @@
           };
         });
 
+      # Data-oriented TigerStyle parsers for files extracted from .pak archives
+      parsers = craneLib.buildPackage (individualCrateArgs
+        // {
+          pname = "parsers";
+          cargoExtraArgs = "-p parsers";
+          meta = {
+            description = "High-performance, data-oriented TigerStyle parsers for files extracted from .pak archives";
+          };
+        });
+
       # Helper script to regenerate and verify the cargo-hakari workspace-hack crate
       hakariRegenApp = pkgs.writeShellApplication {
         name = "tli-hakari-regen";
@@ -151,7 +161,7 @@
     in {
       checks = {
         # Build all workspace packages as part of `nix flake check`
-        inherit data pak pak_vfs;
+        inherit data pak pak_vfs parsers;
 
         # Verify `workspace-hack` is up-to-date and properly wired across all crates
         tli-hakari = craneLib.mkCargoDerivation {
@@ -213,7 +223,7 @@
 
       packages = {
         default = data;
-        inherit data pak pak_vfs;
+        inherit data pak pak_vfs parsers;
         deps = cargoArtifacts;
       };
 

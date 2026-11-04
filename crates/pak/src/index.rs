@@ -1,6 +1,6 @@
 //! Access-temperature-grouped entry catalog (`EntryTable`) and `v8–v12` `.pak` index loaders.
 
-use core::num::NonZeroU32;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use crate::crypto::{PakCipher, compute_sha1};
 use crate::error::{EncryptedSectionKind, IndexSectionKind, LimitKind, PakError, WireContext};
@@ -95,7 +95,7 @@ impl EntryTable {
     #[must_use]
     pub(crate) fn blocks_for(&self, range: BlockRange) -> &[CompressionBlock] {
         let start = u32_to_usize(range.start_idx);
-        let end = start.strict_add(usize::from(range.count));
+        let end = start + usize::from(range.count);
         &self.blocks[start..end]
     }
 }
@@ -107,7 +107,7 @@ fn derive_header_offset(dialect: PakDialect, payload_offset: u64, range: BlockRa
         range.method != CompressionMethod::None,
         range.count,
     );
-    payload_offset.strict_sub(u64::from(hdr_bytes))
+    payload_offset - u64::from(hdr_bytes)
 }
 
 #[inline]
@@ -123,7 +123,7 @@ fn derive_disk_span_bytes(
     match entry_blocks.last() {
         Some(last_blk) => {
             let stride = pad_encrypted_stride(u64::from(last_blk.compressed_bytes), is_encrypted);
-            last_blk.rel_offset.strict_add(stride)
+            last_blk.rel_offset + stride
         }
         None => 0,
     }
@@ -138,7 +138,7 @@ const fn pad_encrypted_stride(raw_len: u64, is_encrypted: bool) -> u64 {
     if rem == 0 {
         raw_len
     } else {
-        raw_len.strict_add(16_u64.strict_sub(rem))
+        raw_len + (16_u64 - rem)
     }
 }
 
@@ -188,7 +188,7 @@ impl EntryTableBuilder {
         if idx >= limits.entries_count_max() {
             return Err(PakError::LimitExceeded {
                 kind: LimitKind::EntriesCount,
-                actual: u64::from(idx).strict_add(1),
+                actual: u64::from(idx) + 1,
                 max: u64::from(limits.entries_count_max()),
             });
         }
@@ -298,14 +298,14 @@ fn validate_entry_blocks(
         if entry.compression_block_bytes == 0 {
             return Err(PakError::CorruptWireLayout { context });
         }
-        let non_final = u64::from(entry.block_count.strict_sub(1));
+        let non_final = u64::from(entry.block_count - 1);
         let covered = non_final
             .checked_mul(u64::from(entry.compression_block_bytes))
             .ok_or(PakError::CorruptWireLayout { context })?;
         if covered >= entry.uncompressed_bytes {
             return Err(PakError::CorruptWireLayout { context });
         }
-        let final_bytes = entry.uncompressed_bytes.strict_sub(covered);
+        let final_bytes = entry.uncompressed_bytes - covered;
         if final_bytes > u64::from(entry.compression_block_bytes) {
             return Err(PakError::CorruptWireLayout { context });
         }
@@ -627,10 +627,10 @@ fn take_entry_count(
 fn ensure_min_wire_records(
     cur: &[u8],
     count: u32,
-    min_record_bytes: usize,
+    min_record_bytes: u32,
     context: WireContext,
 ) -> Result<(), PakError> {
-    if cur.len() / min_record_bytes < u32_to_usize(count) {
+    if cur.len() / u32_to_usize(min_record_bytes) < u32_to_usize(count) {
         return Err(PakError::CorruptWireLayout { context });
     }
     Ok(())
@@ -640,10 +640,10 @@ fn ensure_min_wire_records(
 fn split_capacity_hint(primary: &ParsedPrimaryIndex<'_>) -> u32 {
     let max_encoded = bounded_len_u32(primary.encoded_entries.len() / 12);
     let max_unencoded = bounded_len_u32(primary.unencoded_list.items.len());
-    let max_locs = max_encoded.saturating_add(max_unencoded);
-    primary
-        .declared_entries
-        .min(max_locs.saturating_mul(2).max(64))
+    assert!(max_encoded <= u32::MAX / 12);
+    assert!(max_unencoded <= ENTRIES_COUNT_HARD_MAX);
+    let max_locs = max_encoded + max_unencoded;
+    primary.declared_entries.min((max_locs * 2).max(64))
 }
 
 fn load_split_index(
@@ -765,17 +765,14 @@ struct SplitBuildContext<'a> {
 
 impl SplitBuildContext<'_> {
     fn push_pending_hash(&mut self, hash: PathHash, id: EntryId) -> Result<(), PakError> {
-        let hash_max = self
-            .env
-            .limits
-            .entries_count_max()
-            .saturating_mul(2)
-            .min(ENTRIES_COUNT_HARD_MAX);
+        let entries_max = self.env.limits.entries_count_max();
+        assert!(entries_max <= ENTRIES_COUNT_HARD_MAX);
+        let hash_max = (entries_max * 2).min(ENTRIES_COUNT_HARD_MAX);
         let cur_pending = bounded_len_u32(self.pending_hashes.len());
         if cur_pending >= hash_max {
             return Err(PakError::LimitExceeded {
                 kind: LimitKind::EntriesCount,
-                actual: u64::from(cur_pending).strict_add(1),
+                actual: u64::from(cur_pending) + 1,
                 max: u64::from(hash_max),
             });
         }
@@ -830,15 +827,12 @@ fn decode_split_location(
             .get(u32_to_usize(unenc_idx))
             .ok_or(PakError::CorruptWireLayout { context })?;
         let src_start = u32_to_usize(item.block_start);
-        let src_end = src_start.strict_add(usize::from(item.entry.block_count));
-        let needed = table
-            .blocks
-            .len()
-            .strict_add(usize::from(item.entry.block_count));
+        let src_end = src_start + usize::from(item.entry.block_count);
+        let needed = table.blocks.len() + usize::from(item.entry.block_count);
         if needed > u32_to_usize(env.limits.blocks_total_count_max()) {
             return Err(PakError::LimitExceeded {
                 kind: LimitKind::BlocksTotalCount,
-                actual: u64::from(env.limits.blocks_total_count_max()).strict_add(1),
+                actual: u64::from(env.limits.blocks_total_count_max()) + 1,
                 max: u64::from(env.limits.blocks_total_count_max()),
             });
         }
@@ -855,7 +849,7 @@ fn populate_from_full_directory(
     ctx: &mut SplitBuildContext<'_>,
 ) -> Result<(), PakError> {
     let dir_count = take_u32_le(&mut cur, WireContext::FullDirectoryIndex)?;
-    let dir_max = ctx.env.limits.entries_count_max().saturating_add(65_536);
+    let dir_max = ctx.env.limits.entries_count_max() + 65_536;
     if dir_count > dir_max {
         return Err(PakError::LimitExceeded {
             kind: LimitKind::EntriesCount,
@@ -1171,7 +1165,7 @@ where
     F: FnMut(&str, StreamingEntry<'_>) -> Result<(), E>,
 {
     let dir_count = take_u32_le(&mut cur, WireContext::FullDirectoryIndex)?;
-    let dir_max = ctx.env.limits.entries_count_max().saturating_add(65_536);
+    let dir_max = ctx.env.limits.entries_count_max() + 65_536;
     if dir_count > dir_max {
         return Err(E::from(PakError::LimitExceeded {
             kind: LimitKind::EntriesCount,
@@ -1288,145 +1282,38 @@ where
     Ok(())
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-struct OccupiedLocation {
-    entry_plus_one: NonZeroU32,
-    location: i32,
-}
-const _: () = assert!(core::mem::size_of::<Option<OccupiedLocation>>() == 8);
-
-impl OccupiedLocation {
-    #[inline]
-    #[must_use]
-    const fn new(location: i32, entry: EntryId) -> Self {
-        let idx = entry.index();
-        assert!(idx < u32::MAX);
-        Self {
-            entry_plus_one: NonZeroU32::MIN.saturating_add(idx),
-            location,
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    const fn entry(self) -> EntryId {
-        EntryId::new(self.entry_plus_one.get().strict_sub(1))
-    }
-}
-
-/// Temporary open-addressed `FPakEntryLocation -> EntryId` table used only during split-index open.
+/// Temporary pre-sized `FPakEntryLocation -> EntryId` map used only during split-index open.
 struct LocationMap {
-    buckets: Box<[Option<OccupiedLocation>]>,
-    occupied_count: u32,
+    map: FxHashMap<i32, EntryId>,
 }
 
 impl LocationMap {
     fn with_capacity(declared_entries: u32) -> Self {
-        let cap_entries = declared_entries
-            .saturating_add(16)
-            .min(ENTRIES_COUNT_HARD_MAX);
-        let min_slots = (cap_entries.saturating_mul(2)).max(4);
-        let table_len = min_slots.next_power_of_two();
+        assert!(declared_entries <= ENTRIES_COUNT_HARD_MAX);
+        let cap_entries = (declared_entries + 16).min(ENTRIES_COUNT_HARD_MAX);
         Self {
-            buckets: vec![None; u32_to_usize(table_len)].into_boxed_slice(),
-            occupied_count: 0,
+            map: FxHashMap::with_capacity_and_hasher(u32_to_usize(cap_entries), FxBuildHasher),
         }
-    }
-
-    #[inline]
-    const fn table_len(&self) -> u32 {
-        bounded_len_u32(self.buckets.len())
-    }
-
-    #[inline]
-    const fn mask(&self) -> u32 {
-        self.table_len().strict_sub(1)
-    }
-
-    #[inline]
-    fn start_slot(&self, location: i32) -> u32 {
-        let bits = location.cast_unsigned();
-        let mixed = u64::from(bits).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        (((mixed ^ (mixed >> 32)) & 0xFFFF_FFFF) as u32) & self.mask()
-    }
-
-    fn grow(&mut self, limits: PakLimits) -> Result<(), PakError> {
-        let cur_len = self.table_len();
-        let max_slots = (limits
-            .entries_count_max()
-            .min(ENTRIES_COUNT_HARD_MAX)
-            .saturating_mul(2))
-        .next_power_of_two();
-        if cur_len >= max_slots {
-            return Err(PakError::LimitExceeded {
-                kind: LimitKind::EntriesCount,
-                actual: u64::from(self.occupied_count).strict_add(1),
-                max: u64::from(limits.entries_count_max()),
-            });
-        }
-        let next_len = cur_len.strict_mul(2);
-        let old = core::mem::replace(
-            &mut self.buckets,
-            vec![None; u32_to_usize(next_len)].into_boxed_slice(),
-        );
-        self.occupied_count = 0;
-        for &bucket in &old {
-            if let Some(occ) = bucket {
-                self.insert_no_grow(occ.location, occ.entry());
-            }
-        }
-        Ok(())
     }
 
     fn insert(&mut self, location: i32, entry: EntryId, limits: PakLimits) -> Result<(), PakError> {
-        let table_len = self.table_len();
-        if self.occupied_count.saturating_mul(2) >= table_len {
-            self.grow(limits)?;
+        if self.map.contains_key(&location) {
+            return Ok(());
         }
-        self.insert_no_grow(location, entry);
+        let cur_len = bounded_len_u32(self.map.len());
+        let max_entries = limits.entries_count_max().min(ENTRIES_COUNT_HARD_MAX);
+        if cur_len >= max_entries {
+            return Err(PakError::LimitExceeded {
+                kind: LimitKind::EntriesCount,
+                actual: u64::from(cur_len) + 1,
+                max: u64::from(limits.entries_count_max()),
+            });
+        }
+        self.map.insert(location, entry);
         Ok(())
     }
 
-    fn insert_no_grow(&mut self, location: i32, entry: EntryId) {
-        let table_len = self.table_len();
-        assert!(self.occupied_count < table_len);
-        let mask = self.mask();
-        let start = self.start_slot(location);
-        let mut probed: u32 = 0;
-        for step in 0..table_len {
-            let idx = u32_to_usize(start.wrapping_add(step) & mask);
-            match self.buckets[idx] {
-                None => {
-                    self.buckets[idx] = Some(OccupiedLocation::new(location, entry));
-                    self.occupied_count = self.occupied_count.strict_add(1);
-                    return;
-                }
-                Some(occ) => {
-                    if occ.location == location {
-                        return;
-                    }
-                    probed = probed.strict_add(1);
-                }
-            }
-        }
-        assert!(probed < table_len);
-    }
-
     fn get(&self, location: i32) -> Option<EntryId> {
-        let table_len = self.table_len();
-        let mask = self.mask();
-        let start = self.start_slot(location);
-        let mut probed: u32 = 0;
-        for step in 0..table_len {
-            let idx = u32_to_usize(start.wrapping_add(step) & mask);
-            let occ = self.buckets[idx]?;
-            if occ.location == location {
-                return Some(occ.entry());
-            }
-            probed = probed.strict_add(1);
-        }
-        assert!(probed < table_len);
-        None
+        self.map.get(&location).copied()
     }
 }

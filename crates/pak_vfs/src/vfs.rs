@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use arrayvec::ArrayVec;
-use pak::{AesKey, CompressionMethod, ReadScratch};
+use pak::{AesKey, ReadScratch};
 
 use crate::arena::{ExtTable, StringArena};
 use crate::builder::{MountInput, MountedPakRecord, build_pak_vfs};
@@ -18,9 +18,8 @@ use crate::path::{
 };
 use crate::table::{DirFilesIter, DirSubdirsIter, DirTable, DirView, FileTable};
 use crate::types::{
-    DirId, ExtSlotId, FileId, MountAlias, MountSource, MountTier, PATH_DEPTH_HARD_MAX, PakId,
-    PakMountInfo, ReadWindow, ResolvedPackage, VfsBatchOutcome, VfsFileMeta, VfsLimits,
-    VfsOpenOptions, VfsReadRequest,
+    DirId, ExtSlotId, FileId, MountAlias, MountSource, MountTier, PakId, PakMountInfo, ReadWindow,
+    ResolvedPackage, VfsBatchOutcome, VfsFileMeta, VfsLimits, VfsOpenOptions, VfsReadRequest,
 };
 use crate::{bounded_len_u16, bounded_len_u32, u32_to_usize};
 
@@ -33,7 +32,7 @@ const BATCH_SORT_CHUNK_MAX: u32 = 64;
 ///
 /// Retains strictly winning `(PakId, EntryId)` pointers, a flat BFS directory tree (`DirTable`),
 /// an access-temperature-grouped file catalog (`FileTable`), a per-directory stem-deduplicated
-/// string arena, and a `<= 50%` load-factor open-addressed directory lookup table.
+/// string arena, and arena-backed `hashbrown::HashTable<u32>` directory and mount-alias lookup tables.
 #[derive(Debug)]
 pub struct PakVfs {
     paks: Box<[MountedPakRecord]>,
@@ -344,7 +343,8 @@ impl PakVfs {
     pub fn iter_subtree_files(&self, root_dir: DirId) -> SubtreeFileIter<'_> {
         self.assert_valid_dir(root_dir);
         let root_view = self.dirs.view(root_dir);
-        let mut stack = ArrayVec::<DirSubdirsIter, { PATH_DEPTH_HARD_MAX as usize }>::new();
+        let mut stack =
+            ArrayVec::<DirSubdirsIter, { crate::types::PATH_DEPTH_HARD_MAX_USIZE }>::new();
         let subdirs = root_view.subdirs();
         if subdirs.len() > 0 {
             let pushed = stack.try_push(subdirs);
@@ -653,7 +653,7 @@ impl PakVfs {
     ) {
         assert_eq!(req_chunk.len(), out_chunk.len());
         assert!(req_chunk.len() <= u32_to_usize(BATCH_SORT_CHUNK_MAX));
-        let mut order = ArrayVec::<BatchOrderSlot, { BATCH_SORT_CHUNK_MAX as usize }>::new();
+        let mut order = ArrayVec::<BatchOrderSlot, { u32_to_usize(BATCH_SORT_CHUNK_MAX) }>::new();
         let chunk_len = bounded_len_u32(req_chunk.len());
         for (local_idx, req) in (0..chunk_len).zip(req_chunk.iter()) {
             let eref = self.files.entry_ref(req.file);
@@ -661,19 +661,14 @@ impl PakVfs {
                 .pak_record(eref.pak_id)
                 .reader
                 .entry_meta(eref.entry_id);
-            let (disk_offset, in_file_offset) = match req.window {
-                ReadWindow::WholeFile => (meta.payload_offset(), 0),
-                ReadWindow::ByteRange { offset }
-                    if meta.compression_method() == CompressionMethod::None =>
-                {
-                    (meta.payload_offset().saturating_add(offset), offset)
-                }
-                ReadWindow::ByteRange { offset } => (meta.payload_offset(), offset),
+            let in_file_offset = match req.window {
+                ReadWindow::WholeFile => 0,
+                ReadWindow::ByteRange { offset } => offset,
             };
             let pushed = order.try_push(BatchOrderSlot {
                 local_idx,
                 pak_id: eref.pak_id,
-                disk_offset,
+                disk_offset: meta.payload_offset(),
                 in_file_offset,
             });
             assert!(pushed.is_ok());
@@ -733,13 +728,13 @@ impl<'a> Iterator for MountAliasIter<'a> {
             return None;
         }
         let idx = self.next_idx;
-        self.next_idx = self.next_idx.strict_add(1);
+        self.next_idx += 1;
         Some(self.vfs.mount_aliases.get(idx, &self.vfs.arena))
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let rem = usize::from(self.end_idx.strict_sub(self.next_idx));
+        let rem = usize::from(self.end_idx - self.next_idx);
         (rem, Some(rem))
     }
 }
@@ -750,7 +745,7 @@ impl DoubleEndedIterator for MountAliasIter<'_> {
         if self.next_idx >= self.end_idx {
             return None;
         }
-        self.end_idx = self.end_idx.strict_sub(1);
+        self.end_idx -= 1;
         Some(self.vfs.mount_aliases.get(self.end_idx, &self.vfs.arena))
     }
 }
@@ -765,7 +760,7 @@ impl ExactSizeIterator for MountAliasIter<'_> {}
 pub struct SubtreeFileIter<'a> {
     dirs: &'a DirTable,
     current_files: DirFilesIter,
-    stack: ArrayVec<DirSubdirsIter, { PATH_DEPTH_HARD_MAX as usize }>,
+    stack: ArrayVec<DirSubdirsIter, { crate::types::PATH_DEPTH_HARD_MAX_USIZE }>,
 }
 
 impl Iterator for SubtreeFileIter<'_> {
@@ -812,7 +807,7 @@ impl Iterator for ExtFileIter<'_> {
         let target = self.target_canonical?;
         let start = u32_to_usize(self.next_idx);
         for (idx, key) in (self.next_idx..self.files.len()).zip(self.files.keys[start..].iter()) {
-            self.next_idx = idx.strict_add(1);
+            self.next_idx = idx + 1;
             if self.exts.canonical_for(key.ext_slot) == Some(target) {
                 return Some(FileId::new(idx));
             }

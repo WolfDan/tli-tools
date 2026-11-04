@@ -61,7 +61,7 @@ fn open_file_and_footer(path: &Path) -> Result<(PositionedFile, ParsedFooter), P
     };
     let tail_bytes_u64 = u64::from(tail_bytes_u32);
     let tail_usize = u32_to_usize(tail_bytes_u32);
-    let tail_offset = file_bytes.strict_sub(tail_bytes_u64);
+    let tail_offset = file_bytes - tail_bytes_u64;
     let mut tail_buf = [0_u8; u32_to_usize(FOOTER_BYTES_MAX)];
     let tail_slice = &mut tail_buf[..tail_usize];
     file.read_exact_at(tail_offset, tail_slice)?;
@@ -265,9 +265,7 @@ impl PakPayloadReader {
         }
         if meta.compression_method == CompressionMethod::None {
             if !meta.is_encrypted() {
-                return self
-                    .file
-                    .read_exact_at(meta.payload_offset.strict_add(offset), dst);
+                return self.file.read_exact_at(meta.payload_offset + offset, dst);
             }
             return self.read_encrypted_raw_range(meta, offset, req_end, scratch, dst);
         }
@@ -285,16 +283,16 @@ impl PakPayloadReader {
         let aligned_start = offset & !15_u64;
         let aligned_end = align_up_16(req_end).ok_or(PakError::OutOfBoundsRange {
             offset,
-            byte_len: req_end.strict_sub(offset),
+            byte_len: req_end - offset,
             container_bytes: meta.uncompressed_bytes,
         })?;
-        let aligned_span = aligned_end.strict_sub(aligned_start);
+        let aligned_span = aligned_end - aligned_start;
         let parts = scratch.prepare_parts(aligned_span)?;
         self.file
-            .read_exact_at(meta.payload_offset.strict_add(aligned_start), parts.io_buf)?;
+            .read_exact_at(meta.payload_offset + aligned_start, parts.io_buf)?;
         self.decrypt_payload_buf(parts.io_buf)?;
-        let head_skip = u32_to_usize((offset & 15) as u32);
-        let copy_end = head_skip.strict_add(dst.len());
+        let head_skip = usize::from((offset & 15) as u8);
+        let copy_end = head_skip + dst.len();
         dst.copy_from_slice(&parts.io_buf[head_skip..copy_end]);
         Ok(())
     }
@@ -314,12 +312,12 @@ impl PakPayloadReader {
             if let Some(cached) =
                 scratch.cached_block_slice(self.reader_cookie, id, first_blk, blk_len_u64)
             {
-                let slice_start = usize::try_from(offset.strict_sub(blk_start)).map_err(|_| {
+                let slice_start = usize::try_from(offset - blk_start).map_err(|_| {
                     PakError::CorruptWireLayout {
                         context: WireContext::EncodedEntry,
                     }
                 })?;
-                let slice_end = slice_start.strict_add(dst.len());
+                let slice_end = slice_start + dst.len();
                 dst.copy_from_slice(&cached[slice_start..slice_end]);
                 return Ok(());
             }
@@ -328,7 +326,7 @@ impl PakPayloadReader {
         let all_blocks = self.entries.blocks_for(range);
         let span_blocks = &all_blocks[u32_to_usize(first_blk)..=u32_to_usize(last_blk)];
         let first_disk_rel = span_blocks[0].rel_offset;
-        let last_disk_blk = span_blocks[span_blocks.len().strict_sub(1)];
+        let last_disk_blk = span_blocks[span_blocks.len() - 1];
         let last_stride = if meta.is_encrypted() {
             align_up_16(u64::from(last_disk_blk.compressed_bytes)).ok_or(
                 PakError::CorruptWireLayout {
@@ -338,15 +336,12 @@ impl PakPayloadReader {
         } else {
             u64::from(last_disk_blk.compressed_bytes)
         };
-        let io_span = last_disk_blk
-            .rel_offset
-            .strict_add(last_stride)
-            .strict_sub(first_disk_rel);
+        let io_span = (last_disk_blk.rel_offset + last_stride) - first_disk_rel;
         let needed_blk_buf =
             required_partial_block_bytes(&meta, first_blk, last_blk, offset, req_end)?;
         let mut parts = scratch.prepare_range_parts(io_span, needed_blk_buf)?;
         self.file
-            .read_exact_at(meta.payload_offset.strict_add(first_disk_rel), parts.io_buf)?;
+            .read_exact_at(meta.payload_offset + first_disk_rel, parts.io_buf)?;
         if meta.is_encrypted() {
             self.decrypt_payload_buf(parts.io_buf)?;
         }
@@ -412,7 +407,8 @@ impl PakPayloadReader {
     ) {
         assert_eq!(req_chunk.len(), out_chunk.len());
         assert!(req_chunk.len() <= u32_to_usize(BATCH_SORT_CHUNK_MAX));
-        let mut order = ArrayVec::<PakBatchOrderSlot, { BATCH_SORT_CHUNK_MAX as usize }>::new();
+        let mut order =
+            ArrayVec::<PakBatchOrderSlot, { u32_to_usize(BATCH_SORT_CHUNK_MAX) }>::new();
         let chunk_len = bounded_len_u32(req_chunk.len());
         for (local_idx, req) in (0..chunk_len).zip(req_chunk.iter()) {
             let payload_offset = self.entries.record(req.id).payload_offset;
@@ -446,7 +442,7 @@ impl PakPayloadReader {
             "EntryId out of bounds for this PakPayloadReader"
         );
         let meta = self.entries.meta(id);
-        let hdr_len = meta.payload_offset.strict_sub(meta.header_offset);
+        let hdr_len = meta.payload_offset - meta.header_offset;
         let total_span =
             hdr_len
                 .checked_add(meta.compressed_bytes)
@@ -506,8 +502,8 @@ impl PakPayloadReader {
             let parts = scratch.prepare_parts(chunk_bytes)?;
             self.file.read_exact_at(cur_offset, parts.io_buf)?;
             hasher.update(parts.io_buf);
-            cur_offset = cur_offset.strict_add(chunk_bytes);
-            rem_bytes = rem_bytes.strict_sub(chunk_bytes);
+            cur_offset += chunk_bytes;
+            rem_bytes -= chunk_bytes;
         }
         assert_eq!(rem_bytes, 0);
         let actual = hasher.finalize();
@@ -735,11 +731,10 @@ fn compressed_block_span(
     let first = u32::try_from(offset / block_size).map_err(|_| PakError::CorruptWireLayout {
         context: WireContext::EncodedEntry,
     })?;
-    let last = u32::try_from(req_end.strict_sub(1) / block_size).map_err(|_| {
-        PakError::CorruptWireLayout {
+    let last =
+        u32::try_from((req_end - 1) / block_size).map_err(|_| PakError::CorruptWireLayout {
             context: WireContext::EncodedEntry,
-        }
-    })?;
+        })?;
     assert!(first <= last);
     assert!(last < u32::from(meta.block_count));
     Ok((first, last))
@@ -751,10 +746,10 @@ fn block_uncompressed_window(meta: &EntryMeta, block_idx: u32) -> (u64, u64) {
         return (0, meta.uncompressed_bytes);
     }
     let std_len = u64::from(meta.compression_block_bytes);
-    let blk_start = u64::from(block_idx).strict_mul(std_len);
-    let is_last = block_idx.strict_add(1) == u32::from(meta.block_count);
+    let blk_start = u64::from(block_idx) * std_len;
+    let is_last = block_idx + 1 == u32::from(meta.block_count);
     let blk_len = if is_last {
-        meta.uncompressed_bytes.strict_sub(blk_start)
+        meta.uncompressed_bytes - blk_start
     } else {
         std_len
     };
@@ -770,12 +765,12 @@ fn required_partial_block_bytes(
 ) -> Result<u32, PakError> {
     let mut max_needed: u64 = 0;
     let (start0, len0) = block_uncompressed_window(meta, first_blk);
-    if offset > start0 || req_end < start0.strict_add(len0) {
+    if offset > start0 || req_end < start0 + len0 {
         max_needed = max_needed.max(len0);
     }
     if last_blk > first_blk {
         let (start_last, len_last) = block_uncompressed_window(meta, last_blk);
-        if req_end < start_last.strict_add(len_last) {
+        if req_end < start_last + len_last {
             max_needed = max_needed.max(len_last);
         }
     }
@@ -804,17 +799,16 @@ fn decode_range_blocks(
 ) -> Result<(), PakError> {
     let span_count = bounded_len_u32(job.span_blocks.len());
     for (step_u32, &blk) in (0..span_count).zip(job.span_blocks.iter()) {
-        let blk_idx = job.first_blk.strict_add(step_u32);
+        let blk_idx = job.first_blk + step_u32;
         let src = slice_range_block_src(parts.io_buf, job.first_disk_rel, blk)?;
         let (blk_start, blk_len_u64) = block_uncompressed_window(&job.meta, blk_idx);
-        let blk_end = blk_start.strict_add(blk_len_u64);
+        let blk_end = blk_start + blk_len_u64;
         let copy_start = job.offset.max(blk_start);
         let copy_end = job.req_end.min(blk_end);
-        let want_usize = usize::try_from(copy_end.strict_sub(copy_start)).map_err(|_| {
-            PakError::CorruptWireLayout {
+        let want_usize =
+            usize::try_from(copy_end - copy_start).map_err(|_| PakError::CorruptWireLayout {
                 context: WireContext::EncodedEntry,
-            }
-        })?;
+            })?;
         let (dst_chunk, rest) =
             rem_dst
                 .split_at_mut_checked(want_usize)
@@ -854,12 +848,12 @@ fn decode_range_blocks(
                 block_index: blk_idx,
                 valid_bytes: blk_len_u32,
             });
-            let in_blk_start = usize::try_from(copy_start.strict_sub(blk_start)).map_err(|_| {
+            let in_blk_start = usize::try_from(copy_start - blk_start).map_err(|_| {
                 PakError::CorruptWireLayout {
                     context: WireContext::EncodedEntry,
                 }
             })?;
-            dst_chunk.copy_from_slice(&blk_out[in_blk_start..in_blk_start.strict_add(want_usize)]);
+            dst_chunk.copy_from_slice(&blk_out[in_blk_start..in_blk_start + want_usize]);
         }
     }
     assert!(rem_dst.is_empty());
@@ -880,7 +874,7 @@ fn slice_range_block_src(
     let src_start = usize::try_from(rel_start).map_err(|_| PakError::CorruptWireLayout {
         context: WireContext::EncodedEntry,
     })?;
-    let src_end = src_start.strict_add(u32_to_usize(blk.compressed_bytes));
+    let src_end = src_start + u32_to_usize(blk.compressed_bytes);
     io_buf
         .get(src_start..src_end)
         .ok_or(PakError::CorruptWireLayout {
@@ -909,14 +903,14 @@ fn decompress_blocks(
             usize::try_from(blk.rel_offset).map_err(|_| PakError::CorruptWireLayout {
                 context: WireContext::EncodedEntry,
             })?;
-        let src_end = src_start.strict_add(u32_to_usize(blk.compressed_bytes));
+        let src_end = src_start + u32_to_usize(blk.compressed_bytes);
         let src = job
             .io_buf
             .get(src_start..src_end)
             .ok_or(PakError::CorruptWireLayout {
                 context: WireContext::EncodedEntry,
             })?;
-        let is_last = block_idx.strict_add(1) == block_total;
+        let is_last = block_idx + 1 == block_total;
         let out_len = if is_last {
             rem_dst.len()
         } else {
@@ -1008,13 +1002,13 @@ impl<'a> Iterator for EntryIter<'a> {
             return None;
         }
         let id = EntryId::new(self.next_idx);
-        self.next_idx = self.next_idx.strict_add(1);
+        self.next_idx += 1;
         Some((id, self.archive.paths.get(id)))
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let rem = u32_to_usize(self.end_idx.strict_sub(self.next_idx));
+        let rem = u32_to_usize(self.end_idx - self.next_idx);
         (rem, Some(rem))
     }
 }
@@ -1025,7 +1019,7 @@ impl DoubleEndedIterator for EntryIter<'_> {
         if self.next_idx >= self.end_idx {
             return None;
         }
-        self.end_idx = self.end_idx.strict_sub(1);
+        self.end_idx -= 1;
         let id = EntryId::new(self.end_idx);
         Some((id, self.archive.paths.get(id)))
     }

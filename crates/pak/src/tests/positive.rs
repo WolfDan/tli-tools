@@ -427,7 +427,10 @@ fn verify_range_windows(
         (0, 1),
         (full.len() - 1, 1),
         (0, full.len()),
-        (1.min(full.len() - 1), full.len().saturating_sub(2).max(1)),
+        (
+            1.min(full.len() - 1),
+            if full.len() > 2 { full.len() - 2 } else { 1 },
+        ),
     ];
     for (start, len) in edges {
         let mut win = vec![0_u8; len];

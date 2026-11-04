@@ -144,7 +144,7 @@ fn collect_dir_entry(
     if out.len() >= usize::from(limits.paks_count_max()) {
         return Err(VfsError::LimitExceeded {
             kind: VfsLimitKind::PaksCount,
-            actual: u64::from(limits.paks_count_max()).strict_add(1),
+            actual: u64::from(limits.paks_count_max()) + 1,
             max: u64::from(limits.paks_count_max()),
         });
     }
@@ -164,7 +164,7 @@ fn has_pak_extension(file_name: &str) -> bool {
     if file_name.len() < 5 {
         return false;
     }
-    let tail_start = file_name.len().strict_sub(4);
+    let tail_start = file_name.len() - 4;
     if !file_name.is_char_boundary(tail_start) {
         return false;
     }
@@ -197,7 +197,7 @@ pub(crate) fn is_patch_pak_name(file_name: &str) -> bool {
     if file_name.len() < 7 {
         return false;
     }
-    let suffix_start = file_name.len().strict_sub(6);
+    let suffix_start = file_name.len() - 6;
     if !file_name.is_char_boundary(suffix_start) {
         return false;
     }
@@ -211,11 +211,11 @@ pub(crate) fn parse_patch_suffix_version(file_name: &str) -> u64 {
     if !is_patch_pak_name(file_name) {
         return 0;
     }
-    let stem_before_p = &file_name[..file_name.len().strict_sub(6)];
+    let stem_before_p = &file_name[..file_name.len() - 6];
     let Some(underscore_idx) = stem_before_p.rfind('_') else {
         return 0;
     };
-    let digits = &stem_before_p[underscore_idx.strict_add(1)..];
+    let digits = &stem_before_p[underscore_idx + 1..];
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return 0;
     }
@@ -223,7 +223,7 @@ pub(crate) fn parse_patch_suffix_version(file_name: &str) -> u64 {
     for byte in digits.bytes() {
         let Some(next) = acc
             .checked_mul(10)
-            .and_then(|v| v.checked_add(u64::from(byte.strict_sub(b'0'))))
+            .and_then(|v| v.checked_add(u64::from(byte - b'0')))
         else {
             return 0;
         };

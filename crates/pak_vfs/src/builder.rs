@@ -1,8 +1,8 @@
 //! Single-threaded two-phase VFS builder: streaming winner-takes-all ingest + BFS table freeze.
 
-use core::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
+use hashbrown::HashTable;
 use pak::{EntryId, PakError, PakPayloadReader, StreamingEntry};
 
 use crate::arena::{ArenaSpan, ExtBuilder, ExtTable, StringArena, StringArenaBuilder};
@@ -10,16 +10,13 @@ use crate::error::{PathErrorKind, VfsError, VfsLimitKind};
 use crate::lookup::DirLookupTable;
 use crate::mount_alias::{MountAliasTable, discover_mount_aliases};
 use crate::path::{
-    FNV1A_64_OFFSET_BASIS, add_segment_byte_budget, cmp_folded_str, cmp_folded_then_exact,
+    PATH_HASH_SEED, add_segment_byte_budget, cmp_folded_str, cmp_folded_then_exact,
     eq_folded_opt_str, eq_folded_str, extend_path_hash, hash_folded_bytes, parse_mount_prefix,
     split_stem_ext, validate_named_segment,
 };
 use crate::table::{DirNode, DirTable, FileKey, FileTable, IdRange, PakEntryRef};
-use crate::types::{
-    DIRS_COUNT_HARD_MAX, DirId, ExtSlotId, FILES_COUNT_HARD_MAX, MountTier, PakId, VfsLimits,
-    VfsOpenOptions,
-};
-use crate::{bounded_len_u32, hash_hi32, hash_lo32, u32_to_usize};
+use crate::types::{DirId, ExtSlotId, MountTier, PakId, VfsLimits, VfsOpenOptions};
+use crate::{bounded_len_u32, u32_to_usize};
 
 pub(crate) struct MountInput {
     pub(crate) path: PathBuf,
@@ -116,7 +113,7 @@ fn ingest_single_pak(
             StreamingEntry::Named { id, dir, file } => {
                 let won = staging.ingest_named_entry(cache, pak_id, mount_point, dir, file, id)?;
                 if won {
-                    winning_file_count = winning_file_count.strict_add(1);
+                    winning_file_count += 1;
                 }
                 Ok::<(), StreamIngestError>(())
             }
@@ -173,26 +170,36 @@ impl ArchiveIngestCache {
 
 #[derive(Clone, Copy)]
 struct StagingDirNode {
-    parent: Option<u32>,
+    parent: u32,
     name_span: ArenaSpan,
     depth: u16,
     has_subdirs: bool,
     has_files: bool,
     norm_bytes: u32,
-    dir_hash: Option<u64>,
+    dir_hash: u64,
 }
-const _: () = assert!(core::mem::size_of::<StagingDirNode>() == 40);
+const _: () = assert!(core::mem::size_of::<StagingDirNode>() == 32);
 
 impl StagingDirNode {
     const ROOT: Self = Self {
-        parent: None,
+        parent: 0,
         name_span: ArenaSpan::EMPTY,
         depth: 0,
         has_subdirs: false,
         has_files: false,
         norm_bytes: 0,
-        dir_hash: None,
+        dir_hash: PATH_HASH_SEED,
     };
+
+    #[inline]
+    #[must_use]
+    const fn parent_dir_hash(self) -> Option<u64> {
+        if self.depth == 0 {
+            None
+        } else {
+            Some(self.dir_hash)
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -255,12 +262,12 @@ impl StagingState {
         };
         let cur_u32 = bounded_len_u32(self.text.len());
         if !s.is_empty() && self.text.ends_with(s) {
-            let reuse_off = cur_u32.strict_sub(u32::from(seg_len));
+            let reuse_off = cur_u32 - u32::from(seg_len);
             return Ok(ArenaSpan::new(reuse_off, seg_len));
         }
-        let staging_max = self.limits.arena_bytes_max().saturating_mul(4);
-        let next_u64 = u64::from(cur_u32).strict_add(u64::from(seg_len));
-        if next_u64 > u64::from(staging_max) {
+        let staging_max = u64::from(self.limits.arena_bytes_max()) * 4;
+        let next_u64 = u64::from(cur_u32) + u64::from(seg_len);
+        if next_u64 > staging_max {
             return Err(VfsError::LimitExceeded {
                 kind: VfsLimitKind::ArenaBytes,
                 actual: next_u64,
@@ -370,7 +377,7 @@ impl StagingState {
             return Ok(existing);
         }
         let parent_node = self.dirs[u32_to_usize(parent_dir)];
-        let next_depth = parent_node.depth.strict_add(1);
+        let next_depth = parent_node.depth + 1;
         if next_depth > self.limits.path_depth_max() {
             return Err(VfsError::LimitExceeded {
                 kind: VfsLimitKind::PathDepth,
@@ -384,11 +391,11 @@ impl StagingState {
         if cur_dir_count >= self.limits.dirs_count_max() {
             return Err(VfsError::LimitExceeded {
                 kind: VfsLimitKind::DirsCount,
-                actual: u64::from(self.limits.dirs_count_max()).strict_add(1),
+                actual: u64::from(self.limits.dirs_count_max()) + 1,
                 max: u64::from(self.limits.dirs_count_max()),
             });
         }
-        let dir_hash = extend_path_hash(parent_node.dir_hash, seg);
+        let dir_hash = extend_path_hash(parent_node.parent_dir_hash(), seg);
         if parent_node.has_files {
             let (seg_stem, seg_ext) = split_stem_ext(seg);
             let probe_key = StagingFileKey {
@@ -408,16 +415,16 @@ impl StagingState {
         let new_idx = cur_dir_count;
         self.dirs[u32_to_usize(parent_dir)].has_subdirs = true;
         self.dirs.push(StagingDirNode {
-            parent: Some(parent_dir),
+            parent: parent_dir,
             name_span,
             depth: next_depth,
             has_subdirs: false,
             has_files: false,
             norm_bytes,
-            dir_hash: Some(dir_hash),
+            dir_hash,
         });
         self.dir_map
-            .insert_with_hash(edge_hash, new_idx, &self.dirs, &self.text, self.limits)?;
+            .insert_with_hash(edge_hash, new_idx, &self.dirs, &self.text);
         Ok(new_idx)
     }
 
@@ -432,7 +439,7 @@ impl StagingState {
         let _total_bytes =
             add_segment_byte_budget(parent_node.norm_bytes, leaf, parent_dir != 0, self.limits)?;
         let (stem, ext) = split_stem_ext(leaf);
-        let path_hash = extend_path_hash(parent_node.dir_hash, leaf);
+        let path_hash = extend_path_hash(parent_node.parent_dir_hash(), leaf);
         let probe_key = StagingFileKey {
             path_hash,
             staging_dir: parent_dir,
@@ -463,7 +470,7 @@ impl StagingState {
         if cur_file_count >= self.limits.files_count_max() {
             return Err(VfsError::LimitExceeded {
                 kind: VfsLimitKind::FilesCount,
-                actual: u64::from(self.limits.files_count_max()).strict_add(1),
+                actual: u64::from(self.limits.files_count_max()) + 1,
                 max: u64::from(self.limits.files_count_max()),
             });
         }
@@ -479,8 +486,7 @@ impl StagingState {
             entry_id,
             path_hash,
         });
-        self.winner_map
-            .insert(path_hash, file_idx, &self.files, self.limits)?;
+        self.winner_map.insert(path_hash, file_idx, &self.files);
         Ok(true)
     }
 }
@@ -488,65 +494,26 @@ impl StagingState {
 #[inline]
 fn staging_slice(text: &str, span: ArenaSpan) -> &str {
     let start = u32_to_usize(span.offset);
-    let end = start.strict_add(usize::from(span.len));
+    let end = start + usize::from(span.len);
     &text[start..end]
 }
 
 #[inline]
 fn dir_edge_hash(parent_dir: u32, seg: &str) -> u64 {
-    let seg_hash = hash_folded_bytes(FNV1A_64_OFFSET_BASIS, seg);
+    let seg_hash = hash_folded_bytes(PATH_HASH_SEED, seg);
     let mixed_parent = u64::from(parent_dir).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     seg_hash ^ mixed_parent.rotate_left(21)
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct OccupiedStagingDirSlot {
-    non_root_dir: NonZeroU32,
-    key_hi: u32,
-}
-const _: () = assert!(core::mem::size_of::<Option<OccupiedStagingDirSlot>>() == 8);
-
-impl OccupiedStagingDirSlot {
-    #[inline]
-    #[must_use]
-    const fn new(dir_idx: u32, key_hi: u32) -> Self {
-        assert!(dir_idx > 0);
-        Self {
-            non_root_dir: NonZeroU32::MIN.saturating_add(dir_idx.strict_sub(1)),
-            key_hi,
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    const fn dir_idx(self) -> u32 {
-        self.non_root_dir.get()
-    }
-}
-
 struct StagingDirMap {
-    buckets: Box<[Option<OccupiedStagingDirSlot>]>,
-    occupied: u32,
+    table: HashTable<u32>,
 }
 
 impl StagingDirMap {
     fn with_initial_slots(slots: u32) -> Self {
-        let len = slots.max(4).next_power_of_two();
         Self {
-            buckets: vec![None; u32_to_usize(len)].into_boxed_slice(),
-            occupied: 0,
+            table: HashTable::with_capacity(u32_to_usize(slots)),
         }
-    }
-
-    #[inline]
-    const fn table_len(&self) -> u32 {
-        bounded_len_u32(self.buckets.len())
-    }
-
-    #[inline]
-    const fn mask(&self) -> u32 {
-        self.table_len().strict_sub(1)
     }
 
     fn find_with_hash(
@@ -557,27 +524,12 @@ impl StagingDirMap {
         nodes: &[StagingDirNode],
         text: &str,
     ) -> Option<u32> {
-        let target_hi = hash_hi32(key_hash);
-        let table_len = self.table_len();
-        let mask = self.mask();
-        let start = hash_lo32(key_hash) & mask;
-        let mut probed: u32 = 0;
-        for step in 0..table_len {
-            let slot = u32_to_usize(start.wrapping_add(step) & mask);
-            let occ = self.buckets[slot]?;
-            if occ.key_hi == target_hi {
-                let dir_idx = occ.dir_idx();
+        self.table
+            .find(key_hash, |&dir_idx| {
                 let node = nodes[u32_to_usize(dir_idx)];
-                if node.parent == Some(parent_dir)
-                    && eq_folded_str(staging_slice(text, node.name_span), seg)
-                {
-                    return Some(dir_idx);
-                }
-            }
-            probed = probed.strict_add(1);
-        }
-        assert!(probed < table_len);
-        None
+                node.parent == parent_dir && eq_folded_str(staging_slice(text, node.name_span), seg)
+            })
+            .copied()
     }
 
     fn insert_with_hash(
@@ -586,67 +538,12 @@ impl StagingDirMap {
         dir_idx: u32,
         nodes: &[StagingDirNode],
         text: &str,
-        limits: VfsLimits,
-    ) -> Result<(), VfsError> {
-        let table_len = self.table_len();
-        if self.occupied.saturating_mul(2) >= table_len {
-            self.grow(nodes, text, limits)?;
-        }
-        self.insert_raw(key_hash, dir_idx);
-        Ok(())
-    }
-
-    fn grow(
-        &mut self,
-        nodes: &[StagingDirNode],
-        text: &str,
-        limits: VfsLimits,
-    ) -> Result<(), VfsError> {
-        let cur_len = self.table_len();
-        let max_slots = (DIRS_COUNT_HARD_MAX.saturating_mul(2)).next_power_of_two();
-        if cur_len >= max_slots {
-            return Err(VfsError::LimitExceeded {
-                kind: VfsLimitKind::DirsCount,
-                actual: u64::from(self.occupied).strict_add(1),
-                max: u64::from(limits.dirs_count_max()),
-            });
-        }
-        let next_len = cur_len.strict_mul(2);
-        let old = core::mem::replace(
-            &mut self.buckets,
-            vec![None; u32_to_usize(next_len)].into_boxed_slice(),
-        );
-        self.occupied = 0;
-        for &b in &old {
-            if let Some(occ) = b {
-                let dir_idx = occ.dir_idx();
-                let node = nodes[u32_to_usize(dir_idx)];
-                if let Some(parent) = node.parent {
-                    let name = staging_slice(text, node.name_span);
-                    self.insert_raw(dir_edge_hash(parent, name), dir_idx);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn insert_raw(&mut self, key_hash: u64, dir_idx: u32) {
-        let table_len = self.table_len();
-        let mask = self.mask();
-        assert!(self.occupied < table_len);
-        let start = hash_lo32(key_hash) & mask;
-        let key_hi = hash_hi32(key_hash);
-        let mut probed: u32 = 0;
-        for step in 0..table_len {
-            let slot = u32_to_usize(start.wrapping_add(step) & mask);
-            if self.buckets[slot].is_none() {
-                self.buckets[slot] = Some(OccupiedStagingDirSlot::new(dir_idx, key_hi));
-                self.occupied = self.occupied.strict_add(1);
-                return;
-            }
-            probed = probed.strict_add(1);
-        }
-        assert!(probed < table_len);
+    ) {
+        assert!(dir_idx > 0);
+        self.table.insert_unique(key_hash, dir_idx, |&idx| {
+            let node = nodes[u32_to_usize(idx)];
+            dir_edge_hash(node.parent, staging_slice(text, node.name_span))
+        });
     }
 }
 
@@ -658,54 +555,15 @@ struct StagingFileKey<'a> {
     ext: Option<&'a str>,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct OccupiedWinnerFileSlot {
-    file_plus_one: NonZeroU32,
-    hash_hi: u32,
-}
-const _: () = assert!(core::mem::size_of::<Option<OccupiedWinnerFileSlot>>() == 8);
-
-impl OccupiedWinnerFileSlot {
-    #[inline]
-    #[must_use]
-    const fn new(file_idx: u32, hash_hi: u32) -> Self {
-        assert!(file_idx < u32::MAX);
-        Self {
-            file_plus_one: NonZeroU32::MIN.saturating_add(file_idx),
-            hash_hi,
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    const fn file_idx(self) -> u32 {
-        self.file_plus_one.get().strict_sub(1)
-    }
-}
-
 struct WinnerFileMap {
-    buckets: Box<[Option<OccupiedWinnerFileSlot>]>,
-    occupied: u32,
+    table: HashTable<u32>,
 }
 
 impl WinnerFileMap {
     fn with_initial_slots(slots: u32) -> Self {
-        let len = slots.max(4).next_power_of_two();
         Self {
-            buckets: vec![None; u32_to_usize(len)].into_boxed_slice(),
-            occupied: 0,
+            table: HashTable::with_capacity(u32_to_usize(slots)),
         }
-    }
-
-    #[inline]
-    const fn table_len(&self) -> u32 {
-        bounded_len_u32(self.buckets.len())
-    }
-
-    #[inline]
-    const fn mask(&self) -> u32 {
-        self.table_len().strict_sub(1)
     }
 
     fn contains(
@@ -715,91 +573,20 @@ impl WinnerFileMap {
         text: &str,
         exts: &ExtBuilder,
     ) -> bool {
-        let target_hi = hash_hi32(key.path_hash);
-        let table_len = self.table_len();
-        let mask = self.mask();
-        let start = hash_lo32(key.path_hash) & mask;
-        let mut probed: u32 = 0;
-        for step in 0..table_len {
-            let slot = u32_to_usize(start.wrapping_add(step) & mask);
-            match self.buckets[slot] {
-                None => return false,
-                Some(occ) => {
-                    if occ.hash_hi == target_hi {
-                        let f = files[u32_to_usize(occ.file_idx())];
-                        if f.staging_dir == key.staging_dir
-                            && eq_folded_opt_str(exts.get_str(f.ext_slot), key.ext)
-                            && eq_folded_str(staging_slice(text, f.stem_span), key.stem)
-                        {
-                            return true;
-                        }
-                    }
-                    probed = probed.strict_add(1);
-                }
-            }
-        }
-        assert!(probed < table_len);
-        false
-    }
-
-    fn insert(
-        &mut self,
-        path_hash: u64,
-        file_idx: u32,
-        files: &[StagingFile],
-        limits: VfsLimits,
-    ) -> Result<(), VfsError> {
-        let table_len = self.table_len();
-        if self.occupied.saturating_mul(2) >= table_len {
-            self.grow(files, limits)?;
-        }
-        self.insert_raw(path_hash, file_idx);
-        Ok(())
-    }
-
-    fn grow(&mut self, files: &[StagingFile], limits: VfsLimits) -> Result<(), VfsError> {
-        let cur_len = self.table_len();
-        let max_slots = (FILES_COUNT_HARD_MAX.saturating_mul(2)).next_power_of_two();
-        if cur_len >= max_slots {
-            return Err(VfsError::LimitExceeded {
-                kind: VfsLimitKind::FilesCount,
-                actual: u64::from(self.occupied).strict_add(1),
-                max: u64::from(limits.files_count_max()),
-            });
-        }
-        let next_len = cur_len.strict_mul(2);
-        let old = core::mem::replace(
-            &mut self.buckets,
-            vec![None; u32_to_usize(next_len)].into_boxed_slice(),
-        );
-        self.occupied = 0;
-        for &b in &old {
-            if let Some(occ) = b {
-                let file_idx = occ.file_idx();
+        self.table
+            .find(key.path_hash, |&file_idx| {
                 let f = files[u32_to_usize(file_idx)];
-                self.insert_raw(f.path_hash, file_idx);
-            }
-        }
-        Ok(())
+                f.staging_dir == key.staging_dir
+                    && eq_folded_opt_str(exts.get_str(f.ext_slot), key.ext)
+                    && eq_folded_str(staging_slice(text, f.stem_span), key.stem)
+            })
+            .is_some()
     }
 
-    fn insert_raw(&mut self, path_hash: u64, file_idx: u32) {
-        let table_len = self.table_len();
-        let mask = self.mask();
-        assert!(self.occupied < table_len);
-        let start = hash_lo32(path_hash) & mask;
-        let hash_hi = hash_hi32(path_hash);
-        let mut probed: u32 = 0;
-        for step in 0..table_len {
-            let slot = u32_to_usize(start.wrapping_add(step) & mask);
-            if self.buckets[slot].is_none() {
-                self.buckets[slot] = Some(OccupiedWinnerFileSlot::new(file_idx, hash_hi));
-                self.occupied = self.occupied.strict_add(1);
-                return;
-            }
-            probed = probed.strict_add(1);
-        }
-        assert!(probed < table_len);
+    fn insert(&mut self, path_hash: u64, file_idx: u32, files: &[StagingFile]) {
+        self.table.insert_unique(path_hash, file_idx, |&idx| {
+            files[u32_to_usize(idx)].path_hash
+        });
     }
 }
 
@@ -818,9 +605,8 @@ fn freeze_staging(
     drop(staging.dir_map);
     drop(staging.winner_map);
 
-    let est_arena_bytes = (bounded_len_u32(staging.text.len()) / 2)
-        .saturating_add(1024)
-        .min(limits.arena_bytes_max());
+    let half_text_bytes = bounded_len_u32(staging.text.len()) / 2;
+    let est_arena_bytes = (half_text_bytes + 1024).min(limits.arena_bytes_max());
     let mut arena_builder =
         StringArenaBuilder::with_capacity(est_arena_bytes, limits.arena_bytes_max());
 
@@ -869,6 +655,7 @@ fn freeze_dirs_bfs(
     arena: &mut StringArenaBuilder,
 ) -> Result<BfsDirLayout, VfsError> {
     let dir_count = bounded_len_u32(stg_dirs.len());
+    assert!(dir_count >= 1);
     let dir_count_usize = stg_dirs.len();
     let (child_offsets, children_flat) = build_sorted_dir_children_csr(stg_dirs, stg_text);
 
@@ -876,7 +663,8 @@ fn freeze_dirs_bfs(
     bfs_queue.push(0);
     let mut old_to_new = vec![DirId::ROOT; dir_count_usize];
     let mut nodes = Vec::<DirNode>::with_capacity(dir_count_usize);
-    let mut dir_lookup = DirLookupTable::with_dir_capacity(dir_count.saturating_sub(1));
+    let mut dir_hashes = vec![0_u64; dir_count_usize];
+    let mut dir_lookup = DirLookupTable::with_dir_capacity(dir_count - 1);
 
     for new_idx in 0..dir_count {
         let new_dir = DirId::new(new_idx);
@@ -884,9 +672,9 @@ fn freeze_dirs_bfs(
         old_to_new[u32_to_usize(stg_id)] = new_dir;
 
         let c_start_u32 = child_offsets[u32_to_usize(stg_id)];
-        let c_end_u32 = child_offsets[u32_to_usize(stg_id).strict_add(1)];
+        let c_end_u32 = child_offsets[u32_to_usize(stg_id) + 1];
         let sub_start = bounded_len_u32(bfs_queue.len());
-        let sub_count = c_end_u32.strict_sub(c_start_u32);
+        let sub_count = c_end_u32 - c_start_u32;
         bfs_queue
             .extend_from_slice(&children_flat[u32_to_usize(c_start_u32)..u32_to_usize(c_end_u32)]);
         let sub_range = IdRange {
@@ -895,19 +683,20 @@ fn freeze_dirs_bfs(
         };
 
         let node = stg_dirs[u32_to_usize(stg_id)];
-        let parent = node.parent.map(|p| {
-            let mapped = old_to_new[u32_to_usize(p)];
+        let parent = if new_dir.is_root() {
+            None
+        } else {
+            let mapped = old_to_new[u32_to_usize(node.parent)];
             assert!(mapped.index() < new_idx);
-            mapped
-        });
+            Some(mapped)
+        };
         let name_span = if new_dir.is_root() {
             ArenaSpan::EMPTY
         } else {
             let seg = staging_slice(stg_text, node.name_span);
             let span = arena.push_str(seg)?;
-            if let Some(hash) = node.dir_hash {
-                dir_lookup.insert(hash, new_dir);
-            }
+            dir_hashes[u32_to_usize(new_idx)] = node.dir_hash;
+            dir_lookup.insert(node.dir_hash, new_dir, &dir_hashes);
             span
         };
         nodes.push(DirNode::new(
@@ -936,25 +725,23 @@ fn build_sorted_dir_children_csr(
     let n = stg_dirs.len();
     let mut counts = vec![0_u32; n];
     for node in stg_dirs.iter().skip(1) {
-        if let Some(p) = node.parent {
-            counts[u32_to_usize(p)] = counts[u32_to_usize(p)].strict_add(1);
-        }
+        let p = u32_to_usize(node.parent);
+        counts[p] += 1;
     }
-    let mut offsets = Vec::with_capacity(n.strict_add(1));
+    let mut offsets = Vec::with_capacity(n + 1);
     offsets.push(0);
     let mut running: u32 = 0;
     for &c in &counts {
-        running = running.strict_add(c);
+        running += c;
         offsets.push(running);
     }
     let mut cursors = offsets[..n].to_vec();
     let mut flat = vec![0_u32; u32_to_usize(running)];
     for (idx_u32, node) in (1..dir_count).zip(stg_dirs.iter().skip(1)) {
-        if let Some(p) = node.parent {
-            let pos = cursors[u32_to_usize(p)];
-            flat[u32_to_usize(pos)] = idx_u32;
-            cursors[u32_to_usize(p)] = pos.strict_add(1);
-        }
+        let p = u32_to_usize(node.parent);
+        let pos = cursors[p];
+        flat[u32_to_usize(pos)] = idx_u32;
+        cursors[p] = pos + 1;
     }
     for pair in offsets.windows(2) {
         let s = u32_to_usize(pair[0]);
@@ -995,7 +782,7 @@ fn freeze_files_grouped(
         dir_node.file_range = range;
         let final_dir = DirId::new(dir_idx);
         let start = u32_to_usize(range.start);
-        let end = start.strict_add(u32_to_usize(range.count));
+        let end = start + u32_to_usize(range.count);
         let slice = &mut grouped_indices[start..end];
         sort_dir_file_indices(slice, stg_files, stg_text, exts);
 
@@ -1038,7 +825,7 @@ fn group_files_by_final_dir(
     let mut counts = vec![0_u32; d_usize];
     for f in stg_files {
         let new_d = old_to_new_dir[u32_to_usize(f.staging_dir)];
-        counts[u32_to_usize(new_d.index())] = counts[u32_to_usize(new_d.index())].strict_add(1);
+        counts[u32_to_usize(new_d.index())] += 1;
     }
     let mut ranges = Vec::with_capacity(d_usize);
     let mut cursors = Vec::with_capacity(d_usize);
@@ -1049,14 +836,14 @@ fn group_files_by_final_dir(
             count: c,
         });
         cursors.push(running);
-        running = running.strict_add(c);
+        running += c;
     }
     let mut grouped = vec![0_u32; stg_files.len()];
     for (idx_u32, f) in (0..file_count).zip(stg_files.iter()) {
         let d_idx = u32_to_usize(old_to_new_dir[u32_to_usize(f.staging_dir)].index());
         let pos = cursors[d_idx];
         grouped[u32_to_usize(pos)] = idx_u32;
-        cursors[d_idx] = pos.strict_add(1);
+        cursors[d_idx] = pos + 1;
     }
     (ranges.into_boxed_slice(), grouped)
 }

@@ -141,7 +141,7 @@ fn verify_large_oodle_ranged_and_cursor_reads(
 
     // Read a 512-byte slice across a 64 KiB block boundary near the middle of the file.
     let mid_offset = (file_bytes / 2) & !0xFFFF_u64;
-    let boundary_offset = mid_offset.saturating_sub(128);
+    let boundary_offset = mid_offset - 128;
     let mut range_buf = [0_u8; 512];
     vfs.read_range_into(fid, boundary_offset, scratch, &mut range_buf)?;
 

@@ -146,7 +146,7 @@ struct RawEntryWriteSpec<'a> {
 /// Compresses `src` using `flate2` Zlib wrapper format.
 pub(crate) fn zlib_compress_chunk(src: &[u8]) -> Vec<u8> {
     let mut comp = Compress::new(Compression::fast(), true);
-    let cap = src.len().saturating_add(src.len() / 4).saturating_add(256);
+    let cap = src.len() + (src.len() / 4) + 256;
     let mut out = vec![0_u8; cap];
     let status = comp
         .compress(src, &mut out, FlushCompress::Finish)

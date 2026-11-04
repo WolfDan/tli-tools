@@ -17,4 +17,12 @@ workspace = true
 # are managed by hakari.
 
 ### BEGIN HAKARI SECTION
+[dependencies]
+memchr = { version = "2" }
+
+[build-dependencies]
+proc-macro2 = { version = "1" }
+quote = { version = "1" }
+syn = { version = "3", features = ["full"] }
+
 ### END HAKARI SECTION

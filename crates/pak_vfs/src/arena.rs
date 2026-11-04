@@ -35,7 +35,7 @@ impl StringArena {
     #[must_use]
     pub(crate) fn get(&self, span: ArenaSpan) -> &str {
         let start = u32_to_usize(span.offset);
-        let end = start.strict_add(usize::from(span.len));
+        let end = start + usize::from(span.len);
         &self.text[start..end]
     }
 
@@ -77,7 +77,7 @@ impl StringArenaBuilder {
     #[must_use]
     pub(crate) fn get(&self, span: ArenaSpan) -> &str {
         let start = u32_to_usize(span.offset);
-        let end = start.strict_add(usize::from(span.len));
+        let end = start + usize::from(span.len);
         &self.buf[start..end]
     }
 
@@ -95,7 +95,7 @@ impl StringArenaBuilder {
             });
         };
         let cur_u32 = self.byte_len();
-        let next_u64 = u64::from(cur_u32).strict_add(u64::from(seg_len));
+        let next_u64 = u64::from(cur_u32) + u64::from(seg_len);
         if next_u64 > u64::from(self.bytes_max) {
             return Err(VfsError::LimitExceeded {
                 kind: VfsLimitKind::ArenaBytes,
@@ -269,7 +269,7 @@ impl ExtBuilder {
     #[must_use]
     fn slice(&self, span: ArenaSpan) -> &str {
         let start = u32_to_usize(span.offset);
-        let end = start.strict_add(usize::from(span.len));
+        let end = start + usize::from(span.len);
         &self.text[start..end]
     }
 
@@ -291,13 +291,13 @@ impl ExtBuilder {
         if cur_count >= limits.exts_count_max() {
             return Err(VfsError::LimitExceeded {
                 kind: VfsLimitKind::ExtsCount,
-                actual: u64::from(limits.exts_count_max()).strict_add(1),
+                actual: u64::from(limits.exts_count_max()) + 1,
                 max: u64::from(limits.exts_count_max()),
             });
         }
         let slot = ExtSlotId::try_from_index(cur_count).ok_or(VfsError::LimitExceeded {
             kind: VfsLimitKind::ExtsCount,
-            actual: u64::from(cur_count).strict_add(1),
+            actual: u64::from(cur_count) + 1,
             max: u64::from(limits.exts_count_max()),
         })?;
         let Ok(ext_len) = u16::try_from(ext_str.len()) else {
@@ -313,7 +313,7 @@ impl ExtBuilder {
             });
         };
         let off_u32 = bounded_len_u32(self.text.len());
-        let next_bytes = u64::from(off_u32).strict_add(u64::from(ext_len));
+        let next_bytes = u64::from(off_u32) + u64::from(ext_len);
         if next_bytes > u64::from(limits.arena_bytes_max()) {
             return Err(VfsError::LimitExceeded {
                 kind: VfsLimitKind::ArenaBytes,
