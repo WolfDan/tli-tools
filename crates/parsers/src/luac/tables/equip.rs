@@ -21,6 +21,7 @@ pub struct ConfigAshesconfigRow {
 impl DataCfgRow for ConfigAshesconfigRow {
     const TABLE_NAME: &'static str = "config_ashesconfig";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -66,6 +67,7 @@ pub struct ConfigCandleCombineCostRow {
 impl DataCfgRow for ConfigCandleCombineCostRow {
     const TABLE_NAME: &'static str = "config_candle_combine_cost";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -125,6 +127,7 @@ pub struct ConfigComburentRow {
 impl DataCfgRow for ConfigComburentRow {
     const TABLE_NAME: &'static str = "config_comburent";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -163,6 +166,7 @@ pub struct ConfigCorrosionConsumeRow {
 impl DataCfgRow for ConfigCorrosionConsumeRow {
     const TABLE_NAME: &'static str = "config_corrosion_consume";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -235,6 +239,7 @@ pub struct ConfigCorrosionEffectRow {
 impl DataCfgRow for ConfigCorrosionEffectRow {
     const TABLE_NAME: &'static str = "config_corrosion_effect";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -294,6 +299,7 @@ pub struct ConfigCorrosionSpecialRow {
 impl DataCfgRow for ConfigCorrosionSpecialRow {
     const TABLE_NAME: &'static str = "config_corrosion_special";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -365,6 +371,7 @@ pub struct ConfigCorrosionTypeRow {
 impl DataCfgRow for ConfigCorrosionTypeRow {
     const TABLE_NAME: &'static str = "config_corrosion_type";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -461,6 +468,7 @@ pub struct ConfigCostForgelRow {
 impl DataCfgRow for ConfigCostForgelRow {
     const TABLE_NAME: &'static str = "config_cost_forgel";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -505,6 +513,7 @@ pub struct ConfigEnchantmentTypeRow {
 impl DataCfgRow for ConfigEnchantmentTypeRow {
     const TABLE_NAME: &'static str = "config_enchantment_type";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -549,6 +558,7 @@ pub struct ConfigEnchantmentconfigRow {
 impl DataCfgRow for ConfigEnchantmentconfigRow {
     const TABLE_NAME: &'static str = "config_enchantmentconfig";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -602,6 +612,7 @@ pub struct ConfigEquipBaseAffixConsumeRow {
 impl DataCfgRow for ConfigEquipBaseAffixConsumeRow {
     const TABLE_NAME: &'static str = "config_equip_base_affix_consume";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -643,6 +654,7 @@ pub struct ConfigEquipChipListRow {
 impl DataCfgRow for ConfigEquipChipListRow {
     const TABLE_NAME: &'static str = "config_equip_chip_list";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -688,6 +700,7 @@ pub struct ConfigEquipChipS11Row {
 impl DataCfgRow for ConfigEquipChipS11Row {
     const TABLE_NAME: &'static str = "config_equip_chip_s11";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -739,6 +752,7 @@ pub struct ConfigEquipChipmatchingS11Row {
 impl DataCfgRow for ConfigEquipChipmatchingS11Row {
     const TABLE_NAME: &'static str = "config_equip_chipmatching_s11";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -792,6 +806,7 @@ pub struct ConfigEquipChipmatchingTypeRow {
 impl DataCfgRow for ConfigEquipChipmatchingTypeRow {
     const TABLE_NAME: &'static str = "config_equip_chipmatching_type";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -842,6 +857,7 @@ pub struct ConfigEquipEnchantS10Row {
 }
 
 impl ConfigEquipEnchantS10Row {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -882,6 +898,7 @@ impl ConfigEquipEnchantS10Row {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -907,6 +924,7 @@ impl ConfigEquipEnchantS10Row {
 impl DataCfgRow for ConfigEquipEnchantS10Row {
     const TABLE_NAME: &'static str = "config_equip_enchant_s10";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -944,6 +962,7 @@ pub struct ConfigEquipPositionS13Row {
 impl DataCfgRow for ConfigEquipPositionS13Row {
     const TABLE_NAME: &'static str = "config_equip_position_s13";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -986,6 +1005,7 @@ pub struct ConfigInstallGoldRow {
 impl DataCfgRow for ConfigInstallGoldRow {
     const TABLE_NAME: &'static str = "config_install_gold";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1098,6 +1118,7 @@ pub struct ConfigMemoryAwakenRecipeS14Row {
 }
 
 impl ConfigMemoryAwakenRecipeS14Row {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1140,6 +1161,7 @@ impl ConfigMemoryAwakenRecipeS14Row {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1169,6 +1191,7 @@ impl ConfigMemoryAwakenRecipeS14Row {
 impl DataCfgRow for ConfigMemoryAwakenRecipeS14Row {
     const TABLE_NAME: &'static str = "config_memory_awaken_recipe_s14";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1207,6 +1230,7 @@ pub struct ConfigMemoryAwakenTimesRow {
 impl DataCfgRow for ConfigMemoryAwakenTimesRow {
     const TABLE_NAME: &'static str = "config_memory_awaken_times";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1258,6 +1282,7 @@ pub struct ConfigMercenaryEquipTransformRow {
 impl DataCfgRow for ConfigMercenaryEquipTransformRow {
     const TABLE_NAME: &'static str = "config_mercenary_equip_transform";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1390,6 +1415,7 @@ pub struct ConfigRarityEquipRow {
 impl DataCfgRow for ConfigRarityEquipRow {
     const TABLE_NAME: &'static str = "config_rarity_equip";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1447,6 +1473,7 @@ pub struct ConfigSiftAffixRow {
 impl DataCfgRow for ConfigSiftAffixRow {
     const TABLE_NAME: &'static str = "config_sift_affix";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1557,6 +1584,7 @@ pub struct ConfigSiftEquipRow {
 impl DataCfgRow for ConfigSiftEquipRow {
     const TABLE_NAME: &'static str = "config_sift_equip";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1601,6 +1629,7 @@ pub struct ConfigSortAshesconfigRow {
 impl DataCfgRow for ConfigSortAshesconfigRow {
     const TABLE_NAME: &'static str = "config_sort_ashesconfig";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

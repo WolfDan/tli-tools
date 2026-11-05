@@ -23,6 +23,7 @@ pub struct ConfigServantAutoApplyRow {
 impl DataCfgRow for ConfigServantAutoApplyRow {
     const TABLE_NAME: &'static str = "config_servant_auto_apply";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -71,6 +72,7 @@ pub struct ConfigServantAutoSwitchRow {
 impl DataCfgRow for ConfigServantAutoSwitchRow {
     const TABLE_NAME: &'static str = "config_servant_auto_switch";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -121,6 +123,7 @@ pub struct ConfigServantShowResourcesRow {
 impl DataCfgRow for ConfigServantShowResourcesRow {
     const TABLE_NAME: &'static str = "config_servant_show_resources";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -177,6 +180,7 @@ pub struct ConfigServantSlotUnlockConditionRow {
 impl DataCfgRow for ConfigServantSlotUnlockConditionRow {
     const TABLE_NAME: &'static str = "config_servant_slot_unlock_condition";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -225,6 +229,7 @@ pub struct ConfigServantSubscriptionRow {
 impl DataCfgRow for ConfigServantSubscriptionRow {
     const TABLE_NAME: &'static str = "config_servant_subscription";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -350,6 +355,7 @@ pub struct ConfigServantSubscriptionGroupRow {
 impl DataCfgRow for ConfigServantSubscriptionGroupRow {
     const TABLE_NAME: &'static str = "config_servant_subscription_group";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -396,6 +402,7 @@ pub struct ConfigServantSubscriptionModeRow {
 impl DataCfgRow for ConfigServantSubscriptionModeRow {
     const TABLE_NAME: &'static str = "config_servant_subscription_mode";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -437,6 +444,7 @@ pub struct ConfigServantTimelimitRow {
 impl DataCfgRow for ConfigServantTimelimitRow {
     const TABLE_NAME: &'static str = "config_servant_timelimit";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -479,6 +487,7 @@ pub struct ConfigServantTypeRow {
 impl DataCfgRow for ConfigServantTypeRow {
     const TABLE_NAME: &'static str = "config_servant_type";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

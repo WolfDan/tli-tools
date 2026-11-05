@@ -21,6 +21,9 @@ pub(crate) const LUA53_HEADER: [u8; 33] = [
 pub const PROTO_DEPTH_HARD_MAX: u32 = 64;
 pub(crate) const PROTO_DEPTH_HARD_MAX_USIZE: usize = u32_to_usize(PROTO_DEPTH_HARD_MAX);
 
+/// Maximum control-flow block nesting depth within a single `Proto` during decompilation.
+pub const DECOMPILE_BLOCK_DEPTH_MAX: u32 = 4096;
+
 /// Default maximum `Proto` nesting depth.
 pub const PROTO_DEPTH_MAX_DEFAULT: u32 = 32;
 /// Default maximum number of `Proto`s in a single chunk.

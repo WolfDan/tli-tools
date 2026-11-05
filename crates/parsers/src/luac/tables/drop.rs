@@ -22,6 +22,7 @@ pub struct ConfigDropBaseRow {
 impl DataCfgRow for ConfigDropBaseRow {
     const TABLE_NAME: &'static str = "config_drop_base";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -71,6 +72,7 @@ pub struct ConfigDropGroupRow {
 impl DataCfgRow for ConfigDropGroupRow {
     const TABLE_NAME: &'static str = "config_drop_group";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -120,6 +122,7 @@ pub struct ConfigDropTypeInfoRow {
 impl DataCfgRow for ConfigDropTypeInfoRow {
     const TABLE_NAME: &'static str = "config_drop_type_info";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -222,6 +225,7 @@ pub struct ConfigDropfilterSysConditionRow {
 }
 
 impl ConfigDropfilterSysConditionRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -263,6 +267,7 @@ impl ConfigDropfilterSysConditionRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -292,6 +297,7 @@ impl ConfigDropfilterSysConditionRow {
 impl DataCfgRow for ConfigDropfilterSysConditionRow {
     const TABLE_NAME: &'static str = "config_dropfilter_sys_condition";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -335,6 +341,7 @@ pub struct ConfigDropfilterSysEntranceRow {
 impl DataCfgRow for ConfigDropfilterSysEntranceRow {
     const TABLE_NAME: &'static str = "config_dropfilter_sys_entrance";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -399,6 +406,7 @@ pub struct ConfigDropfilterSysPhaseRow {
 impl DataCfgRow for ConfigDropfilterSysPhaseRow {
     const TABLE_NAME: &'static str = "config_dropfilter_sys_phase";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -445,6 +453,7 @@ pub struct ConfigDropfilterSysSelectorItemRow {
 impl DataCfgRow for ConfigDropfilterSysSelectorItemRow {
     const TABLE_NAME: &'static str = "config_dropfilter_sys_selector_item";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -493,6 +502,7 @@ pub struct ConfigDropfilterSysSelectorModRow {
 impl DataCfgRow for ConfigDropfilterSysSelectorModRow {
     const TABLE_NAME: &'static str = "config_dropfilter_sys_selector_mod";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -541,6 +551,7 @@ pub struct ConfigDropfilterSysSelectorTalentRow {
 impl DataCfgRow for ConfigDropfilterSysSelectorTalentRow {
     const TABLE_NAME: &'static str = "config_dropfilter_sys_selector_talent";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -593,6 +604,7 @@ pub struct ConfigDropfilterSysSiftRow {
 impl DataCfgRow for ConfigDropfilterSysSiftRow {
     const TABLE_NAME: &'static str = "config_dropfilter_sys_sift";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -652,6 +664,7 @@ pub struct ConfigDropfilterVarColorRow {
 impl DataCfgRow for ConfigDropfilterVarColorRow {
     const TABLE_NAME: &'static str = "config_dropfilter_var_color";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -823,6 +836,7 @@ pub struct ConfigDropfilterVarConditionRow {
 }
 
 impl ConfigDropfilterVarConditionRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -863,6 +877,7 @@ impl ConfigDropfilterVarConditionRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -906,6 +921,7 @@ impl ConfigDropfilterVarConditionRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_2(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -944,6 +960,7 @@ impl ConfigDropfilterVarConditionRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_3(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -990,6 +1007,7 @@ impl ConfigDropfilterVarConditionRow {
 impl DataCfgRow for ConfigDropfilterVarConditionRow {
     const TABLE_NAME: &'static str = "config_dropfilter_var_condition";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1031,6 +1049,7 @@ pub struct ConfigDropfilterVarDecidRow {
 impl DataCfgRow for ConfigDropfilterVarDecidRow {
     const TABLE_NAME: &'static str = "config_dropfilter_var_decid";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1078,6 +1097,7 @@ pub struct ConfigDropfilterVarHeadRow {
 impl DataCfgRow for ConfigDropfilterVarHeadRow {
     const TABLE_NAME: &'static str = "config_dropfilter_var_head";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1136,6 +1156,7 @@ pub struct ConfigDropfilterVarIconRow {
 impl DataCfgRow for ConfigDropfilterVarIconRow {
     const TABLE_NAME: &'static str = "config_dropfilter_var_icon";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1190,6 +1211,7 @@ pub struct ConfigDropfilterVarStyleRow {
 }
 
 impl ConfigDropfilterVarStyleRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1232,6 +1254,7 @@ impl ConfigDropfilterVarStyleRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1261,6 +1284,7 @@ impl ConfigDropfilterVarStyleRow {
 impl DataCfgRow for ConfigDropfilterVarStyleRow {
     const TABLE_NAME: &'static str = "config_dropfilter_var_style";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

@@ -70,6 +70,7 @@ pub struct ConfigGradenoticeRow {
 impl DataCfgRow for ConfigGradenoticeRow {
     const TABLE_NAME: &'static str = "config_gradenotice";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -140,6 +141,7 @@ pub struct ConfigGrowUpGroupRow {
 impl DataCfgRow for ConfigGrowUpGroupRow {
     const TABLE_NAME: &'static str = "config_grow_up_group";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -219,6 +221,7 @@ pub struct ConfigGrowUpIndexRow {
 impl DataCfgRow for ConfigGrowUpIndexRow {
     const TABLE_NAME: &'static str = "config_grow_up_index";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -305,6 +308,7 @@ pub struct ConfigGrowUpLabelRow {
 impl DataCfgRow for ConfigGrowUpLabelRow {
     const TABLE_NAME: &'static str = "config_grow_up_label";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -354,6 +358,7 @@ pub struct ConfigGrowUpModifierRow {
 impl DataCfgRow for ConfigGrowUpModifierRow {
     const TABLE_NAME: &'static str = "config_grow_up_modifier";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -404,6 +409,7 @@ pub struct ConfigGrowUpTaskRow {
 impl DataCfgRow for ConfigGrowUpTaskRow {
     const TABLE_NAME: &'static str = "config_grow_up_task";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -482,6 +488,7 @@ pub struct ConfigGuideRow {
 }
 
 impl ConfigGuideRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -516,6 +523,7 @@ impl ConfigGuideRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -554,6 +562,7 @@ impl ConfigGuideRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_2(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -578,6 +587,7 @@ impl ConfigGuideRow {
 impl DataCfgRow for ConfigGuideRow {
     const TABLE_NAME: &'static str = "config_guide";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

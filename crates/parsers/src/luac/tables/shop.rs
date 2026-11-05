@@ -94,6 +94,7 @@ pub struct ConfigShopRow {
 }
 
 impl ConfigShopRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -133,6 +134,7 @@ impl ConfigShopRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -171,6 +173,7 @@ impl ConfigShopRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_2(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -210,6 +213,7 @@ impl ConfigShopRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_3(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -230,6 +234,7 @@ impl ConfigShopRow {
 impl DataCfgRow for ConfigShopRow {
     const TABLE_NAME: &'static str = "config_shop";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -298,6 +303,7 @@ pub struct ConfigShopFormRow {
 }
 
 impl ConfigShopFormRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -338,6 +344,7 @@ impl ConfigShopFormRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -356,6 +363,7 @@ impl ConfigShopFormRow {
 impl DataCfgRow for ConfigShopFormRow {
     const TABLE_NAME: &'static str = "config_shop_form";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -406,6 +414,7 @@ pub struct ConfigShopRecommondRow {
 }
 
 impl ConfigShopRecommondRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -438,6 +447,7 @@ impl ConfigShopRecommondRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -474,6 +484,7 @@ impl ConfigShopRecommondRow {
 impl DataCfgRow for ConfigShopRecommondRow {
     const TABLE_NAME: &'static str = "config_shop_recommond";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -541,6 +552,7 @@ pub struct ConfigVendorRow {
 }
 
 impl ConfigVendorRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -575,6 +587,7 @@ impl ConfigVendorRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -605,6 +618,7 @@ impl ConfigVendorRow {
 impl DataCfgRow for ConfigVendorRow {
     const TABLE_NAME: &'static str = "config_vendor";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -652,6 +666,7 @@ pub struct ConfigVendorGoodsRow {
 }
 
 impl ConfigVendorGoodsRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -686,6 +701,7 @@ impl ConfigVendorGoodsRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -713,6 +729,7 @@ impl ConfigVendorGoodsRow {
 impl DataCfgRow for ConfigVendorGoodsRow {
     const TABLE_NAME: &'static str = "config_vendor_goods";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -755,6 +772,7 @@ pub struct ConfigVendorSkillRow {
 impl DataCfgRow for ConfigVendorSkillRow {
     const TABLE_NAME: &'static str = "config_vendor_skill";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

@@ -208,12 +208,6 @@ impl LuaInstruction {
 
     #[inline]
     #[must_use]
-    pub(crate) const fn raw(self) -> u32 {
-        self.0
-    }
-
-    #[inline]
-    #[must_use]
     pub(crate) const fn opcode(self) -> LuaOpcode {
         let idx = self.0 & 0x3F;
         assert!(idx < 47);

@@ -41,6 +41,7 @@ pub struct ConfigAchievementRow {
 }
 
 impl ConfigAchievementRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -74,6 +75,7 @@ impl ConfigAchievementRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -106,6 +108,7 @@ impl ConfigAchievementRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_2(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -129,6 +132,7 @@ impl ConfigAchievementRow {
 impl DataCfgRow for ConfigAchievementRow {
     const TABLE_NAME: &'static str = "config_achievement";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -171,6 +175,7 @@ pub struct ConfigAchievementLabelRow {
 impl DataCfgRow for ConfigAchievementLabelRow {
     const TABLE_NAME: &'static str = "config_achievement_label";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -246,6 +251,7 @@ pub struct ConfigCollectionRow {
 }
 
 impl ConfigCollectionRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -278,6 +284,7 @@ impl ConfigCollectionRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -298,6 +305,7 @@ impl ConfigCollectionRow {
 impl DataCfgRow for ConfigCollectionRow {
     const TABLE_NAME: &'static str = "config_collection";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -335,6 +343,7 @@ pub struct ConfigCollectionType1Row {
 impl DataCfgRow for ConfigCollectionType1Row {
     const TABLE_NAME: &'static str = "config_collection_type1";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -378,6 +387,7 @@ pub struct ConfigCollectionType2Row {
 impl DataCfgRow for ConfigCollectionType2Row {
     const TABLE_NAME: &'static str = "config_collection_type2";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -421,6 +431,7 @@ pub struct ConfigFightTitleRow {
 impl DataCfgRow for ConfigFightTitleRow {
     const TABLE_NAME: &'static str = "config_fight_title";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -468,6 +479,7 @@ pub struct ConfigHandbookRow {
 impl DataCfgRow for ConfigHandbookRow {
     const TABLE_NAME: &'static str = "config_handbook";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -529,6 +541,7 @@ pub struct ConfigManualEntranceRow {
 impl DataCfgRow for ConfigManualEntranceRow {
     const TABLE_NAME: &'static str = "config_manual_entrance";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -590,6 +603,7 @@ pub struct ConfigManualRuleRow {
 impl DataCfgRow for ConfigManualRuleRow {
     const TABLE_NAME: &'static str = "config_manual_rule";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -639,6 +653,7 @@ pub struct ConfigManualRuleDesRow {
 impl DataCfgRow for ConfigManualRuleDesRow {
     const TABLE_NAME: &'static str = "config_manual_rule_des";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -683,6 +698,7 @@ pub struct ConfigManualRuledesFilterRow {
 impl DataCfgRow for ConfigManualRuledesFilterRow {
     const TABLE_NAME: &'static str = "config_manual_ruledes_filter";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -726,6 +742,7 @@ pub struct ConfigStrategyByLanguageRow {
 impl DataCfgRow for ConfigStrategyByLanguageRow {
     const TABLE_NAME: &'static str = "config_strategy_by_language";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -773,6 +790,7 @@ pub struct ConfigStrategyContentTabRow {
 impl DataCfgRow for ConfigStrategyContentTabRow {
     const TABLE_NAME: &'static str = "config_strategy_content_tab";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

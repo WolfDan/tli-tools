@@ -18,6 +18,7 @@ pub struct ConfigSkillDesRow {
 impl DataCfgRow for ConfigSkillDesRow {
     const TABLE_NAME: &'static str = "config_skill_des";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -68,6 +69,7 @@ pub struct ConfigSkillSpecialLevelUpRow {
 impl DataCfgRow for ConfigSkillSpecialLevelUpRow {
     const TABLE_NAME: &'static str = "config_skill_special_level_up";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -138,6 +140,7 @@ pub struct ConfigSkillStoneModifierRow {
 }
 
 impl ConfigSkillStoneModifierRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -184,6 +187,7 @@ impl ConfigSkillStoneModifierRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -221,6 +225,7 @@ impl ConfigSkillStoneModifierRow {
 impl DataCfgRow for ConfigSkillStoneModifierRow {
     const TABLE_NAME: &'static str = "config_skill_stone_modifier";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

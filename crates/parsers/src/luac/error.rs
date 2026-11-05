@@ -77,6 +77,68 @@ pub enum DataCfgError {
     },
 }
 
+/// Errors occurring during Lua 5.3 script decompilation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum DecompileError {
+    /// Instruction referenced an out-of-bounds constant index.
+    #[error(
+        "constant index {index} out of bounds (count {count}) in proto {proto_index} at pc {pc}"
+    )]
+    ConstantIndexOutOfBounds {
+        proto_index: u32,
+        pc: u32,
+        index: u32,
+        count: u32,
+    },
+
+    /// Instruction referenced an out-of-bounds upvalue index.
+    #[error(
+        "upvalue index {index} out of bounds (count {count}) in proto {proto_index} at pc {pc}"
+    )]
+    UpvalueIndexOutOfBounds {
+        proto_index: u32,
+        pc: u32,
+        index: u16,
+        count: u32,
+    },
+
+    /// `CLOSURE` instruction referenced an out-of-bounds child prototype index.
+    #[error(
+        "child proto index {index} out of bounds (count {count}) in proto {proto_index} at pc {pc}"
+    )]
+    ChildProtoIndexOutOfBounds {
+        proto_index: u32,
+        pc: u32,
+        index: u32,
+        count: u32,
+    },
+
+    /// `LOADKX` was not followed by an `EXTRAARG` instruction.
+    #[error("missing EXTRAARG instruction in proto {proto_index} after pc {pc}")]
+    MissingExtraArg { proto_index: u32, pc: u32 },
+
+    /// Control-flow block nesting depth exceeded `DECOMPILE_BLOCK_DEPTH_MAX`.
+    #[error(
+        "control-flow block nesting depth exceeded max {max} in proto {proto_index} at pc {pc}"
+    )]
+    BlockDepthExceeded { proto_index: u32, pc: u32, max: u32 },
+
+    /// Instruction register span `reg + offset` exceeded the 256-register file (`0..=255`).
+    #[error(
+        "register span R[{reg}] + {offset} out of bounds (> 255) in proto {proto_index} at pc {pc}"
+    )]
+    RegisterSpanOutOfBounds {
+        proto_index: u32,
+        pc: u32,
+        reg: u8,
+        offset: u16,
+    },
+
+    /// Encountered a loop-closing instruction (`FORLOOP` or `TFORLOOP`) at block depth 0.
+    #[error("unmatched loop end instruction at depth 0 in proto {proto_index} at pc {pc}")]
+    UnmatchedBlockEnd { proto_index: u32, pc: u32 },
+}
+
 /// Top-level error returned by `parsers::luac` operations.
 #[derive(Debug, Error)]
 pub enum LuacError {
@@ -183,14 +245,10 @@ pub enum LuacError {
         source: DataCfgError,
     },
 
-    /// `unluac` decompilation pipeline failed.
-    #[error("unluac decompilation failed")]
+    /// Lua 5.3 script decompilation failed.
+    #[error("Lua 5.3 decompilation failed")]
     Decompile {
-        #[source]
-        source: Box<unluac::decompile::DecompileError>,
+        #[from]
+        source: DecompileError,
     },
-
-    /// `unluac` finished without populating the generated source chunk.
-    #[error("unluac pipeline finished without generating source")]
-    MissingGeneratedChunk,
 }

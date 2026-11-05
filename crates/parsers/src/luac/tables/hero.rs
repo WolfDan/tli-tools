@@ -19,6 +19,7 @@ pub struct ConfigBdReferenceTagRow {
 impl DataCfgRow for ConfigBdReferenceTagRow {
     const TABLE_NAME: &'static str = "config_bd_reference_tag";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -64,6 +65,7 @@ pub struct ConfigHeroCharacterCustomSlotRow {
 impl DataCfgRow for ConfigHeroCharacterCustomSlotRow {
     const TABLE_NAME: &'static str = "config_hero_character_custom_slot";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -118,6 +120,7 @@ pub struct ConfigHeroCharacterTreeLineRow {
 impl DataCfgRow for ConfigHeroCharacterTreeLineRow {
     const TABLE_NAME: &'static str = "config_hero_character_tree_line";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -169,6 +172,7 @@ pub struct ConfigHeroItemBaseAttributeRow {
 impl DataCfgRow for ConfigHeroItemBaseAttributeRow {
     const TABLE_NAME: &'static str = "config_hero_item_base_attribute";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -222,6 +226,7 @@ pub struct ConfigHeroItemEnhanceRow {
 impl DataCfgRow for ConfigHeroItemEnhanceRow {
     const TABLE_NAME: &'static str = "config_hero_item_enhance";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -310,6 +315,7 @@ pub struct ConfigHeroItemRerollRow {
 impl DataCfgRow for ConfigHeroItemRerollRow {
     const TABLE_NAME: &'static str = "config_hero_item_reroll";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -365,6 +371,7 @@ pub struct ConfigHerorankingRow {
 impl DataCfgRow for ConfigHerorankingRow {
     const TABLE_NAME: &'static str = "config_heroranking";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -411,6 +418,7 @@ pub struct ConfigHerorankingEquipTagRow {
 impl DataCfgRow for ConfigHerorankingEquipTagRow {
     const TABLE_NAME: &'static str = "config_heroranking_equip_tag";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

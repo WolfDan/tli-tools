@@ -18,6 +18,7 @@ pub struct ConfigAccrualRechargeRow {
 impl DataCfgRow for ConfigAccrualRechargeRow {
     const TABLE_NAME: &'static str = "config_accrual_recharge";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -62,6 +63,7 @@ pub struct ConfigActivityFormRow {
 impl DataCfgRow for ConfigActivityFormRow {
     const TABLE_NAME: &'static str = "config_activity_form";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -112,6 +114,7 @@ pub struct ConfigActivityLevelMapRow {
 impl DataCfgRow for ConfigActivityLevelMapRow {
     const TABLE_NAME: &'static str = "config_activity_level_map";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -165,6 +168,7 @@ pub struct ConfigActivitySocialmediaLinkRow {
 impl DataCfgRow for ConfigActivitySocialmediaLinkRow {
     const TABLE_NAME: &'static str = "config_activity_socialmedia_link";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -208,6 +212,7 @@ pub struct ConfigAppstorecardRow {
 impl DataCfgRow for ConfigAppstorecardRow {
     const TABLE_NAME: &'static str = "config_appstorecard";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -247,6 +252,7 @@ pub struct ConfigBossChallengeDetailRow {
 impl DataCfgRow for ConfigBossChallengeDetailRow {
     const TABLE_NAME: &'static str = "config_boss_challenge_detail";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -300,6 +306,7 @@ pub struct ConfigFunctionpreviewRow {
 }
 
 impl ConfigFunctionpreviewRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -335,6 +342,7 @@ impl ConfigFunctionpreviewRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -359,6 +367,7 @@ impl ConfigFunctionpreviewRow {
 impl DataCfgRow for ConfigFunctionpreviewRow {
     const TABLE_NAME: &'static str = "config_functionpreview";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -396,6 +405,7 @@ pub struct ConfigFunctionpreviewTaskRow {
 impl DataCfgRow for ConfigFunctionpreviewTaskRow {
     const TABLE_NAME: &'static str = "config_functionpreview_task";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -441,6 +451,7 @@ pub struct ConfigGrowthFundRow {
 impl DataCfgRow for ConfigGrowthFundRow {
     const TABLE_NAME: &'static str = "config_growth_fund";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -487,6 +498,7 @@ pub struct ConfigGrowthFundEventRow {
 impl DataCfgRow for ConfigGrowthFundEventRow {
     const TABLE_NAME: &'static str = "config_growth_fund_event";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -535,6 +547,7 @@ pub struct ConfigLevelupvoucherRow {
 impl DataCfgRow for ConfigLevelupvoucherRow {
     const TABLE_NAME: &'static str = "config_levelupvoucher";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -594,6 +607,7 @@ pub struct ConfigMonthCardRow {
 impl DataCfgRow for ConfigMonthCardRow {
     const TABLE_NAME: &'static str = "config_month_card";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -638,6 +652,7 @@ pub struct ConfigNewbieBuildListRow {
 impl DataCfgRow for ConfigNewbieBuildListRow {
     const TABLE_NAME: &'static str = "config_newbie_build_list";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -710,6 +725,7 @@ pub struct ConfigNewbieBuildsRow {
 }
 
 impl ConfigNewbieBuildsRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -748,6 +764,7 @@ impl ConfigNewbieBuildsRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -773,6 +790,7 @@ impl ConfigNewbieBuildsRow {
 impl DataCfgRow for ConfigNewbieBuildsRow {
     const TABLE_NAME: &'static str = "config_newbie_builds";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -810,6 +828,7 @@ pub struct ConfigNewbieBuildsTipsRow {
 impl DataCfgRow for ConfigNewbieBuildsTipsRow {
     const TABLE_NAME: &'static str = "config_newbie_builds_tips";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -858,6 +877,7 @@ pub struct ConfigWorldBossChallengeRow {
 impl DataCfgRow for ConfigWorldBossChallengeRow {
     const TABLE_NAME: &'static str = "config_world_boss_challenge";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -907,6 +927,7 @@ pub struct ConfigWorldBossInfoRow {
 impl DataCfgRow for ConfigWorldBossInfoRow {
     const TABLE_NAME: &'static str = "config_world_boss_info";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -956,6 +977,7 @@ pub struct ConfigWorldBossSkillRow {
 impl DataCfgRow for ConfigWorldBossSkillRow {
     const TABLE_NAME: &'static str = "config_world_boss_skill";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

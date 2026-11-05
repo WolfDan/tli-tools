@@ -13,7 +13,6 @@ workspace = true
 arrayvec = "0.7.8"
 rustc-hash = "2.1.3"
 thiserror = "2.0.21"
-unluac = { version = "1.4.4", default-features = false }
 workspace-hack = { version = "0.1.0", path = "../workspace-hack" }
 zerocopy = { version = "0.8.63", features = ["derive"] }
 

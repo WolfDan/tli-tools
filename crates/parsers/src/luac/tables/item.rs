@@ -23,6 +23,7 @@ pub struct ConfigConfirmBuyItemTextRow {
 impl DataCfgRow for ConfigConfirmBuyItemTextRow {
     const TABLE_NAME: &'static str = "config_confirm_buy_item_text";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -77,6 +78,7 @@ pub struct ConfigConsumRow {
 impl DataCfgRow for ConfigConsumRow {
     const TABLE_NAME: &'static str = "config_consum";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -121,6 +123,7 @@ pub struct ConfigConvertRow {
 impl DataCfgRow for ConfigConvertRow {
     const TABLE_NAME: &'static str = "config_convert";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -177,6 +180,7 @@ pub struct ConfigExperienceRow {
 impl DataCfgRow for ConfigExperienceRow {
     const TABLE_NAME: &'static str = "config_experience";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -221,6 +225,7 @@ pub struct ConfigItemBindingMappingRow {
 impl DataCfgRow for ConfigItemBindingMappingRow {
     const TABLE_NAME: &'static str = "config_item_binding_mapping";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -267,6 +272,7 @@ pub struct ConfigItemGoldExchangeRow {
 impl DataCfgRow for ConfigItemGoldExchangeRow {
     const TABLE_NAME: &'static str = "config_item_gold_exchange";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -321,6 +327,7 @@ pub struct ConfigItemGoldRandomAffixConfigRow {
 impl DataCfgRow for ConfigItemGoldRandomAffixConfigRow {
     const TABLE_NAME: &'static str = "config_item_gold_random_affix_config";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -368,6 +375,7 @@ pub struct ConfigItemRarityMappingRow {
 impl DataCfgRow for ConfigItemRarityMappingRow {
     const TABLE_NAME: &'static str = "config_item_rarity_mapping";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -422,6 +430,7 @@ pub struct ConfigItemS13OrganRow {
 }
 
 impl ConfigItemS13OrganRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -471,6 +480,7 @@ impl ConfigItemS13OrganRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -488,6 +498,7 @@ impl ConfigItemS13OrganRow {
 impl DataCfgRow for ConfigItemS13OrganRow {
     const TABLE_NAME: &'static str = "config_item_s13_organ";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -522,6 +533,7 @@ pub struct ConfigItemStreamModeRow {
 impl DataCfgRow for ConfigItemStreamModeRow {
     const TABLE_NAME: &'static str = "config_item_stream_mode";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -588,6 +600,7 @@ pub struct ConfigItemTalentBlockGoldRow {
 }
 
 impl ConfigItemTalentBlockGoldRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -641,6 +654,7 @@ impl ConfigItemTalentBlockGoldRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -693,6 +707,7 @@ impl ConfigItemTalentBlockGoldRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_2(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -733,6 +748,7 @@ impl ConfigItemTalentBlockGoldRow {
 impl DataCfgRow for ConfigItemTalentBlockGoldRow {
     const TABLE_NAME: &'static str = "config_item_talent_block_gold";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -793,6 +809,7 @@ pub struct ConfigItemTargetFunctionRow {
 impl DataCfgRow for ConfigItemTargetFunctionRow {
     const TABLE_NAME: &'static str = "config_item_target_function";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -865,6 +882,7 @@ pub struct ConfigItemTattooRow {
 }
 
 impl ConfigItemTattooRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -912,6 +930,7 @@ impl ConfigItemTattooRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -948,6 +967,7 @@ impl ConfigItemTattooRow {
 impl DataCfgRow for ConfigItemTattooRow {
     const TABLE_NAME: &'static str = "config_item_tattoo";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -992,6 +1012,7 @@ pub struct ConfigItemTypeListRow {
 impl DataCfgRow for ConfigItemTypeListRow {
     const TABLE_NAME: &'static str = "config_item_type_list";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1056,6 +1077,7 @@ pub struct ConfigMoneyRow {
 }
 
 impl ConfigMoneyRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1093,6 +1115,7 @@ impl ConfigMoneyRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1122,6 +1145,7 @@ impl ConfigMoneyRow {
 impl DataCfgRow for ConfigMoneyRow {
     const TABLE_NAME: &'static str = "config_money";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1163,6 +1187,7 @@ pub struct ConfigRewardRow {
 impl DataCfgRow for ConfigRewardRow {
     const TABLE_NAME: &'static str = "config_reward";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1220,6 +1245,7 @@ pub struct ConfigSpecifiedItemRow {
 impl DataCfgRow for ConfigSpecifiedItemRow {
     const TABLE_NAME: &'static str = "config_specified_item";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

@@ -168,6 +168,7 @@ pub struct ConfigCardrecipeRow {
 }
 
 impl ConfigCardrecipeRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -211,6 +212,7 @@ impl ConfigCardrecipeRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -262,6 +264,7 @@ impl ConfigCardrecipeRow {
 impl DataCfgRow for ConfigCardrecipeRow {
     const TABLE_NAME: &'static str = "config_cardrecipe";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -301,6 +304,7 @@ pub struct ConfigForgeDreamRow {
 impl DataCfgRow for ConfigForgeDreamRow {
     const TABLE_NAME: &'static str = "config_forge_dream";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -351,6 +355,7 @@ pub struct ConfigForgeDreamMaterialRow {
 impl DataCfgRow for ConfigForgeDreamMaterialRow {
     const TABLE_NAME: &'static str = "config_forge_dream_material";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -438,6 +443,7 @@ pub struct ConfigForgePreciseConfigRow {
 }
 
 impl ConfigForgePreciseConfigRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -478,6 +484,7 @@ impl ConfigForgePreciseConfigRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -511,6 +518,7 @@ impl ConfigForgePreciseConfigRow {
 impl DataCfgRow for ConfigForgePreciseConfigRow {
     const TABLE_NAME: &'static str = "config_forge_precise_config";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -576,6 +584,7 @@ pub struct ConfigForgeS13OrganConfigRow {
 impl DataCfgRow for ConfigForgeS13OrganConfigRow {
     const TABLE_NAME: &'static str = "config_forge_s13_organ_config";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -643,6 +652,7 @@ pub struct ConfigForgeUpgardeConfigRow {
 }
 
 impl ConfigForgeUpgardeConfigRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -691,6 +701,7 @@ impl ConfigForgeUpgardeConfigRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -714,6 +725,7 @@ impl ConfigForgeUpgardeConfigRow {
 impl DataCfgRow for ConfigForgeUpgardeConfigRow {
     const TABLE_NAME: &'static str = "config_forge_upgarde_config";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -756,6 +768,7 @@ pub struct ConfigRecipeListRow {
 impl DataCfgRow for ConfigRecipeListRow {
     const TABLE_NAME: &'static str = "config_recipe_list";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -827,6 +840,7 @@ pub struct ConfigRecipeNewRow {
 }
 
 impl ConfigRecipeNewRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -863,6 +877,7 @@ impl ConfigRecipeNewRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -905,6 +920,7 @@ impl ConfigRecipeNewRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_2(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -926,6 +942,7 @@ impl ConfigRecipeNewRow {
 impl DataCfgRow for ConfigRecipeNewRow {
     const TABLE_NAME: &'static str = "config_recipe_new";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

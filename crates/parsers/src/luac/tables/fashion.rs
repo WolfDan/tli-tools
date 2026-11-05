@@ -108,6 +108,7 @@ pub struct ConfigFashionShowResourcesRow {
 impl DataCfgRow for ConfigFashionShowResourcesRow {
     const TABLE_NAME: &'static str = "config_fashion_show_resources";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -167,6 +168,7 @@ pub struct ConfigFashionSuitRow {
 impl DataCfgRow for ConfigFashionSuitRow {
     const TABLE_NAME: &'static str = "config_fashion_suit";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -217,6 +219,7 @@ pub struct ConfigFashionTypeRow {
 impl DataCfgRow for ConfigFashionTypeRow {
     const TABLE_NAME: &'static str = "config_fashion_type";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

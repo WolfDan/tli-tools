@@ -9,6 +9,8 @@ Data-oriented, TigerStyle Rust workspace engineered for deterministic memory bou
 | [`crates/data`](crates/data) | `data` | Data-oriented domain crate for TLI Tools. |
 | [`crates/pak`](crates/pak) | `pak` | Data-oriented TigerStyle Unreal Engine `.pak` archive reader (`v8A`–`v11` and Torchlight Infinite `v12`). |
 | [`crates/pak_vfs`](crates/pak_vfs) | `pak_vfs` | High-performance, low-memory Virtual File System unifying ordered Unreal Engine and Torchlight Infinite `.pak` mounts. |
+| [`crates/parsers`](crates/parsers) | `parsers` | TigerStyle Lua 5.3 / `\x01XDI` bytecode transpiler, decompiler, and strongly-typed `DataCfg` table evaluators. |
+| [`crates/xtask`](crates/xtask) | `xtask` | Workspace automation and `DataCfg` / `LuaPreLoadTable` schema extractor and code generator (`cargo codegen`). |
 | [`crates/workspace-hack`](crates/workspace-hack) | `workspace-hack` | Unified cross-platform dependency feature set managed automatically by `cargo-hakari`. |
 
 ## Development & Verification (NixOS / Nix Flakes)
@@ -30,11 +32,11 @@ nix run .#hakari
 nix flake check
 ```
 
-## Local Game Archive Integration Tests (`pak` and `pak_vfs`)
+## Local Game Archive Integration Tests & Codegen (`pak`, `pak_vfs`, `parsers`, and `xtask`)
 
-Live `.pak` integration tests in [`crates/pak/tests/torchlight_infinite.rs`](crates/pak/tests/torchlight_infinite.rs) and [`crates/pak_vfs/tests/torchlight_infinite.rs`](crates/pak_vfs/tests/torchlight_infinite.rs) are marked `#[ignore]` so `cargo test` and `nix flake check` remain hermetic across machines without the game installed.
+Live `.pak` and `.out` integration tests in [`crates/pak/tests/torchlight_infinite.rs`](crates/pak/tests/torchlight_infinite.rs), [`crates/pak_vfs/tests/torchlight_infinite.rs`](crates/pak_vfs/tests/torchlight_infinite.rs), and [`crates/parsers/src/luac/tests/positive.rs`](crates/parsers/src/luac/tests/positive.rs) are marked `#[ignore]` so `cargo test` and `nix flake check` remain hermetic across machines without the game installed.
 
-To run them against a local Torchlight Infinite installation:
+To run them or regenerate the typed `DataCfg` tables against a local Torchlight Infinite installation:
 
 1. Copy [`.envrc.example`](.envrc.example) to `.envrc` (which is ignored by [`.gitignore`](.gitignore) so local paths and keys are never committed to source control):
    ```bash
@@ -44,7 +46,8 @@ To run them against a local Torchlight Infinite installation:
    ```bash
    direnv allow
    ```
-3. Run the ignored integration suites:
+3. Run the ignored integration suites or verify `DataCfg` codegen:
    ```bash
-   direnv exec . nix develop --command cargo test -p pak -p pak_vfs -- --ignored --nocapture
+   direnv exec . nix develop --command cargo test -p pak -p pak_vfs -p parsers -- --ignored --nocapture
+   direnv exec . nix develop --command cargo codegen --check
    ```

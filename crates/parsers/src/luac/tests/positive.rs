@@ -92,6 +92,219 @@ fn decompile_encrypted_and_plain_xdi_scripts() {
     assert_eq!(res_plain.source(), res.source());
 }
 
+#[test]
+fn decompile_locals_upvalues_loops_conditionals_and_closures() {
+    let mut child = TestProto::new();
+    child.num_params = 1;
+    child.is_vararg = 0;
+    child.consts = vec![TestConst::Int(10)];
+    child.loc_vars = vec![(b"x".to_vec(), 0, 3)];
+    child.code = vec![
+        encode_xdi_abc(LuaOpcode::Add, 1, 0, 0x100),
+        encode_xdi_abc(LuaOpcode::Return, 1, 2, 0),
+        encode_xdi_abc(LuaOpcode::Return, 0, 1, 0),
+    ];
+
+    let mut root = TestProto::new();
+    root.upvalue_names = vec![b"_ENV".to_vec()];
+    root.consts = vec![
+        TestConst::Str(b"global_fn".to_vec()),
+        TestConst::Int(1),
+        TestConst::Int(5),
+    ];
+    root.loc_vars = vec![
+        (b"acc".to_vec(), 1, 9),
+        (b"(for index)".to_vec(), 4, 8),
+        (b"(for limit)".to_vec(), 4, 8),
+        (b"(for step)".to_vec(), 4, 8),
+        (b"idx".to_vec(), 5, 7),
+    ];
+    root.code = vec![
+        encode_xdi_abx(LuaOpcode::LoadK, 0, 1), // pc 0: acc = 1
+        encode_xdi_abx(LuaOpcode::LoadK, 1, 1), // pc 1: for init = 1
+        encode_xdi_abx(LuaOpcode::LoadK, 2, 2), // pc 2: for limit = 5
+        encode_xdi_abx(LuaOpcode::LoadK, 3, 1), // pc 3: for step = 1
+        encode_xdi_abx(LuaOpcode::ForPrep, 1, 131_071 + 2), // pc 4 -> pc 7
+        encode_xdi_abc(LuaOpcode::Add, 0, 0, 4), // pc 5: acc = (acc + idx)
+        encode_xdi_abx(LuaOpcode::Closure, 5, 0), // pc 6: r5 = function(x) ...
+        encode_xdi_abx(LuaOpcode::ForLoop, 1, 131_071 - 3), // pc 7 -> pc 5
+        encode_xdi_abc(LuaOpcode::SetTabUp, 0, 0x100, 5), // pc 8: global_fn = r5
+        encode_xdi_abc(LuaOpcode::Return, 0, 2, 0), // pc 9: return acc
+    ];
+    root.children.push(child);
+
+    let mut chunk = build_xdi_chunk(&root);
+    let cfg = DecompileConfig::DEFAULT
+        .with_strict_mode(true)
+        .with_include_comments(true);
+    let mut scratch = DecompileScratch::with_limits(cfg.limits());
+    let res = decompile_luac(&mut chunk, &mut scratch, &cfg).expect("decompile structured lua");
+    assert_eq!(res.kind(), DecompiledChunkKind::Source);
+    let src = res.source();
+    assert!(src.contains("-- proto 0"));
+    assert!(src.contains("local acc = 1"));
+    assert!(src.contains("for idx = 1, 5 do"));
+    assert!(src.contains("acc = (acc + idx)"));
+    assert!(src.contains("function(x)"));
+    assert!(src.contains("return (x + 10)"));
+    assert!(src.contains("global_fn = function(x)"));
+    assert!(src.contains("return acc"));
+}
+
+#[test]
+fn decompile_conditionals_if_else_while_and_comparisons() {
+    let mut proto = TestProto::new();
+    proto.num_params = 2;
+    proto.loc_vars = vec![(b"a".to_vec(), 0, 20), (b"b".to_vec(), 0, 20)];
+    proto.consts = vec![TestConst::Int(0), TestConst::Int(1), TestConst::Int(2)];
+    proto.code = vec![
+        // pc 0..5: while a < b do a = (a + 1) end
+        encode_xdi_abc(LuaOpcode::Lt, 0, 0, 1), // pc 0: a < b
+        encode_xdi_abx(LuaOpcode::Jmp, 0, 131_071 + 2), // pc 1 -> pc 4
+        encode_xdi_abc(LuaOpcode::Add, 0, 0, 0x100 | 1), // pc 2: a = (a + 1)
+        encode_xdi_abx(LuaOpcode::Jmp, 0, 131_071 - 4), // pc 3 -> pc 0
+        // pc 4..9: if a == b then b = 1 else b = 2 end
+        encode_xdi_abc(LuaOpcode::Eq, 0, 0, 1), // pc 4: a == b
+        encode_xdi_abx(LuaOpcode::Jmp, 0, 131_071 + 2), // pc 5 -> pc 8 (else)
+        encode_xdi_abx(LuaOpcode::LoadK, 1, 1), // pc 6: b = 1
+        encode_xdi_abx(LuaOpcode::Jmp, 0, 131_071 + 1), // pc 7 -> pc 9 (end)
+        encode_xdi_abx(LuaOpcode::LoadK, 1, 2), // pc 8: b = 2
+        // pc 9..15: Le (>), Test (not a), TestSet
+        encode_xdi_abc(LuaOpcode::Le, 1, 0, 0x100), // pc 9: a > 0
+        encode_xdi_abx(LuaOpcode::Jmp, 0, 131_071 + 4), // pc 10 -> pc 15
+        encode_xdi_abc(LuaOpcode::Test, 0, 0, 1),   // pc 11: not a
+        encode_xdi_abx(LuaOpcode::Jmp, 0, 131_071 + 2), // pc 12 -> pc 15
+        encode_xdi_abc(LuaOpcode::TestSet, 2, 1, 0), // pc 13: b
+        encode_xdi_abx(LuaOpcode::Jmp, 0, 131_071 + 1), // pc 14 -> pc 16
+        encode_xdi_abx(LuaOpcode::LoadK, 0, 0),     // pc 15: a = 0
+        encode_xdi_abc(LuaOpcode::Return, 0, 3, 0), // pc 16: return a, b
+    ];
+
+    let mut chunk = build_xdi_chunk(&proto);
+    let cfg = DecompileConfig::DEFAULT.with_strict_mode(true);
+    let mut scratch = DecompileScratch::with_limits(cfg.limits());
+    let res = decompile_luac(&mut chunk, &mut scratch, &cfg).expect("decompile conditionals");
+    let src = res.source();
+    assert!(src.contains("while a < b do"));
+    assert!(src.contains("if a == b then"));
+    assert!(src.contains("else"));
+    assert!(src.contains("if a > 0 then"));
+    assert!(src.contains("if not a then"));
+    assert!(src.contains("return a, b"));
+}
+
+#[test]
+fn decompile_generic_for_in_calls_self_tailcall_and_vararg() {
+    let mut proto = TestProto::new();
+    proto.upvalue_names = vec![b"_ENV".to_vec()];
+    proto.consts = vec![
+        TestConst::Str(b"pairs".to_vec()),
+        TestConst::Str(b"step".to_vec()),
+        TestConst::Str(b"unpack".to_vec()),
+    ];
+    proto.loc_vars = vec![
+        (b"tbl".to_vec(), 0, 17),
+        (b"(for generator)".to_vec(), 3, 9),
+        (b"(for state)".to_vec(), 3, 9),
+        (b"(for control)".to_vec(), 3, 9),
+        (b"k".to_vec(), 4, 8),
+        (b"v".to_vec(), 4, 8),
+        (b"x".to_vec(), 12, 17),
+        (b"y".to_vec(), 12, 17),
+    ];
+    proto.code = vec![
+        encode_xdi_abc(LuaOpcode::GetTabUp, 1, 0, 0x100), // pc 0: r1 = pairs
+        encode_xdi_abc(LuaOpcode::Move, 2, 0, 0),         // pc 1: r2 = tbl
+        encode_xdi_abc(LuaOpcode::Call, 1, 2, 4),         // pc 2: pairs(tbl) for TForCall
+        encode_xdi_abx(LuaOpcode::Jmp, 0, 131_071 + 3),   // pc 3 -> pc 7 (TForCall)
+        encode_xdi_abc(LuaOpcode::SelfOp, 6, 5, 0x100 | 1), // pc 4: r6 = v:step, r7 = v
+        encode_xdi_abc(LuaOpcode::Move, 8, 4, 0),         // pc 5: r8 = k
+        encode_xdi_abc(LuaOpcode::Call, 6, 3, 1),         // pc 6: v:step(k)
+        encode_xdi_abc(LuaOpcode::TForCall, 1, 0, 2),     // pc 7
+        encode_xdi_abx(LuaOpcode::TForLoop, 3, 131_071 - 5), // pc 8 -> pc 4
+        encode_xdi_abc(LuaOpcode::GetTabUp, 1, 0, 0x100 | 2), // pc 9: r1 = unpack
+        encode_xdi_abc(LuaOpcode::VarArg, 2, 0, 0),       // pc 10: r2 = ... (open)
+        encode_xdi_abc(LuaOpcode::Call, 1, 0, 3),         // pc 11: local x, y = unpack(...)
+        encode_xdi_abc(LuaOpcode::GetTabUp, 3, 0, 0x100 | 2), // pc 12: r3 = unpack
+        encode_xdi_abc(LuaOpcode::Move, 4, 1, 0),         // pc 13: r4 = x
+        encode_xdi_abc(LuaOpcode::TailCall, 3, 2, 0),     // pc 14: return unpack(x)
+        encode_xdi_abc(LuaOpcode::Return, 3, 0, 0),       // pc 15
+    ];
+
+    let mut chunk = build_xdi_chunk(&proto);
+    let cfg = DecompileConfig::DEFAULT.with_strict_mode(true);
+    let mut scratch = DecompileScratch::with_limits(cfg.limits());
+    let res = decompile_luac(&mut chunk, &mut scratch, &cfg).expect("decompile for-in & calls");
+    let src = res.source();
+    assert!(src.contains("for k, v in pairs(tbl) do"));
+    assert!(src.contains("v:step(k)"));
+    assert!(src.contains("local x = unpack(...)"));
+    assert!(src.contains("local y = select(2, unpack(...))"));
+    assert!(src.contains("return unpack(x)"));
+}
+
+#[test]
+fn decompile_tables_loads_concat_and_all_operators() {
+    let mut proto = TestProto::new();
+    proto.upvalues = vec![(1, 0), (1, 1)];
+    proto.upvalue_names = vec![b"_ENV".to_vec(), b"up_counter".to_vec()];
+    proto.loc_vars = vec![(b"t".to_vec(), 1, 30)];
+    proto.consts = vec![
+        TestConst::Str(b"valid_key".to_vec()),
+        TestConst::Str(b"bad-key".to_vec()),
+        TestConst::Float(1.0),
+        TestConst::Float(1.25),
+        TestConst::Str(b"hi\n\t\"\\\x07".to_vec()),
+    ];
+    proto.code = vec![
+        encode_xdi_abc(LuaOpcode::NewTable, 0, 0, 0),
+        encode_xdi_abx(LuaOpcode::LoadKx, 1, 0),
+        encode_xdi_ax(LuaOpcode::ExtraArg, 2),
+        encode_xdi_abx(LuaOpcode::LoadK, 2, 3),
+        encode_xdi_abc(LuaOpcode::SetList, 0, 2, 0),
+        encode_xdi_ax(LuaOpcode::ExtraArg, 1),
+        encode_xdi_abc(LuaOpcode::SetTable, 0, 0x100, 0x100 | 4),
+        encode_xdi_abc(LuaOpcode::SetTable, 0, 0x100 | 1, 1),
+        encode_xdi_abc(LuaOpcode::GetTable, 3, 0, 0x100),
+        encode_xdi_abc(LuaOpcode::GetTable, 4, 0, 0x100 | 1),
+        encode_xdi_abc(LuaOpcode::GetUpval, 5, 1, 0),
+        encode_xdi_abc(LuaOpcode::Sub, 5, 5, 1),
+        encode_xdi_abc(LuaOpcode::Mul, 5, 5, 2),
+        encode_xdi_abc(LuaOpcode::Mod, 5, 5, 1),
+        encode_xdi_abc(LuaOpcode::Pow, 5, 5, 1),
+        encode_xdi_abc(LuaOpcode::Div, 5, 5, 2),
+        encode_xdi_abc(LuaOpcode::IDiv, 5, 5, 1),
+        encode_xdi_abc(LuaOpcode::BAnd, 5, 5, 1),
+        encode_xdi_abc(LuaOpcode::BOr, 5, 5, 1),
+        encode_xdi_abc(LuaOpcode::BXor, 5, 5, 1),
+        encode_xdi_abc(LuaOpcode::Shl, 5, 5, 1),
+        encode_xdi_abc(LuaOpcode::Shr, 5, 5, 1),
+        encode_xdi_abc(LuaOpcode::Unm, 6, 5, 0),
+        encode_xdi_abc(LuaOpcode::BNot, 6, 6, 0),
+        encode_xdi_abc(LuaOpcode::Not, 6, 6, 0),
+        encode_xdi_abc(LuaOpcode::Len, 6, 0, 0),
+        encode_xdi_abc(LuaOpcode::Concat, 7, 3, 4),
+        encode_xdi_abc(LuaOpcode::LoadBool, 8, 1, 1),
+        encode_xdi_abc(LuaOpcode::LoadBool, 8, 0, 0),
+        encode_xdi_abc(LuaOpcode::LoadNil, 9, 1, 0),
+        encode_xdi_abc(LuaOpcode::SetUpval, 5, 1, 0),
+        encode_xdi_abc(LuaOpcode::Return, 5, 4, 0),
+    ];
+
+    let mut chunk = build_xdi_chunk(&proto);
+    let cfg = DecompileConfig::DEFAULT.with_strict_mode(true);
+    let mut scratch = DecompileScratch::with_limits(cfg.limits());
+    let res = decompile_luac(&mut chunk, &mut scratch, &cfg).expect("decompile all ops");
+    let src = res.source();
+    assert!(src.contains("local t = {}"));
+    assert!(src.contains("table.insert(t, 1.0)"));
+    assert!(src.contains("table.insert(t, 1.25)"));
+    assert!(src.contains("t.valid_key = \"hi\\n\\t\\\"\\\\\\x07\""));
+    assert!(src.contains("t[\"bad-key\"] = 1.0"));
+    assert!(src.contains("up_counter = "));
+    assert!(src.contains(" .. "));
+}
+
 fn build_spell_datacfg_chunk() -> Vec<u8> {
     let mut proto = TestProto::new();
     proto.consts = vec![
@@ -287,14 +500,16 @@ fn tli_game_dir_all_343_datacfg_tables_and_scripts() {
                 .expect("parse DataCfg table");
             total_rows += count;
             datacfg_parsed += 1;
-        } else if scripts_decompiled < 50 || path_str.ends_with("Basics/Structure/String.out") {
-            let res = decompile_luac(&mut buf, &mut dec_scratch, &DecompileConfig::DEFAULT)
-                .expect("decompile Luac script");
+        } else {
+            let strict_cfg = DecompileConfig::DEFAULT.with_strict_mode(true);
+            let res = decompile_luac(&mut buf, &mut dec_scratch, &strict_cfg)
+                .expect("decompile Luac script in strict mode");
+            assert_eq!(res.kind(), DecompiledChunkKind::Source);
             assert!(!res.source().is_empty());
             scripts_decompiled += 1;
         }
     }
     assert_eq!(datacfg_parsed, 343);
     assert_eq!(total_rows, 84_891);
-    assert!(scripts_decompiled >= 50);
+    assert_eq!(scripts_decompiled, 3_318);
 }

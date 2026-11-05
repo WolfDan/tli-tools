@@ -71,9 +71,20 @@ impl<T> FixedVec<T> {
     }
 
     #[inline]
+    pub(crate) fn pop(&mut self) -> Option<T> {
+        self.inner.pop()
+    }
+
+    #[inline]
     #[must_use]
     pub(crate) fn as_slice(&self) -> &[T] {
         &self.inner
+    }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.inner
     }
 }
 

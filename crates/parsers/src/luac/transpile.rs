@@ -1,4 +1,4 @@
-//! Wire cursor and iterative `\x01XDI` -> 64-bit PUC-Lua 5.3 transpiler and validator.
+//! Wire cursor and iterative `\x01XDI` / 64-bit PUC-Lua 5.3 prototype arena loader and validator.
 
 use crate::luac::error::LuacError;
 use crate::luac::opcode::LuaInstruction;
@@ -194,74 +194,122 @@ pub(crate) fn read_chunk_header(cur: &mut WireCursor<'_>) -> Result<(bool, u8), 
     Err(LuacError::InvalidMagic)
 }
 
-#[inline]
-fn push_bytes(out: &mut FixedVec<u8>, bytes: &[u8]) -> Result<(), LuacError> {
-    if !out.try_extend_from_slice(bytes) {
-        let actual = u64::from(out.len()) + u64::from(bounded_len_u32(bytes.len()));
-        return Err(LuacError::LimitExceeded {
-            kind: LuacLimitKind::TranspileBytes,
-            actual,
-            max: u64::from(out.cap()),
-        });
+/// Constant entry stored in `ChunkArenas::consts`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ChunkConst {
+    Nil,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(ByteSpan),
+}
+
+/// Upvalue descriptor and debug name span stored in `ChunkArenas::upvalues`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UpvalDesc {
+    pub(crate) name: Option<ByteSpan>,
+}
+
+/// Local variable debug descriptor stored in `ChunkArenas::loc_vars`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LocVarDesc {
+    pub(crate) name: Option<ByteSpan>,
+    pub(crate) start_pc: u32,
+    pub(crate) end_pc: u32,
+}
+
+/// Prototype record indexing slices inside `ChunkArenas`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProtoRecord {
+    pub(crate) num_params: u8,
+    pub(crate) is_vararg: u8,
+    pub(crate) code_start: u32,
+    pub(crate) code_len: u32,
+    pub(crate) const_start: u32,
+    pub(crate) const_len: u32,
+    pub(crate) upval_start: u32,
+    pub(crate) upval_len: u32,
+    pub(crate) child_start: u32,
+    pub(crate) child_len: u32,
+    pub(crate) loc_start: u32,
+    pub(crate) loc_len: u32,
+}
+
+/// Pre-allocated flat arenas holding all prototypes of a parsed Lua 5.3 chunk.
+#[derive(Debug)]
+pub(crate) struct ChunkArenas {
+    pub(crate) protos: FixedVec<ProtoRecord>,
+    pub(crate) code: FixedVec<LuaInstruction>,
+    pub(crate) consts: FixedVec<ChunkConst>,
+    pub(crate) upvalues: FixedVec<UpvalDesc>,
+    pub(crate) children: FixedVec<u32>,
+    pub(crate) loc_vars: FixedVec<LocVarDesc>,
+}
+
+impl ChunkArenas {
+    #[must_use]
+    pub(crate) fn with_limits(limits: LuacLimits) -> Self {
+        let raw_upvals = (u64::from(limits.protos_count_max())
+            * u64::from(limits.upvalues_count_max()))
+        .min(524_288);
+        let upvals_cap = (raw_upvals & 0xFFFF_FFFF) as u32;
+        Self {
+            protos: FixedVec::with_capacity(limits.protos_count_max()),
+            code: FixedVec::with_capacity(limits.instructions_count_max()),
+            consts: FixedVec::with_capacity(limits.constants_count_max()),
+            upvalues: FixedVec::with_capacity(upvals_cap),
+            children: FixedVec::with_capacity(limits.protos_count_max()),
+            loc_vars: FixedVec::with_capacity(limits.loc_vars_count_max()),
+        }
     }
-    Ok(())
-}
 
-fn emit_lua53_string(
-    full_buf: &[u8],
-    span: Option<ByteSpan>,
-    out: &mut FixedVec<u8>,
-) -> Result<(), LuacError> {
-    let Some(s) = span else {
-        return push_bytes(out, &[0x00]);
-    };
-    let start = u32_to_usize(s.offset);
-    let end = start + u32_to_usize(s.len);
-    let payload = &full_buf[start..end];
-    if let Ok(short_len) = u8::try_from(s.len)
-        && short_len <= 253
-    {
-        let tag = short_len + 1;
-        push_bytes(out, &[tag])?;
-    } else {
-        let raw_len = u64::from(s.len) + 1;
-        push_bytes(out, &[0xFF])?;
-        push_bytes(out, &raw_len.to_le_bytes())?;
+    pub(crate) fn clear(&mut self) {
+        self.protos.clear();
+        self.code.clear();
+        self.consts.clear();
+        self.upvalues.clear();
+        self.children.clear();
+        self.loc_vars.clear();
     }
-    push_bytes(out, payload)
 }
 
-struct TranspileCounters {
-    protos: u32,
-    instructions: u32,
-    constants: u32,
-    loc_vars: u32,
+#[derive(Clone, Copy)]
+struct ArenaSpan {
+    start: u32,
+    len: u32,
 }
 
-fn transpile_proto_prefix(
+#[derive(Clone, Copy)]
+struct UpvalAndChildSpan {
+    upvals: ArenaSpan,
+    children: ArenaSpan,
+}
+
+#[derive(Clone, Copy)]
+struct ProtoLoadFrame {
+    proto_idx: u32,
+    child_start: u32,
+    next_child_offset: u32,
+    child_len: u32,
+}
+
+fn load_proto_code(
     cur: &mut WireCursor<'_>,
     is_xdi: bool,
     proto_index: u32,
     limits: LuacLimits,
-    counters: &mut TranspileCounters,
-    out: &mut FixedVec<u8>,
-) -> Result<u32, LuacError> {
-    let src_name = cur.read_string(is_xdi)?;
-    emit_lua53_string(cur.full_buf(), src_name, out)?;
-    let meta = cur.take_bytes(11)?;
-    push_bytes(out, meta)?;
-
+    arenas: &mut ChunkArenas,
+) -> Result<ArenaSpan, LuacError> {
     let size_code = cur.read_u32()?;
-    counters.instructions = counters
-        .instructions
+    let code_start = arenas.code.len();
+    let _new_total = code_start
         .checked_add(size_code)
         .filter(|&tot| tot <= limits.instructions_count_max())
         .ok_or_else(|| LuacError::LimitExceeded {
             kind: LuacLimitKind::InstructionsCount,
-            actual: u64::from(counters.instructions) + u64::from(size_code),
+            actual: u64::from(code_start) + u64::from(size_code),
             max: u64::from(limits.instructions_count_max()),
         })?;
-    push_bytes(out, &size_code.to_le_bytes())?;
 
     for pc in 0..size_code {
         let raw_w = cur.read_u32()?;
@@ -280,42 +328,39 @@ fn transpile_proto_prefix(
                 }
             })?
         };
-        push_bytes(out, &inst.raw().to_le_bytes())?;
+        let push_res = arenas.code.try_push(inst);
+        assert!(push_res.is_ok());
     }
-
-    transpile_constants_and_upvalues(cur, is_xdi, proto_index, limits, counters, out)
+    Ok(ArenaSpan {
+        start: code_start,
+        len: size_code,
+    })
 }
 
-fn transpile_constants_and_upvalues(
+fn load_proto_constants(
     cur: &mut WireCursor<'_>,
     is_xdi: bool,
     proto_index: u32,
     limits: LuacLimits,
-    counters: &mut TranspileCounters,
-    out: &mut FixedVec<u8>,
-) -> Result<u32, LuacError> {
+    arenas: &mut ChunkArenas,
+) -> Result<ArenaSpan, LuacError> {
     let size_k = cur.read_u32()?;
-    counters.constants = counters
-        .constants
+    let const_start = arenas.consts.len();
+    let _new_total = const_start
         .checked_add(size_k)
         .filter(|&tot| tot <= limits.constants_count_max())
         .ok_or_else(|| LuacError::LimitExceeded {
             kind: LuacLimitKind::ConstantsCount,
-            actual: u64::from(counters.constants) + u64::from(size_k),
+            actual: u64::from(const_start) + u64::from(size_k),
             max: u64::from(limits.constants_count_max()),
         })?;
-    push_bytes(out, &size_k.to_le_bytes())?;
 
     for const_index in 0..size_k {
         let tag_offset = cur.offset();
         let tag = cur.read_u8()?;
-        push_bytes(out, &[tag])?;
-        match tag {
-            0x00 => {}
-            0x01 => {
-                let b = cur.read_u8()?;
-                push_bytes(out, &[b])?;
-            }
+        let entry = match tag {
+            0x00 => ChunkConst::Nil,
+            0x01 => ChunkConst::Bool(cur.read_u8()? != 0),
             0x03 => {
                 let f = cur.read_f64()?;
                 if !f.is_finite() {
@@ -325,22 +370,18 @@ fn transpile_constants_and_upvalues(
                         bits: f.to_bits(),
                     });
                 }
-                push_bytes(out, &f.to_le_bytes())?;
+                ChunkConst::Float(f)
             }
-            0x13 => {
-                let raw = cur.take_bytes(8)?;
-                push_bytes(out, raw)?;
-            }
+            0x13 => ChunkConst::Int(cur.read_i64()?),
             0x04 | 0x14 => {
-                let s = cur.read_string(is_xdi)?;
-                if s.is_none() {
-                    return Err(LuacError::NullConstantString {
+                let span = cur
+                    .read_string(is_xdi)?
+                    .ok_or(LuacError::NullConstantString {
                         proto_index,
                         const_index,
                         tag,
-                    });
-                }
-                emit_lua53_string(cur.full_buf(), s, out)?;
+                    })?;
+                ChunkConst::Str(span)
             }
             other => {
                 return Err(LuacError::InvalidConstantTag {
@@ -350,17 +391,21 @@ fn transpile_constants_and_upvalues(
                     tag: other,
                 });
             }
-        }
+        };
+        let push_res = arenas.consts.try_push(entry);
+        assert!(push_res.is_ok());
     }
-
-    transpile_upvalues_and_protos_count(cur, limits, out)
+    Ok(ArenaSpan {
+        start: const_start,
+        len: size_k,
+    })
 }
 
-fn transpile_upvalues_and_protos_count(
+fn load_proto_upvalues_and_children(
     cur: &mut WireCursor<'_>,
     limits: LuacLimits,
-    out: &mut FixedVec<u8>,
-) -> Result<u32, LuacError> {
+    arenas: &mut ChunkArenas,
+) -> Result<UpvalAndChildSpan, LuacError> {
     let size_upvalues = cur.read_u32()?;
     if size_upvalues > limits.upvalues_count_max() {
         return Err(LuacError::LimitExceeded {
@@ -370,21 +415,90 @@ fn transpile_upvalues_and_protos_count(
         });
     }
     assert!(limits.upvalues_count_max() <= 255);
-    push_bytes(out, &size_upvalues.to_le_bytes())?;
-    let upval_bytes = cur.take_bytes(size_upvalues * 2)?;
-    push_bytes(out, upval_bytes)?;
+    let _upval_bytes = cur.take_bytes(size_upvalues * 2)?;
+    let upval_start = arenas.upvalues.len();
+    for _ in 0..size_upvalues {
+        if arenas.upvalues.try_push(UpvalDesc { name: None }).is_err() {
+            return Err(LuacError::LimitExceeded {
+                kind: LuacLimitKind::UpvaluesCount,
+                actual: u64::from(arenas.upvalues.len()) + 1,
+                max: u64::from(arenas.upvalues.cap()),
+            });
+        }
+    }
 
     let size_p = cur.read_u32()?;
-    push_bytes(out, &size_p.to_le_bytes())?;
-    Ok(size_p)
+    let child_start = arenas.children.len();
+    let _new_children = child_start
+        .checked_add(size_p)
+        .filter(|&tot| tot <= limits.protos_count_max())
+        .ok_or_else(|| LuacError::LimitExceeded {
+            kind: LuacLimitKind::ProtosCount,
+            actual: u64::from(arenas.protos.len()) + 1 + u64::from(size_p),
+            max: u64::from(limits.protos_count_max()),
+        })?;
+    for _ in 0..size_p {
+        let push_res = arenas.children.try_push(0);
+        assert!(push_res.is_ok());
+    }
+    Ok(UpvalAndChildSpan {
+        upvals: ArenaSpan {
+            start: upval_start,
+            len: size_upvalues,
+        },
+        children: ArenaSpan {
+            start: child_start,
+            len: size_p,
+        },
+    })
 }
 
-fn transpile_debug_trailer(
+fn load_proto_prefix(
     cur: &mut WireCursor<'_>,
     is_xdi: bool,
+    proto_index: u32,
     limits: LuacLimits,
-    counters: &mut TranspileCounters,
-    out: &mut FixedVec<u8>,
+    arenas: &mut ChunkArenas,
+) -> Result<ProtoLoadFrame, LuacError> {
+    let _src_name = cur.read_string(is_xdi)?;
+    let meta = cur.take_bytes(11)?;
+    let num_params = meta[8];
+    let is_vararg = meta[9];
+
+    let code_span = load_proto_code(cur, is_xdi, proto_index, limits, arenas)?;
+    let const_span = load_proto_constants(cur, is_xdi, proto_index, limits, arenas)?;
+    let up_child = load_proto_upvalues_and_children(cur, limits, arenas)?;
+
+    let push_res = arenas.protos.try_push(ProtoRecord {
+        num_params,
+        is_vararg,
+        code_start: code_span.start,
+        code_len: code_span.len,
+        const_start: const_span.start,
+        const_len: const_span.len,
+        upval_start: up_child.upvals.start,
+        upval_len: up_child.upvals.len,
+        child_start: up_child.children.start,
+        child_len: up_child.children.len,
+        loc_start: 0,
+        loc_len: 0,
+    });
+    assert!(push_res.is_ok());
+
+    Ok(ProtoLoadFrame {
+        proto_idx: proto_index,
+        child_start: up_child.children.start,
+        next_child_offset: 0,
+        child_len: up_child.children.len,
+    })
+}
+
+fn load_debug_trailer(
+    cur: &mut WireCursor<'_>,
+    is_xdi: bool,
+    proto_idx: u32,
+    limits: LuacLimits,
+    arenas: &mut ChunkArenas,
 ) -> Result<(), LuacError> {
     let size_line_info = cur.read_u32()?;
     if size_line_info > limits.instructions_count_max() {
@@ -394,7 +508,6 @@ fn transpile_debug_trailer(
             max: u64::from(limits.instructions_count_max()),
         });
     }
-    push_bytes(out, &size_line_info.to_le_bytes())?;
     let line_byte_len = size_line_info
         .checked_mul(4)
         .ok_or_else(|| LuacError::UnexpectedEof {
@@ -402,25 +515,28 @@ fn transpile_debug_trailer(
             needed: u32::MAX,
             remaining: cur.remaining_len(),
         })?;
-    let line_bytes = cur.take_bytes(line_byte_len)?;
-    push_bytes(out, line_bytes)?;
+    let _line_bytes = cur.take_bytes(line_byte_len)?;
 
     let size_loc_vars = cur.read_u32()?;
-    counters.loc_vars = counters
-        .loc_vars
+    let loc_start = arenas.loc_vars.len();
+    let _new_locs = loc_start
         .checked_add(size_loc_vars)
         .filter(|&tot| tot <= limits.loc_vars_count_max())
         .ok_or_else(|| LuacError::LimitExceeded {
             kind: LuacLimitKind::LocVarsCount,
-            actual: u64::from(counters.loc_vars) + u64::from(size_loc_vars),
+            actual: u64::from(loc_start) + u64::from(size_loc_vars),
             max: u64::from(limits.loc_vars_count_max()),
         })?;
-    push_bytes(out, &size_loc_vars.to_le_bytes())?;
     for _ in 0..size_loc_vars {
         let name = cur.read_string(is_xdi)?;
-        emit_lua53_string(cur.full_buf(), name, out)?;
-        let pcs = cur.take_bytes(8)?;
-        push_bytes(out, pcs)?;
+        let start_pc = cur.read_u32()?;
+        let end_pc = cur.read_u32()?;
+        let push_res = arenas.loc_vars.try_push(LocVarDesc {
+            name,
+            start_pc,
+            end_pc,
+        });
+        assert!(push_res.is_ok());
     }
 
     let size_upval_names = cur.read_u32()?;
@@ -431,10 +547,17 @@ fn transpile_debug_trailer(
             max: u64::from(limits.upvalues_count_max()),
         });
     }
-    push_bytes(out, &size_upval_names.to_le_bytes())?;
-    for _ in 0..size_upval_names {
+    let proto_rec = &mut arenas.protos.as_mut_slice()[u32_to_usize(proto_idx)];
+    proto_rec.loc_start = loc_start;
+    proto_rec.loc_len = size_loc_vars;
+    let upval_start = proto_rec.upval_start;
+    let upval_len = proto_rec.upval_len;
+
+    for i in 0..size_upval_names {
         let name = cur.read_string(is_xdi)?;
-        emit_lua53_string(cur.full_buf(), name, out)?;
+        if i < upval_len {
+            arenas.upvalues.as_mut_slice()[u32_to_usize(upval_start + i)].name = name;
+        }
     }
     Ok(())
 }
@@ -442,10 +565,10 @@ fn transpile_debug_trailer(
 fn push_child_proto(
     cur: &mut WireCursor<'_>,
     is_xdi: bool,
+    slot_idx: u32,
     limits: LuacLimits,
-    counters: &mut TranspileCounters,
-    stack: &mut ArrayVec<u32, PROTO_DEPTH_HARD_MAX_USIZE>,
-    out: &mut FixedVec<u8>,
+    stack: &mut ArrayVec<ProtoLoadFrame, PROTO_DEPTH_HARD_MAX_USIZE>,
+    arenas: &mut ChunkArenas,
 ) -> Result<(), LuacError> {
     let next_depth = bounded_len_u32(stack.len()) + 1;
     if next_depth > limits.proto_depth_max() {
@@ -455,64 +578,58 @@ fn push_child_proto(
             max: u64::from(limits.proto_depth_max()),
         });
     }
-    let proto_idx = counters.protos;
-    counters.protos = counters
-        .protos
+    let proto_idx = arenas.protos.len();
+    let _new_protos = proto_idx
         .checked_add(1)
         .filter(|&tot| tot <= limits.protos_count_max())
         .ok_or_else(|| LuacError::LimitExceeded {
             kind: LuacLimitKind::ProtosCount,
-            actual: u64::from(counters.protos) + 1,
+            actual: u64::from(proto_idx) + 1,
             max: u64::from(limits.protos_count_max()),
         })?;
-    let child_p = transpile_proto_prefix(cur, is_xdi, proto_idx, limits, counters, out)?;
-    let push_res = stack.try_push(child_p);
+    arenas.children.as_mut_slice()[u32_to_usize(slot_idx)] = proto_idx;
+    let child_frame = load_proto_prefix(cur, is_xdi, proto_idx, limits, arenas)?;
+    let push_res = stack.try_push(child_frame);
     assert!(push_res.is_ok());
     Ok(())
 }
 
-/// Validates and transpiles a decrypted `\x01XDI` or canonical `\x1bLua` chunk into canonical 64-bit Lua 5.3 bytecode.
-pub(crate) fn transpile_to_lua53_into(
+/// Validates and loads a decrypted `\x01XDI` or canonical `\x1bLua` chunk into flat `ChunkArenas`.
+pub(crate) fn load_chunk_into(
     src: &[u8],
-    out: &mut FixedVec<u8>,
+    arenas: &mut ChunkArenas,
     limits: LuacLimits,
 ) -> Result<(), LuacError> {
-    out.clear();
+    arenas.clear();
     let mut cur = WireCursor::new(src)?;
-    let (is_xdi, main_upvalues) = read_chunk_header(&mut cur)?;
-    push_bytes(out, &LUA53_HEADER)?;
-    push_bytes(out, &[main_upvalues])?;
+    let (is_xdi, _main_upvalues) = read_chunk_header(&mut cur)?;
 
-    let mut counters = TranspileCounters {
-        protos: 1,
-        instructions: 0,
-        constants: 0,
-        loc_vars: 0,
-    };
-    if counters.protos > limits.protos_count_max() {
+    if limits.protos_count_max() == 0 {
         return Err(LuacError::LimitExceeded {
             kind: LuacLimitKind::ProtosCount,
             actual: 1,
-            max: u64::from(limits.protos_count_max()),
+            max: 0,
         });
     }
 
-    let mut stack: ArrayVec<u32, PROTO_DEPTH_HARD_MAX_USIZE> = ArrayVec::new();
-    let root_children = transpile_proto_prefix(&mut cur, is_xdi, 0, limits, &mut counters, out)?;
-    let root_push = stack.try_push(root_children);
+    let mut stack: ArrayVec<ProtoLoadFrame, PROTO_DEPTH_HARD_MAX_USIZE> = ArrayVec::new();
+    let root_frame = load_proto_prefix(&mut cur, is_xdi, 0, limits, arenas)?;
+    let root_push = stack.try_push(root_frame);
     assert!(root_push.is_ok());
 
     let max_steps = u64::from(limits.protos_count_max()) * 2;
     for _ in 0..max_steps {
-        let Some(rem_children) = stack.last_mut() else {
+        let Some(top) = stack.last_mut() else {
             break;
         };
-        if *rem_children > 0 {
-            *rem_children -= 1;
-            push_child_proto(&mut cur, is_xdi, limits, &mut counters, &mut stack, out)?;
+        if top.next_child_offset < top.child_len {
+            let slot_idx = top.child_start + top.next_child_offset;
+            top.next_child_offset += 1;
+            push_child_proto(&mut cur, is_xdi, slot_idx, limits, &mut stack, arenas)?;
         } else {
+            let finished = top.proto_idx;
             let _popped = stack.pop();
-            transpile_debug_trailer(&mut cur, is_xdi, limits, &mut counters, out)?;
+            load_debug_trailer(&mut cur, is_xdi, finished, limits, arenas)?;
         }
     }
     assert!(stack.is_empty());

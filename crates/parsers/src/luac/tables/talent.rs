@@ -25,6 +25,7 @@ pub struct ConfigDevilBlockAttributeS15Row {
 impl DataCfgRow for ConfigDevilBlockAttributeS15Row {
     const TABLE_NAME: &'static str = "config_devil_block_attribute_s15";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -106,6 +107,7 @@ pub struct ConfigDevilBlockBasetalentDropRatioRow {
 impl DataCfgRow for ConfigDevilBlockBasetalentDropRatioRow {
     const TABLE_NAME: &'static str = "config_devil_block_basetalent_drop_ratio";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -151,6 +153,7 @@ pub struct ConfigDevilBlockCBonusRow {
 impl DataCfgRow for ConfigDevilBlockCBonusRow {
     const TABLE_NAME: &'static str = "config_devil_block_c_bonus";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -202,6 +205,7 @@ pub struct ConfigDevilBlockEnhanceS15Row {
 }
 
 impl ConfigDevilBlockEnhanceS15Row {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -237,6 +241,7 @@ impl ConfigDevilBlockEnhanceS15Row {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -256,6 +261,7 @@ impl ConfigDevilBlockEnhanceS15Row {
 impl DataCfgRow for ConfigDevilBlockEnhanceS15Row {
     const TABLE_NAME: &'static str = "config_devil_block_enhance_s15";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -349,6 +355,7 @@ pub struct ConfigDevilBlockShapeS15Row {
 impl DataCfgRow for ConfigDevilBlockShapeS15Row {
     const TABLE_NAME: &'static str = "config_devil_block_shape_s15";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -423,6 +430,7 @@ pub struct ConfigDevilBlockSlotDropRatioS15Row {
 impl DataCfgRow for ConfigDevilBlockSlotDropRatioS15Row {
     const TABLE_NAME: &'static str = "config_devil_block_slot_drop_ratio_s15";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -533,6 +541,7 @@ pub struct ConfigPrismAttributeRow {
 impl DataCfgRow for ConfigPrismAttributeRow {
     const TABLE_NAME: &'static str = "config_prism_attribute";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -589,6 +598,7 @@ pub struct ConfigPrismEnhanceS12Row {
 }
 
 impl ConfigPrismEnhanceS12Row {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -617,6 +627,7 @@ impl ConfigPrismEnhanceS12Row {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -634,6 +645,7 @@ impl ConfigPrismEnhanceS12Row {
 impl DataCfgRow for ConfigPrismEnhanceS12Row {
     const TABLE_NAME: &'static str = "config_prism_enhance_s12";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -696,6 +708,7 @@ pub struct ConfigPrismInfluenceShapeRow {
 impl DataCfgRow for ConfigPrismInfluenceShapeRow {
     const TABLE_NAME: &'static str = "config_prism_influence_shape";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -739,6 +752,7 @@ pub struct ConfigPrismModifierMappingRow {
 impl DataCfgRow for ConfigPrismModifierMappingRow {
     const TABLE_NAME: &'static str = "config_prism_modifier_mapping";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -785,6 +799,7 @@ pub struct ConfigTalentBlockBoardRow {
 impl DataCfgRow for ConfigTalentBlockBoardRow {
     const TABLE_NAME: &'static str = "config_talent_block_board";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -833,6 +848,7 @@ pub struct ConfigTalentBlockDetailSearchRow {
 impl DataCfgRow for ConfigTalentBlockDetailSearchRow {
     const TABLE_NAME: &'static str = "config_talent_block_detail_search";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -884,6 +900,7 @@ pub struct ConfigTalentBlockEnhanceRow {
 impl DataCfgRow for ConfigTalentBlockEnhanceRow {
     const TABLE_NAME: &'static str = "config_talent_block_enhance";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -943,6 +960,7 @@ pub struct ConfigTalentBlockEnhanceCostRow {
 impl DataCfgRow for ConfigTalentBlockEnhanceCostRow {
     const TABLE_NAME: &'static str = "config_talent_block_enhance_cost";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1047,6 +1065,7 @@ pub struct ConfigTalentBlockEnhanceS7Row {
 }
 
 impl ConfigTalentBlockEnhanceS7Row {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1085,6 +1104,7 @@ impl ConfigTalentBlockEnhanceS7Row {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1107,6 +1127,7 @@ impl ConfigTalentBlockEnhanceS7Row {
 impl DataCfgRow for ConfigTalentBlockEnhanceS7Row {
     const TABLE_NAME: &'static str = "config_talent_block_enhance_s7";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1144,6 +1165,7 @@ pub struct ConfigTalentBlockFilterRow {
 impl DataCfgRow for ConfigTalentBlockFilterRow {
     const TABLE_NAME: &'static str = "config_talent_block_filter";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1188,6 +1210,7 @@ pub struct ConfigTalentBlockInfluenceRow {
 impl DataCfgRow for ConfigTalentBlockInfluenceRow {
     const TABLE_NAME: &'static str = "config_talent_block_influence";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1255,6 +1278,7 @@ pub struct ConfigTalentBlockRevertS7Row {
 impl DataCfgRow for ConfigTalentBlockRevertS7Row {
     const TABLE_NAME: &'static str = "config_talent_block_revert_s7";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1368,6 +1392,7 @@ pub struct ConfigTalentBlockShapeRow {
 }
 
 impl ConfigTalentBlockShapeRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1403,6 +1428,7 @@ impl ConfigTalentBlockShapeRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1424,6 +1450,7 @@ impl ConfigTalentBlockShapeRow {
 impl DataCfgRow for ConfigTalentBlockShapeRow {
     const TABLE_NAME: &'static str = "config_talent_block_shape";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1470,6 +1497,7 @@ pub struct ConfigTalentBlockSlotRecipeRow {
 }
 
 impl ConfigTalentBlockSlotRecipeRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1516,6 +1544,7 @@ impl ConfigTalentBlockSlotRecipeRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1544,6 +1573,7 @@ impl ConfigTalentBlockSlotRecipeRow {
 impl DataCfgRow for ConfigTalentBlockSlotRecipeRow {
     const TABLE_NAME: &'static str = "config_talent_block_slot_recipe";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1581,6 +1611,7 @@ pub struct ConfigTalentFilterRow {
 impl DataCfgRow for ConfigTalentFilterRow {
     const TABLE_NAME: &'static str = "config_talent_filter";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1631,6 +1662,7 @@ pub struct ConfigTalentGroupMoonRow {
 impl DataCfgRow for ConfigTalentGroupMoonRow {
     const TABLE_NAME: &'static str = "config_talent_group_moon";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

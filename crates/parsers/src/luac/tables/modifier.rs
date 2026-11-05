@@ -15,6 +15,7 @@ pub struct ConfigAttributeCategoryRow {
 impl DataCfgRow for ConfigAttributeCategoryRow {
     const TABLE_NAME: &'static str = "config_attribute_category";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -52,6 +53,7 @@ pub struct ConfigAttributesShowCalRow {
 impl DataCfgRow for ConfigAttributesShowCalRow {
     const TABLE_NAME: &'static str = "config_attributes_show_cal";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -98,6 +100,7 @@ pub struct ConfigFunctionDesRow {
 impl DataCfgRow for ConfigFunctionDesRow {
     const TABLE_NAME: &'static str = "config_function_des";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -143,6 +146,7 @@ pub struct ConfigModifierTierIconRow {
 impl DataCfgRow for ConfigModifierTierIconRow {
     const TABLE_NAME: &'static str = "config_modifier_tier_icon";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -180,6 +184,7 @@ pub struct ConfigModifierTypeDescRow {
 impl DataCfgRow for ConfigModifierTypeDescRow {
     const TABLE_NAME: &'static str = "config_modifier_type_desc";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

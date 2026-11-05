@@ -130,6 +130,7 @@ pub struct ConfigGachaRow {
 }
 
 impl ConfigGachaRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -172,6 +173,7 @@ impl ConfigGachaRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -222,6 +224,7 @@ impl ConfigGachaRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_2(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -260,6 +263,7 @@ impl ConfigGachaRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_3(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -300,6 +304,7 @@ impl ConfigGachaRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_4(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -337,6 +342,7 @@ impl ConfigGachaRow {
 impl DataCfgRow for ConfigGachaRow {
     const TABLE_NAME: &'static str = "config_gacha";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -431,6 +437,7 @@ pub struct ConfigGachaLabelRow {
 }
 
 impl ConfigGachaLabelRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -476,6 +483,7 @@ impl ConfigGachaLabelRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -525,6 +533,7 @@ impl ConfigGachaLabelRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_2(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -572,6 +581,7 @@ impl ConfigGachaLabelRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_3(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -598,6 +608,7 @@ impl ConfigGachaLabelRow {
 impl DataCfgRow for ConfigGachaLabelRow {
     const TABLE_NAME: &'static str = "config_gacha_label";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -644,6 +655,7 @@ pub struct ConfigGachaPoolCategoryRow {
 impl DataCfgRow for ConfigGachaPoolCategoryRow {
     const TABLE_NAME: &'static str = "config_gacha_pool_category";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

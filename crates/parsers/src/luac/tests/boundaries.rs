@@ -1,9 +1,10 @@
 use crate::luac::opcode::LuaOpcode;
 use crate::luac::tests::{TestConst, TestProto, build_xdi_chunk, encode_xdi_abc, encode_xdi_abx};
-use crate::luac::transpile::transpile_to_lua53_into;
+use crate::luac::transpile::{ChunkArenas, load_chunk_into};
 use crate::luac::{
-    DataCfgLimits, DataCfgRow, DataCfgScratch, DecompileConfig, DecompileScratch, EvalContext,
-    EvalVal, LuacError, LuacLimitKind, LuacLimits, decompile_luac, parse_luatable_datacfg,
+    DECOMPILE_BLOCK_DEPTH_MAX, DataCfgLimits, DataCfgRow, DataCfgScratch, DecompileConfig,
+    DecompileError, DecompileScratch, EvalContext, EvalVal, LuacError, LuacLimitKind, LuacLimits,
+    decompile_luac, parse_luatable_datacfg,
 };
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -64,12 +65,12 @@ fn luac_limits_instructions_constants_upvalues_locvars_and_bytes_transitions() {
         .with_transpile_bytes_max(1024);
 
     // 1. instructions_count_max: 0, MAX - 1 (4), MAX (5), MAX + 1 (6)
+    let mut arenas = ChunkArenas::with_limits(custom_limits);
     for count in [0_u32, 4, 5, 6] {
         let mut proto = TestProto::new();
         proto.code = vec![encode_xdi_abc(LuaOpcode::Return, 0, 1, 0); crate::u32_to_usize(count)];
         let chunk = build_xdi_chunk(&proto);
-        let mut out = crate::FixedVec::with_capacity(custom_limits.transpile_bytes_max());
-        let res = transpile_to_lua53_into(&chunk, &mut out, custom_limits);
+        let res = load_chunk_into(&chunk, &mut arenas, custom_limits);
         if count <= 5 {
             res.expect("instructions count within max");
         } else {
@@ -89,8 +90,7 @@ fn luac_limits_instructions_constants_upvalues_locvars_and_bytes_transitions() {
         let mut proto = TestProto::new();
         proto.consts = vec![TestConst::Int(1); crate::u32_to_usize(count)];
         let chunk = build_xdi_chunk(&proto);
-        let mut out = crate::FixedVec::with_capacity(custom_limits.transpile_bytes_max());
-        let res = transpile_to_lua53_into(&chunk, &mut out, custom_limits);
+        let res = load_chunk_into(&chunk, &mut arenas, custom_limits);
         if count <= 3 {
             res.expect("constants count within max");
         } else {
@@ -108,14 +108,15 @@ fn luac_limits_instructions_constants_upvalues_locvars_and_bytes_transitions() {
     // 3. transpile_bytes_max: exact_len - 1, exact_len, exact_len + 1
     let mut base_proto = TestProto::new();
     base_proto.code = vec![encode_xdi_abc(LuaOpcode::Return, 0, 1, 0)];
-    let base_chunk = build_xdi_chunk(&base_proto);
-    let mut ref_out = crate::FixedVec::with_capacity(1024);
-    transpile_to_lua53_into(&base_chunk, &mut ref_out, custom_limits).unwrap();
-    let exact_bytes = ref_out.len();
+    let mut base_chunk = build_xdi_chunk(&base_proto);
+    let mut scratch = DecompileScratch::with_limits(custom_limits);
+    let ref_cfg = DecompileConfig::DEFAULT.with_limits(custom_limits);
+    let ref_res = decompile_luac(&mut base_chunk, &mut scratch, &ref_cfg).unwrap();
+    let exact_bytes = crate::bounded_len_u32(ref_res.source().len());
     for max_bytes in [exact_bytes - 1, exact_bytes, exact_bytes + 1] {
         let lim = custom_limits.with_transpile_bytes_max(max_bytes);
-        let mut out = crate::FixedVec::with_capacity(lim.transpile_bytes_max());
-        let res = transpile_to_lua53_into(&base_chunk, &mut out, lim);
+        let cfg = DecompileConfig::DEFAULT.with_limits(lim);
+        let res = decompile_luac(&mut base_chunk, &mut scratch, &cfg);
         if max_bytes >= exact_bytes {
             res.expect("transpile_bytes within max");
         } else {
@@ -137,14 +138,14 @@ fn luac_limits_upvalues_and_locvars_transitions() {
         .unwrap()
         .with_loc_vars_count_max(2)
         .with_transpile_bytes_max(1024);
+    let mut arenas = ChunkArenas::with_limits(custom_limits);
 
     // 3. upvalues_count_max: 0, MAX - 1 (1), MAX (2), MAX + 1 (3)
     for count in [0_u32, 1, 2, 3] {
         let mut proto = TestProto::new();
         proto.upvalues = vec![(1, 0); crate::u32_to_usize(count)];
         let chunk = build_xdi_chunk(&proto);
-        let mut out = crate::FixedVec::with_capacity(custom_limits.transpile_bytes_max());
-        let res = transpile_to_lua53_into(&chunk, &mut out, custom_limits);
+        let res = load_chunk_into(&chunk, &mut arenas, custom_limits);
         if count <= 2 {
             res.expect("upvalues count within max");
         } else {
@@ -164,8 +165,7 @@ fn luac_limits_upvalues_and_locvars_transitions() {
         let mut proto = TestProto::new();
         proto.loc_vars = vec![(b"x".to_vec(), 0, 1); crate::u32_to_usize(count)];
         let chunk = build_xdi_chunk(&proto);
-        let mut out = crate::FixedVec::with_capacity(custom_limits.transpile_bytes_max());
-        let res = transpile_to_lua53_into(&chunk, &mut out, custom_limits);
+        let res = load_chunk_into(&chunk, &mut arenas, custom_limits);
         if count <= 2 {
             res.expect("loc_vars count within max");
         } else {
@@ -193,14 +193,14 @@ fn luac_limits_proto_depth_and_total_count_transitions() {
         .unwrap()
         .with_loc_vars_count_max(4)
         .with_transpile_bytes_max(2048);
+    let mut arenas = ChunkArenas::with_limits(custom_limits);
 
     // Total protos count: 1 (root), 2 (MAX - 1), 3 (MAX), 4 (MAX + 1)
     for sibling_children in [0_u32, 1, 2, 3] {
         let mut root = TestProto::new();
         root.children = (0..sibling_children).map(|_| TestProto::new()).collect();
         let chunk = build_xdi_chunk(&root);
-        let mut out = crate::FixedVec::with_capacity(custom_limits.transpile_bytes_max());
-        let res = transpile_to_lua53_into(&chunk, &mut out, custom_limits);
+        let res = load_chunk_into(&chunk, &mut arenas, custom_limits);
         if sibling_children < 3 {
             res.expect("protos count within max");
         } else {
@@ -217,6 +217,7 @@ fn luac_limits_proto_depth_and_total_count_transitions() {
 
     // Proto nesting depth: depth 1..=4 with protos_count_max = 10
     let depth_limits = custom_limits.with_protos_count_max(10);
+    let mut depth_arenas = ChunkArenas::with_limits(depth_limits);
     for depth in [1_u32, 2, 3, 4] {
         let mut curr = TestProto::new();
         for _ in 1..depth {
@@ -225,8 +226,7 @@ fn luac_limits_proto_depth_and_total_count_transitions() {
             curr = parent;
         }
         let chunk = build_xdi_chunk(&curr);
-        let mut out = crate::FixedVec::with_capacity(depth_limits.transpile_bytes_max());
-        let res = transpile_to_lua53_into(&chunk, &mut out, depth_limits);
+        let res = load_chunk_into(&chunk, &mut depth_arenas, depth_limits);
         if depth <= 3 {
             res.expect("proto depth within max");
         } else {
@@ -345,6 +345,83 @@ fn datacfg_limits_tables_list_items_and_map_entries_transitions() {
                     ..
                 }
             ));
+        }
+    }
+}
+
+#[test]
+fn decompile_block_depth_exact_transitions() {
+    let cfg = DecompileConfig::DEFAULT
+        .with_strict_mode(true)
+        .with_indent_width(0);
+    let mut scratch = DecompileScratch::with_limits(cfg.limits());
+    for depth in [
+        0_u32,
+        DECOMPILE_BLOCK_DEPTH_MAX - 1,
+        DECOMPILE_BLOCK_DEPTH_MAX,
+        DECOMPILE_BLOCK_DEPTH_MAX + 1,
+    ] {
+        let mut proto = TestProto::new();
+        let mut code = Vec::with_capacity(crate::u32_to_usize(depth * 2 + 2));
+        for i in 0..depth {
+            let sbx = (depth - i) * 2 - 1;
+            code.push(encode_xdi_abc(LuaOpcode::Test, 0, 0, 0));
+            code.push(encode_xdi_abx(LuaOpcode::Jmp, 0, 131_071 + sbx));
+        }
+        code.push(encode_xdi_abc(LuaOpcode::Move, 0, 0, 0));
+        code.push(encode_xdi_abc(LuaOpcode::Return, 0, 1, 0));
+        proto.code = code;
+        let mut chunk = build_xdi_chunk(&proto);
+        let res = decompile_luac(&mut chunk, &mut scratch, &cfg);
+        if depth <= DECOMPILE_BLOCK_DEPTH_MAX {
+            res.expect("block depth within max");
+        } else {
+            assert!(matches!(
+                res.unwrap_err(),
+                LuacError::Decompile {
+                    source: DecompileError::BlockDepthExceeded {
+                        proto_index: 0,
+                        max: DECOMPILE_BLOCK_DEPTH_MAX,
+                        ..
+                    }
+                }
+            ));
+        }
+    }
+}
+
+#[test]
+fn decompile_register_span_exact_transitions() {
+    let cfg = DecompileConfig::DEFAULT.with_strict_mode(true);
+    let mut scratch = DecompileScratch::with_limits(cfg.limits());
+    for end_reg in [254_u16, 255, 256] {
+        let off = end_reg - 250;
+        let cases = [
+            (encode_xdi_abc(LuaOpcode::LoadNil, 250, off, 0), 250_u8, off),
+            (encode_xdi_abc(LuaOpcode::SetList, 250, off, 1), 250, off),
+            (encode_xdi_abc(LuaOpcode::Call, 250, off + 1, 1), 250, off),
+            (encode_xdi_abc(LuaOpcode::Return, 250, off + 2, 0), 250, off),
+        ];
+        for (inst, expected_reg, expected_off) in cases {
+            let mut proto = TestProto::new();
+            proto.code = vec![inst, encode_xdi_abc(LuaOpcode::Return, 0, 1, 0)];
+            let mut chunk = build_xdi_chunk(&proto);
+            let res = decompile_luac(&mut chunk, &mut scratch, &cfg);
+            if end_reg <= 255 {
+                res.expect("register span within 0..=255");
+            } else {
+                assert!(matches!(
+                    res.unwrap_err(),
+                    LuacError::Decompile {
+                        source: DecompileError::RegisterSpanOutOfBounds {
+                            proto_index: 0,
+                            pc: 0,
+                            reg,
+                            offset,
+                        }
+                    } if reg == expected_reg && offset == expected_off
+                ));
+            }
         }
     }
 }

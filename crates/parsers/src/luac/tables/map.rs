@@ -38,6 +38,7 @@ pub struct ConfigMapDefaultModRandomRow {
 impl DataCfgRow for ConfigMapDefaultModRandomRow {
     const TABLE_NAME: &'static str = "config_map_default_mod_random";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -81,6 +82,7 @@ pub struct ConfigMapEnvironmentRow {
 impl DataCfgRow for ConfigMapEnvironmentRow {
     const TABLE_NAME: &'static str = "config_map_environment";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -131,6 +133,7 @@ pub struct ConfigMapGameplayClimbtowerRow {
 impl DataCfgRow for ConfigMapGameplayClimbtowerRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_climbtower";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -177,6 +180,7 @@ pub struct ConfigMapGameplayClimbtowerTicketRow {
 impl DataCfgRow for ConfigMapGameplayClimbtowerTicketRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_climbtower_ticket";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -227,6 +231,7 @@ pub struct ConfigMapGameplayHeroTrialRow {
 }
 
 impl ConfigMapGameplayHeroTrialRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -259,6 +264,7 @@ impl ConfigMapGameplayHeroTrialRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -276,6 +282,7 @@ impl ConfigMapGameplayHeroTrialRow {
 impl DataCfgRow for ConfigMapGameplayHeroTrialRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_hero_trial";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -315,6 +322,7 @@ pub struct ConfigMapGameplaySeasonDollTextDisplayRow {
 impl DataCfgRow for ConfigMapGameplaySeasonDollTextDisplayRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_doll_text_display";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -362,6 +370,7 @@ pub struct ConfigMapGameplaySeasonDreamTalentCostlvRow {
 impl DataCfgRow for ConfigMapGameplaySeasonDreamTalentCostlvRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_dream_talent_costlv";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -436,6 +445,7 @@ pub struct ConfigMapGameplaySeasonDreamTalentTreeRow {
 }
 
 impl ConfigMapGameplaySeasonDreamTalentTreeRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -467,6 +477,7 @@ impl ConfigMapGameplaySeasonDreamTalentTreeRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -491,6 +502,7 @@ impl ConfigMapGameplaySeasonDreamTalentTreeRow {
 impl DataCfgRow for ConfigMapGameplaySeasonDreamTalentTreeRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_dream_talent_tree";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -526,6 +538,7 @@ pub struct ConfigMapGameplaySeasonLostBigmapDifficultyRow {
 impl DataCfgRow for ConfigMapGameplaySeasonLostBigmapDifficultyRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_lost_bigmap_difficulty";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -572,6 +585,7 @@ pub struct ConfigMapGameplaySeasonLostRewardBossRow {
 impl DataCfgRow for ConfigMapGameplaySeasonLostRewardBossRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_lost_reward_boss";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -628,6 +642,7 @@ pub struct ConfigMapGameplaySeasonLostRewardDropRow {
 impl DataCfgRow for ConfigMapGameplaySeasonLostRewardDropRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_lost_reward_drop";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -675,6 +690,7 @@ pub struct ConfigMapGameplaySeasonLostRewardTypeRow {
 impl DataCfgRow for ConfigMapGameplaySeasonLostRewardTypeRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_lost_reward_type";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -777,6 +793,7 @@ pub struct ConfigMapGameplaySeasonLostTalentTreeRow {
 }
 
 impl ConfigMapGameplaySeasonLostTalentTreeRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -803,6 +820,7 @@ impl ConfigMapGameplaySeasonLostTalentTreeRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -827,6 +845,7 @@ impl ConfigMapGameplaySeasonLostTalentTreeRow {
 impl DataCfgRow for ConfigMapGameplaySeasonLostTalentTreeRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_lost_talent_tree";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -887,6 +906,7 @@ pub struct ConfigMapGameplaySeasonLostTalentTreeLevelRow {
 impl DataCfgRow for ConfigMapGameplaySeasonLostTalentTreeLevelRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_lost_talent_tree_level";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -944,6 +964,7 @@ pub struct ConfigMapGameplaySeasonPlagueCardBundleRow {
 impl DataCfgRow for ConfigMapGameplaySeasonPlagueCardBundleRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_plague_card_bundle";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1007,6 +1028,7 @@ pub struct ConfigMapGameplaySeasonPlagueCardEffectRow {
 }
 
 impl ConfigMapGameplaySeasonPlagueCardEffectRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1037,6 +1059,7 @@ impl ConfigMapGameplaySeasonPlagueCardEffectRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1054,6 +1077,7 @@ impl ConfigMapGameplaySeasonPlagueCardEffectRow {
 impl DataCfgRow for ConfigMapGameplaySeasonPlagueCardEffectRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_plague_card_effect";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1098,6 +1122,7 @@ pub struct ConfigMapGameplaySeasonPlagueCardModifierRow {
 }
 
 impl ConfigMapGameplaySeasonPlagueCardModifierRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1124,6 +1149,7 @@ impl ConfigMapGameplaySeasonPlagueCardModifierRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1141,6 +1167,7 @@ impl ConfigMapGameplaySeasonPlagueCardModifierRow {
 impl DataCfgRow for ConfigMapGameplaySeasonPlagueCardModifierRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_plague_card_modifier";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1186,6 +1213,7 @@ pub struct ConfigMapGameplaySeasonPlagueCardRelicRow {
 impl DataCfgRow for ConfigMapGameplaySeasonPlagueCardRelicRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_plague_card_relic";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1244,6 +1272,7 @@ pub struct ConfigMapGameplaySeasonPlagueCardRelicTriggerRow {
 impl DataCfgRow for ConfigMapGameplaySeasonPlagueCardRelicTriggerRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_plague_card_relic_trigger";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1316,6 +1345,7 @@ pub struct ConfigMapGameplaySeasonPlagueEffectRow {
 }
 
 impl ConfigMapGameplaySeasonPlagueEffectRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1342,6 +1372,7 @@ impl ConfigMapGameplaySeasonPlagueEffectRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1360,6 +1391,7 @@ impl ConfigMapGameplaySeasonPlagueEffectRow {
 impl DataCfgRow for ConfigMapGameplaySeasonPlagueEffectRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_plague_effect";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1400,6 +1432,7 @@ pub struct ConfigMapGameplaySeasonPlagueMonsterModelRow {
 impl DataCfgRow for ConfigMapGameplaySeasonPlagueMonsterModelRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_plague_monster_model";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1454,6 +1487,7 @@ pub struct ConfigMapGameplaySeasonPlagueScoreTierRow {
 impl DataCfgRow for ConfigMapGameplaySeasonPlagueScoreTierRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_plague_score_tier";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1515,6 +1549,7 @@ pub struct ConfigMapGameplaySeasonRouletteRow {
 }
 
 impl ConfigMapGameplaySeasonRouletteRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1560,6 +1595,7 @@ impl ConfigMapGameplaySeasonRouletteRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1581,6 +1617,7 @@ impl ConfigMapGameplaySeasonRouletteRow {
 impl DataCfgRow for ConfigMapGameplaySeasonRouletteRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_roulette";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1615,6 +1652,7 @@ pub struct ConfigMapGameplaySeasonRouletteRaityRow {
 impl DataCfgRow for ConfigMapGameplaySeasonRouletteRaityRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_roulette_raity";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1655,6 +1693,7 @@ pub struct ConfigMapGameplaySeasonRouletteServantRow {
 impl DataCfgRow for ConfigMapGameplaySeasonRouletteServantRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_roulette_servant";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1715,6 +1754,7 @@ pub struct ConfigMapGameplaySeasonTycoonFacilityUpgradeRow {
 }
 
 impl ConfigMapGameplaySeasonTycoonFacilityUpgradeRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1758,6 +1798,7 @@ impl ConfigMapGameplaySeasonTycoonFacilityUpgradeRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1797,6 +1838,7 @@ impl ConfigMapGameplaySeasonTycoonFacilityUpgradeRow {
 impl DataCfgRow for ConfigMapGameplaySeasonTycoonFacilityUpgradeRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_tycoon_facility_upgrade";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1834,6 +1876,7 @@ pub struct ConfigMapGameplaySeasonTycoonFacilityUpgradeDataFixRow {
 impl DataCfgRow for ConfigMapGameplaySeasonTycoonFacilityUpgradeDataFixRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_tycoon_facility_upgrade_data_fix";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1888,6 +1931,7 @@ pub struct ConfigMapGameplaySeasonTycoonPillageRow {
 impl DataCfgRow for ConfigMapGameplaySeasonTycoonPillageRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_tycoon_pillage";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1963,6 +2007,7 @@ pub struct ConfigMapGameplaySeasonTycoonPillageEventRow {
 impl DataCfgRow for ConfigMapGameplaySeasonTycoonPillageEventRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_tycoon_pillage_event";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2025,6 +2070,7 @@ pub struct ConfigMapGameplaySeasonTycoonPillageTargetRow {
 }
 
 impl ConfigMapGameplaySeasonTycoonPillageTargetRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2066,6 +2112,7 @@ impl ConfigMapGameplaySeasonTycoonPillageTargetRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2090,6 +2137,7 @@ impl ConfigMapGameplaySeasonTycoonPillageTargetRow {
 impl DataCfgRow for ConfigMapGameplaySeasonTycoonPillageTargetRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_tycoon_pillage_target";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2133,6 +2181,7 @@ pub struct ConfigMapGameplaySeasonTycoonResourceRow {
 impl DataCfgRow for ConfigMapGameplaySeasonTycoonResourceRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_tycoon_resource";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2212,6 +2261,7 @@ pub struct ConfigMapGameplaySeasonTycoonTradePortRow {
 }
 
 impl ConfigMapGameplaySeasonTycoonTradePortRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2250,6 +2300,7 @@ impl ConfigMapGameplaySeasonTycoonTradePortRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2292,6 +2343,7 @@ impl ConfigMapGameplaySeasonTycoonTradePortRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_2(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2311,6 +2363,7 @@ impl ConfigMapGameplaySeasonTycoonTradePortRow {
 impl DataCfgRow for ConfigMapGameplaySeasonTycoonTradePortRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_tycoon_trade_port";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2357,6 +2410,7 @@ pub struct ConfigMapGameplaySeasonTycoonTradePortQuestRow {
 impl DataCfgRow for ConfigMapGameplaySeasonTycoonTradePortQuestRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_tycoon_trade_port_quest";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2435,6 +2489,7 @@ pub struct ConfigMapGameplaySeasonTycoonWorkerRow {
 }
 
 impl ConfigMapGameplaySeasonTycoonWorkerRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2477,6 +2532,7 @@ impl ConfigMapGameplaySeasonTycoonWorkerRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2506,6 +2562,7 @@ impl ConfigMapGameplaySeasonTycoonWorkerRow {
 impl DataCfgRow for ConfigMapGameplaySeasonTycoonWorkerRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_tycoon_worker";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2543,6 +2600,7 @@ pub struct ConfigMapGameplaySeasonTycoonWorkerIconRow {
 impl DataCfgRow for ConfigMapGameplaySeasonTycoonWorkerIconRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_tycoon_worker_icon";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -2584,6 +2642,7 @@ pub struct ConfigMapGameplaySeasonTycoonWorkerNameRow {
 impl DataCfgRow for ConfigMapGameplaySeasonTycoonWorkerNameRow {
     const TABLE_NAME: &'static str = "config_map_gameplay_season_tycoon_worker_name";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

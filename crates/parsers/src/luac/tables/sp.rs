@@ -78,6 +78,7 @@ pub struct ConfigSpAreaV2Row {
 }
 
 impl ConfigSpAreaV2Row {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -118,6 +119,7 @@ impl ConfigSpAreaV2Row {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -155,6 +157,7 @@ impl ConfigSpAreaV2Row {
 impl DataCfgRow for ConfigSpAreaV2Row {
     const TABLE_NAME: &'static str = "config_sp_area_v2";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -191,6 +194,7 @@ pub struct ConfigSpCardClassV2Row {
 impl DataCfgRow for ConfigSpCardClassV2Row {
     const TABLE_NAME: &'static str = "config_sp_card_class_v2";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -240,6 +244,7 @@ pub struct ConfigSpCardKeywordV2Row {
 }
 
 impl ConfigSpCardKeywordV2Row {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -264,6 +269,7 @@ impl ConfigSpCardKeywordV2Row {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -281,6 +287,7 @@ impl ConfigSpCardKeywordV2Row {
 impl DataCfgRow for ConfigSpCardKeywordV2Row {
     const TABLE_NAME: &'static str = "config_sp_card_keyword_v2";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -385,6 +392,7 @@ pub struct ConfigSpCardV2Row {
 }
 
 impl ConfigSpCardV2Row {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -417,6 +425,7 @@ impl ConfigSpCardV2Row {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -452,6 +461,7 @@ impl ConfigSpCardV2Row {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_2(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -481,6 +491,7 @@ impl ConfigSpCardV2Row {
 impl DataCfgRow for ConfigSpCardV2Row {
     const TABLE_NAME: &'static str = "config_sp_card_v2";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -528,6 +539,7 @@ pub struct ConfigSpCorrosionCombineRow {
 impl DataCfgRow for ConfigSpCorrosionCombineRow {
     const TABLE_NAME: &'static str = "config_sp_corrosion_combine";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -614,6 +626,7 @@ pub struct ConfigSpGameplaybossCombineRow {
 impl DataCfgRow for ConfigSpGameplaybossCombineRow {
     const TABLE_NAME: &'static str = "config_sp_gameplayboss_combine";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -671,6 +684,7 @@ pub struct ConfigSpGameplaybossListRow {
 impl DataCfgRow for ConfigSpGameplaybossListRow {
     const TABLE_NAME: &'static str = "config_sp_gameplayboss_list";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -721,6 +735,7 @@ pub struct ConfigSpGameplaybossSocketRow {
 impl DataCfgRow for ConfigSpGameplaybossSocketRow {
     const TABLE_NAME: &'static str = "config_sp_gameplayboss_socket";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -770,6 +785,7 @@ pub struct ConfigSpGuideChapterV2Row {
 impl DataCfgRow for ConfigSpGuideChapterV2Row {
     const TABLE_NAME: &'static str = "config_sp_guide_chapter_v2";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -817,6 +833,7 @@ pub struct ConfigSpGuideTaskV2Row {
 impl DataCfgRow for ConfigSpGuideTaskV2Row {
     const TABLE_NAME: &'static str = "config_sp_guide_task_v2";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -896,6 +913,7 @@ pub struct ConfigSpTreeClusterRow {
 }
 
 impl ConfigSpTreeClusterRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -930,6 +948,7 @@ impl ConfigSpTreeClusterRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -956,6 +975,7 @@ impl ConfigSpTreeClusterRow {
 impl DataCfgRow for ConfigSpTreeClusterRow {
     const TABLE_NAME: &'static str = "config_sp_tree_cluster";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1067,6 +1087,7 @@ pub struct ConfigSpTreeNodeRow {
 }
 
 impl ConfigSpTreeNodeRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1104,6 +1125,7 @@ impl ConfigSpTreeNodeRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1123,6 +1145,7 @@ impl ConfigSpTreeNodeRow {
 impl DataCfgRow for ConfigSpTreeNodeRow {
     const TABLE_NAME: &'static str = "config_sp_tree_node";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1163,6 +1186,7 @@ pub struct ConfigSpUnlockV2Row {
 impl DataCfgRow for ConfigSpUnlockV2Row {
     const TABLE_NAME: &'static str = "config_sp_unlock_v2";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1244,6 +1268,7 @@ pub struct ConfigSpWorldBossV2Row {
 }
 
 impl ConfigSpWorldBossV2Row {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1276,6 +1301,7 @@ impl ConfigSpWorldBossV2Row {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -1310,6 +1336,7 @@ impl ConfigSpWorldBossV2Row {
 impl DataCfgRow for ConfigSpWorldBossV2Row {
     const TABLE_NAME: &'static str = "config_sp_world_boss_v2";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

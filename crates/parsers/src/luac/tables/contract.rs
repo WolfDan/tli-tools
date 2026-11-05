@@ -16,6 +16,7 @@ pub struct ConfigContractLevelRow {
 impl DataCfgRow for ConfigContractLevelRow {
     const TABLE_NAME: &'static str = "config_contract_level";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -60,6 +61,7 @@ pub struct ConfigContractPointTattooSlotRow {
 impl DataCfgRow for ConfigContractPointTattooSlotRow {
     const TABLE_NAME: &'static str = "config_contract_point_tattoo_slot";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -129,6 +131,7 @@ pub struct ConfigContractPointUiContentRow {
 impl DataCfgRow for ConfigContractPointUiContentRow {
     const TABLE_NAME: &'static str = "config_contract_point_ui_content";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,

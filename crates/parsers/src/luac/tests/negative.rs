@@ -2,12 +2,12 @@ use crate::luac::opcode::LuaOpcode;
 use crate::luac::tests::{
     TestConst, TestProto, build_xdi_chunk, encode_xdi_abc, encode_xdi_abx, encode_xdi_ax,
 };
-use crate::luac::transpile::transpile_to_lua53_into;
+use crate::luac::transpile::{ChunkArenas, load_chunk_into};
 use crate::luac::types::{LUA53_HEADER, XDI_MAGIC};
 use crate::luac::{
     DataCfgError, DataCfgLimits, DataCfgRow, DataCfgScratch, DataTable, DecompileConfig,
-    DecompileScratch, EvalContext, EvalVal, LuacError, LuacLimits, decompile_luac,
-    parse_luatable_datacfg,
+    DecompileError, DecompileScratch, DecompiledChunkKind, EvalContext, EvalVal, LuacError,
+    LuacLimits, decompile_luac, parse_luatable_datacfg,
 };
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -56,13 +56,13 @@ fn reject_truncated_buffers() {
     let mut proto = TestProto::new();
     proto.code = vec![encode_xdi_abc(LuaOpcode::Return, 0, 1, 0)];
     let full = build_xdi_chunk(&proto);
+    let mut arenas = ChunkArenas::with_limits(LuacLimits::DEFAULT);
 
     let full_len = crate::bounded_len_u32(full.len());
     for cut in [0_u32, 4, 9, 10, 15, full_len - 1] {
-        let mut out = crate::FixedVec::with_capacity(4096);
-        let err = transpile_to_lua53_into(
+        let err = load_chunk_into(
             &full[..crate::u32_to_usize(cut)],
-            &mut out,
+            &mut arenas,
             LuacLimits::DEFAULT,
         )
         .unwrap_err();
@@ -79,12 +79,12 @@ fn reject_truncated_buffers() {
 
 #[test]
 fn reject_invalid_xdi_and_lua53_string_tags_and_lengths() {
+    let mut arenas = ChunkArenas::with_limits(LuacLimits::DEFAULT);
     for bad_tag in 1..=9_u8 {
         let mut buf = Vec::from(XDI_MAGIC);
         buf.push(1); // main_upvalues
         buf.push(bad_tag);
-        let mut out = crate::FixedVec::with_capacity(4096);
-        let err = transpile_to_lua53_into(&buf, &mut out, LuacLimits::DEFAULT).unwrap_err();
+        let err = load_chunk_into(&buf, &mut arenas, LuacLimits::DEFAULT).unwrap_err();
         assert!(matches!(
             err,
             LuacError::InvalidXdiStringTag { tag, .. } if tag == bad_tag
@@ -96,8 +96,7 @@ fn reject_invalid_xdi_and_lua53_string_tags_and_lengths() {
         buf.push(1);
         buf.push(0xFF);
         buf.extend_from_slice(&bad_raw_len.to_le_bytes());
-        let mut out = crate::FixedVec::with_capacity(4096);
-        let err = transpile_to_lua53_into(&buf, &mut out, LuacLimits::DEFAULT).unwrap_err();
+        let err = load_chunk_into(&buf, &mut arenas, LuacLimits::DEFAULT).unwrap_err();
         assert!(matches!(
             err,
             LuacError::InvalidXdiLongStringLength { raw_len, .. } if raw_len == bad_raw_len
@@ -109,8 +108,7 @@ fn reject_invalid_xdi_and_lua53_string_tags_and_lengths() {
     lua53_buf.push(1);
     lua53_buf.push(0xFF);
     lua53_buf.extend_from_slice(&0_u64.to_le_bytes());
-    let mut out = crate::FixedVec::with_capacity(4096);
-    let err = transpile_to_lua53_into(&lua53_buf, &mut out, LuacLimits::DEFAULT).unwrap_err();
+    let err = load_chunk_into(&lua53_buf, &mut arenas, LuacLimits::DEFAULT).unwrap_err();
     assert!(matches!(
         err,
         LuacError::InvalidLua53StringLength { raw_len: 0, .. }
@@ -119,6 +117,7 @@ fn reject_invalid_xdi_and_lua53_string_tags_and_lengths() {
 
 #[test]
 fn reject_null_constant_string_invalid_const_tag_and_nan_float() {
+    let mut arenas = ChunkArenas::with_limits(LuacLimits::DEFAULT);
     for str_tag in [0x04_u8, 0x14_u8] {
         let mut buf = Vec::from(XDI_MAGIC);
         buf.push(1);
@@ -128,8 +127,7 @@ fn reject_null_constant_string_invalid_const_tag_and_nan_float() {
         buf.extend_from_slice(&1_u32.to_le_bytes()); // size_k = 1
         buf.push(str_tag);
         buf.push(0x00); // null string inside constant pool
-        let mut out = crate::FixedVec::with_capacity(4096);
-        let err = transpile_to_lua53_into(&buf, &mut out, LuacLimits::DEFAULT).unwrap_err();
+        let err = load_chunk_into(&buf, &mut arenas, LuacLimits::DEFAULT).unwrap_err();
         assert!(matches!(
             err,
             LuacError::NullConstantString { tag, .. } if tag == str_tag
@@ -144,8 +142,7 @@ fn reject_null_constant_string_invalid_const_tag_and_nan_float() {
     buf.extend_from_slice(&0_u32.to_le_bytes());
     buf.extend_from_slice(&1_u32.to_le_bytes());
     buf.push(0x99);
-    let mut out = crate::FixedVec::with_capacity(4096);
-    let err = transpile_to_lua53_into(&buf, &mut out, LuacLimits::DEFAULT).unwrap_err();
+    let err = load_chunk_into(&buf, &mut arenas, LuacLimits::DEFAULT).unwrap_err();
     assert!(matches!(
         err,
         LuacError::InvalidConstantTag { tag: 0x99, .. }
@@ -157,20 +154,19 @@ fn reject_null_constant_string_invalid_const_tag_and_nan_float() {
         proto.consts = vec![TestConst::Float(bad_float)];
         proto.code = vec![encode_xdi_abc(LuaOpcode::Return, 0, 1, 0)];
         let chunk = build_xdi_chunk(&proto);
-        let mut out = crate::FixedVec::with_capacity(4096);
-        let err = transpile_to_lua53_into(&chunk, &mut out, LuacLimits::DEFAULT).unwrap_err();
+        let err = load_chunk_into(&chunk, &mut arenas, LuacLimits::DEFAULT).unwrap_err();
         assert!(matches!(err, LuacError::NonFiniteFloatConstant { .. }));
     }
 }
 
 #[test]
 fn reject_invalid_opcodes_and_trailing_bytes() {
+    let mut arenas = ChunkArenas::with_limits(LuacLimits::DEFAULT);
     for raw_op in 47..=63_u8 {
         let mut proto = TestProto::new();
         proto.code = vec![u32::from(raw_op) << 26];
         let chunk = build_xdi_chunk(&proto);
-        let mut out = crate::FixedVec::with_capacity(4096);
-        let err = transpile_to_lua53_into(&chunk, &mut out, LuacLimits::DEFAULT).unwrap_err();
+        let err = load_chunk_into(&chunk, &mut arenas, LuacLimits::DEFAULT).unwrap_err();
         assert!(matches!(
             err,
             LuacError::InvalidXdiOpcode { raw_op: op, .. } if op == raw_op
@@ -181,9 +177,163 @@ fn reject_invalid_opcodes_and_trailing_bytes() {
     proto.code = vec![encode_xdi_abc(LuaOpcode::Return, 0, 1, 0)];
     let mut chunk = build_xdi_chunk(&proto);
     chunk.push(0xAA);
-    let mut out = crate::FixedVec::with_capacity(4096);
-    let err = transpile_to_lua53_into(&chunk, &mut out, LuacLimits::DEFAULT).unwrap_err();
+    let err = load_chunk_into(&chunk, &mut arenas, LuacLimits::DEFAULT).unwrap_err();
     assert!(matches!(err, LuacError::TrailingBytes { .. }));
+}
+
+#[test]
+fn reject_decompile_strict_mode_out_of_bounds_const_and_upvalue() {
+    let strict_cfg = DecompileConfig::DEFAULT.with_strict_mode(true);
+    let perm_cfg = DecompileConfig::DEFAULT.with_strict_mode(false);
+    let mut scratch = DecompileScratch::with_limits(strict_cfg.limits());
+    let mut run_inst = |inst: u32, cfg: &DecompileConfig| {
+        let mut p = TestProto::new();
+        p.code = vec![inst, encode_xdi_abc(LuaOpcode::Return, 0, 2, 0)];
+        let mut chunk = build_xdi_chunk(&p);
+        decompile_luac(&mut chunk, &mut scratch, cfg)
+    };
+
+    for bad_const_inst in [
+        encode_xdi_abx(LuaOpcode::LoadK, 0, 5),
+        encode_xdi_abc(LuaOpcode::Add, 0, 0, 0x100 | 5),
+    ] {
+        let err_const = run_inst(bad_const_inst, &strict_cfg).unwrap_err();
+        assert!(matches!(
+            err_const,
+            LuacError::Decompile {
+                source: DecompileError::ConstantIndexOutOfBounds {
+                    proto_index: 0,
+                    pc: 0,
+                    index: 5,
+                    count: 0,
+                }
+            }
+        ));
+        let perm_const = run_inst(bad_const_inst, &perm_cfg).unwrap();
+        assert_eq!(perm_const.kind(), DecompiledChunkKind::DiagnosticPseudocode);
+    }
+
+    let up_inst = encode_xdi_abc(LuaOpcode::GetUpval, 0, 9, 0);
+    let err_up = run_inst(up_inst, &strict_cfg).unwrap_err();
+    assert!(matches!(
+        err_up,
+        LuacError::Decompile {
+            source: DecompileError::UpvalueIndexOutOfBounds {
+                proto_index: 0,
+                pc: 0,
+                index: 9,
+                count: 1,
+            }
+        }
+    ));
+    assert_eq!(
+        run_inst(up_inst, &perm_cfg).unwrap().kind(),
+        DecompiledChunkKind::DiagnosticPseudocode
+    );
+}
+
+#[test]
+fn reject_decompile_strict_mode_out_of_bounds_child_and_missing_extraarg() {
+    let strict_cfg = DecompileConfig::DEFAULT.with_strict_mode(true);
+    let perm_cfg = DecompileConfig::DEFAULT.with_strict_mode(false);
+    let mut scratch = DecompileScratch::with_limits(strict_cfg.limits());
+
+    let mut p_child = TestProto::new();
+    p_child.code = vec![
+        encode_xdi_abx(LuaOpcode::Closure, 0, 3),
+        encode_xdi_abc(LuaOpcode::Return, 0, 2, 0),
+    ];
+    let mut chunk_child = build_xdi_chunk(&p_child);
+    let err_child = decompile_luac(&mut chunk_child, &mut scratch, &strict_cfg).unwrap_err();
+    assert!(matches!(
+        err_child,
+        LuacError::Decompile {
+            source: DecompileError::ChildProtoIndexOutOfBounds {
+                proto_index: 0,
+                pc: 0,
+                index: 3,
+                count: 0,
+            }
+        }
+    ));
+    assert_eq!(
+        decompile_luac(&mut chunk_child, &mut scratch, &perm_cfg)
+            .unwrap()
+            .kind(),
+        DecompiledChunkKind::DiagnosticPseudocode
+    );
+
+    for code in [
+        vec![encode_xdi_abx(LuaOpcode::LoadKx, 0, 0)],
+        vec![
+            encode_xdi_abx(LuaOpcode::LoadKx, 0, 0),
+            encode_xdi_abc(LuaOpcode::Return, 0, 2, 0),
+        ],
+    ] {
+        let mut p_kx = TestProto::new();
+        p_kx.code = code;
+        let mut chunk_kx = build_xdi_chunk(&p_kx);
+        let err_kx = decompile_luac(&mut chunk_kx, &mut scratch, &strict_cfg).unwrap_err();
+        assert!(matches!(
+            err_kx,
+            LuacError::Decompile {
+                source: DecompileError::MissingExtraArg {
+                    proto_index: 0,
+                    pc: 0,
+                }
+            }
+        ));
+        assert_eq!(
+            decompile_luac(&mut chunk_kx, &mut scratch, &perm_cfg)
+                .unwrap()
+                .kind(),
+            DecompiledChunkKind::DiagnosticPseudocode
+        );
+    }
+}
+
+#[test]
+fn reject_decompile_unmatched_loop_end_and_invalid_utf8() {
+    let strict_cfg = DecompileConfig::DEFAULT.with_strict_mode(true);
+    let perm_cfg = DecompileConfig::DEFAULT.with_strict_mode(false);
+    let mut scratch = DecompileScratch::with_limits(strict_cfg.limits());
+
+    for loop_op in [LuaOpcode::ForLoop, LuaOpcode::TForLoop] {
+        let mut p = TestProto::new();
+        p.code = vec![
+            encode_xdi_abx(loop_op, 0, 131_071),
+            encode_xdi_abc(LuaOpcode::Return, 0, 1, 0),
+        ];
+        let mut chunk = build_xdi_chunk(&p);
+        let err = decompile_luac(&mut chunk, &mut scratch, &strict_cfg).unwrap_err();
+        assert!(matches!(
+            err,
+            LuacError::Decompile {
+                source: DecompileError::UnmatchedBlockEnd {
+                    proto_index: 0,
+                    pc: 0,
+                }
+            }
+        ));
+        let perm = decompile_luac(&mut chunk, &mut scratch, &perm_cfg).unwrap();
+        assert_eq!(perm.kind(), DecompiledChunkKind::DiagnosticPseudocode);
+    }
+
+    // Non-UTF-8 string constant and local variable name
+    let mut p_utf8 = TestProto::new();
+    p_utf8.consts = vec![TestConst::Str(vec![0xFF, 0xFE])];
+    p_utf8.loc_vars = vec![(vec![0xFF, 0xFE], 0, 2)];
+    p_utf8.code = vec![
+        encode_xdi_abx(LuaOpcode::LoadK, 0, 0),
+        encode_xdi_abc(LuaOpcode::Return, 0, 2, 0),
+    ];
+    let mut chunk_utf8 = build_xdi_chunk(&p_utf8);
+    let err_utf8 = decompile_luac(&mut chunk_utf8, &mut scratch, &strict_cfg).unwrap_err();
+    assert!(matches!(err_utf8, LuacError::InvalidUtf8 { .. }));
+
+    let perm_utf8 = decompile_luac(&mut chunk_utf8, &mut scratch, &perm_cfg).unwrap();
+    assert_eq!(perm_utf8.kind(), DecompiledChunkKind::DiagnosticPseudocode);
+    assert!(perm_utf8.source().contains("\\xFF\\xFE"));
 }
 
 fn build_single_row_chunk(field_name: &[u8], val: TestConst) -> Vec<u8> {

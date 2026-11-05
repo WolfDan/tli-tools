@@ -467,6 +467,7 @@ impl<'a, 's> EvalContext<'a, 's> {
     }
 
     /// Decodes a `{ Key = K, Value = V }` Lua sub-table into `(K, V)`.
+    #[inline(never)]
     pub(crate) fn decode_kv_pair<K: FromEvalVal + Default, V: FromEvalVal + Default>(
         &self,
         val: EvalVal,
@@ -620,7 +621,7 @@ impl FromEvalVal for f64 {
 }
 
 impl FromEvalVal for Box<str> {
-    #[inline]
+    #[inline(never)]
     fn from_eval_val(
         ctx: &EvalContext<'_, '_>,
         val: EvalVal,
@@ -668,7 +669,7 @@ impl FromEvalVal for [u8; 0] {
 }
 
 impl<T: FromEvalVal> FromEvalVal for Box<[T]> {
-    #[inline]
+    #[inline(never)]
     fn from_eval_val(
         ctx: &EvalContext<'_, '_>,
         val: EvalVal,
@@ -693,6 +694,7 @@ impl<T: FromEvalVal> FromEvalVal for Box<[T]> {
 }
 
 impl<K: FromEvalVal + Eq + Hash, V: FromEvalVal> FromEvalVal for FxHashMap<K, V> {
+    #[inline(never)]
     fn from_eval_val(
         ctx: &EvalContext<'_, '_>,
         val: EvalVal,
@@ -1266,6 +1268,7 @@ fn eval_datacfg_instructions(
     Ok(regs)
 }
 
+#[inline]
 fn apply_map_to_row<Row: DataCfgRow>(
     ctx: &EvalContext<'_, '_>,
     tid: u32,
@@ -1286,6 +1289,24 @@ fn apply_map_to_row<Row: DataCfgRow>(
     Ok(())
 }
 
+#[inline]
+fn clone_and_apply_row<Row: DataCfgRow>(
+    ctx: &EvalContext<'_, '_>,
+    base_row: &Row,
+    row_val: EvalVal,
+) -> Result<Row, LuacError> {
+    let EvalVal::Table(row_tid) = row_val else {
+        return Err(DataCfgError::ExpectedTable {
+            context: Row::TABLE_NAME,
+        }
+        .into());
+    };
+    let mut row = base_row.clone();
+    apply_map_to_row(ctx, row_tid, &mut row)?;
+    Ok(row)
+}
+
+#[inline(never)]
 fn decode_language_keys(ctx: &EvalContext<'_, '_>, tid: u32) -> Result<Box<[Box<str>]>, LuacError> {
     let tbl = ctx.table(tid);
     let entries = ctx.map_slice(tbl, "language_key")?;
@@ -1305,15 +1326,18 @@ fn decode_language_keys(ctx: &EvalContext<'_, '_>, tid: u32) -> Result<Box<[Box<
     Ok(keys.into_boxed_slice())
 }
 
-/// Evaluates a single-level `LuaTable/DataCfg/config_*.out` buffer into `DataTable<K, Row>`.
-pub(crate) fn parse_luatable_datacfg<K, Row>(
+struct LuaTableRoot {
+    r0_tid: u32,
+    r1_tid: u32,
+    r2_tid: u32,
+    language_keys: Box<[Box<str>]>,
+}
+
+#[inline(never)]
+fn eval_luatable_root(
     buf: &mut [u8],
     scratch: &mut DataCfgScratch,
-) -> Result<DataTable<K, Row>, LuacError>
-where
-    K: FromEvalVal + Eq + Hash,
-    Row: DataCfgRow,
-{
+) -> Result<LuaTableRoot, LuacError> {
     let _cipher = decrypt_luac_in_place(buf);
     scratch.reset();
     let mut cur = WireCursor::new(buf)?;
@@ -1333,28 +1357,47 @@ where
     let EvalVal::Table(r3_tid) = regs[3] else {
         return Err(DataCfgError::ExpectedTable { context: "R[3]" }.into());
     };
-
     let ctx = EvalContext { buf, scratch };
-    let mut most_row = Row::default();
-    apply_map_to_row(&ctx, r1_tid, &mut most_row)?;
-
-    let mut default_row = most_row.clone();
-    apply_map_to_row(&ctx, r2_tid, &mut default_row)?;
-
     let language_keys = decode_language_keys(&ctx, r3_tid)?;
+    Ok(LuaTableRoot {
+        r0_tid,
+        r1_tid,
+        r2_tid,
+        language_keys,
+    })
+}
 
-    let r0_entries = ctx.map_slice(ctx.table(r0_tid), Row::TABLE_NAME)?;
+#[inline(never)]
+fn eval_preload_root(buf: &mut [u8], scratch: &mut DataCfgScratch) -> Result<EvalVal, LuacError> {
+    let _cipher = decrypt_luac_in_place(buf);
+    scratch.reset();
+    let mut cur = WireCursor::new(buf)?;
+    let (is_xdi, _upvals) = read_chunk_header(&mut cur)?;
+    load_root_proto_into_scratch(&mut cur, is_xdi, scratch)?;
+    let regs = eval_datacfg_instructions(scratch, 1)?;
+    Ok(regs[0])
+}
+
+/// Evaluates a single-level `LuaTable/DataCfg/config_*.out` buffer into `DataTable<K, Row>`.
+#[inline]
+pub(crate) fn parse_luatable_datacfg<K, Row>(
+    buf: &mut [u8],
+    scratch: &mut DataCfgScratch,
+) -> Result<DataTable<K, Row>, LuacError>
+where
+    K: FromEvalVal + Eq + Hash,
+    Row: DataCfgRow,
+{
+    let root = eval_luatable_root(buf, scratch)?;
+    let ctx = EvalContext { buf, scratch };
+    let most_row = clone_and_apply_row(&ctx, &Row::default(), EvalVal::Table(root.r1_tid))?;
+    let default_row = clone_and_apply_row(&ctx, &most_row, EvalVal::Table(root.r2_tid))?;
+
+    let r0_entries = ctx.map_slice(ctx.table(root.r0_tid), Row::TABLE_NAME)?;
     let mut rows = FxHashMap::with_capacity_and_hasher(r0_entries.len(), FxBuildHasher);
     for &(k_val, row_val) in r0_entries {
         let key = K::from_eval_val(&ctx, k_val, Row::TABLE_NAME, "<row_key>")?;
-        let EvalVal::Table(row_tid) = row_val else {
-            return Err(DataCfgError::ExpectedTable {
-                context: Row::TABLE_NAME,
-            }
-            .into());
-        };
-        let mut row = most_row.clone();
-        apply_map_to_row(&ctx, row_tid, &mut row)?;
+        let row = clone_and_apply_row(&ctx, &most_row, row_val)?;
         rows.insert(key, row);
     }
 
@@ -1362,7 +1405,7 @@ where
         rows,
         most_row,
         default_row,
-        language_keys,
+        language_keys: root.language_keys,
     })
 }
 
@@ -1397,14 +1440,7 @@ where
             };
             for &(k3_val, row_val) in ctx.map_slice(ctx.table(l2_tid), Row::TABLE_NAME)? {
                 let k3 = K3::from_eval_val(ctx, k3_val, Row::TABLE_NAME, "<key3>")?;
-                let EvalVal::Table(row_tid) = row_val else {
-                    return Err(DataCfgError::ExpectedTable {
-                        context: Row::TABLE_NAME,
-                    }
-                    .into());
-                };
-                let mut row = most_row.clone();
-                apply_map_to_row(ctx, row_tid, &mut row)?;
+                let row = clone_and_apply_row(ctx, most_row, row_val)?;
                 rows.insert((k1, k2, k3), row);
             }
         }
@@ -1413,6 +1449,7 @@ where
 }
 
 /// Evaluates a 3-level `LuaTable/DataCfg` (`config_map_gameplay_season_doll_text_display.out`) into `DataTable<(K1, K2, K3), Row>`.
+#[inline]
 pub(crate) fn parse_luatable_datacfg_3d<K1, K2, K3, Row>(
     buf: &mut [u8],
     scratch: &mut DataCfgScratch,
@@ -1423,43 +1460,22 @@ where
     K3: FromEvalVal + Eq + Hash + Copy,
     Row: DataCfgRow,
 {
-    let _cipher = decrypt_luac_in_place(buf);
-    scratch.reset();
-    let mut cur = WireCursor::new(buf)?;
-    let (is_xdi, _upvals) = read_chunk_header(&mut cur)?;
-    load_root_proto_into_scratch(&mut cur, is_xdi, scratch)?;
-    let regs = eval_datacfg_instructions(scratch, 4)?;
-
-    let (
-        EvalVal::Table(r0_tid),
-        EvalVal::Table(r1_tid),
-        EvalVal::Table(r2_tid),
-        EvalVal::Table(r3_tid),
-    ) = (regs[0], regs[1], regs[2], regs[3])
-    else {
-        return Err(DataCfgError::ExpectedTable {
-            context: "R[0..=3]",
-        }
-        .into());
-    };
-
+    let root = eval_luatable_root(buf, scratch)?;
     let ctx = EvalContext { buf, scratch };
-    let mut most_row = Row::default();
-    apply_map_to_row(&ctx, r1_tid, &mut most_row)?;
-    let mut default_row = most_row.clone();
-    apply_map_to_row(&ctx, r2_tid, &mut default_row)?;
-    let language_keys = decode_language_keys(&ctx, r3_tid)?;
-    let rows = decode_3d_rows(&ctx, r0_tid, &most_row)?;
+    let most_row = clone_and_apply_row(&ctx, &Row::default(), EvalVal::Table(root.r1_tid))?;
+    let default_row = clone_and_apply_row(&ctx, &most_row, EvalVal::Table(root.r2_tid))?;
+    let rows = decode_3d_rows(&ctx, root.r0_tid, &most_row)?;
 
     Ok(DataTable {
         rows,
         most_row,
         default_row,
-        language_keys,
+        language_keys: root.language_keys,
     })
 }
 
 /// Evaluates a 1-level `LuaPreLoadTable/DataCfg/config_preload_*.out` map buffer into `PreloadTable<K, V>`.
+#[inline]
 pub(crate) fn parse_preload_map<K, V>(
     buf: &mut [u8],
     scratch: &mut DataCfgScratch,
@@ -1469,14 +1485,8 @@ where
     K: FromEvalVal + Eq + Hash,
     V: FromEvalVal,
 {
-    let _cipher = decrypt_luac_in_place(buf);
-    scratch.reset();
-    let mut cur = WireCursor::new(buf)?;
-    let (is_xdi, _upvals) = read_chunk_header(&mut cur)?;
-    load_root_proto_into_scratch(&mut cur, is_xdi, scratch)?;
-    let regs = eval_datacfg_instructions(scratch, 1)?;
-
-    let EvalVal::Table(r0_tid) = regs[0] else {
+    let r0_val = eval_preload_root(buf, scratch)?;
+    let EvalVal::Table(r0_tid) = r0_val else {
         return Err(DataCfgError::ExpectedTable { context: "R[0]" }.into());
     };
     let ctx = EvalContext { buf, scratch };
@@ -1491,6 +1501,7 @@ where
 }
 
 /// Evaluates a 2-level `LuaPreLoadTable/DataCfg/config_preload_*.out` map buffer into `PreloadTable<(K1, K2), V>`.
+#[inline]
 pub(crate) fn parse_preload_map_2d<K1, K2, V>(
     buf: &mut [u8],
     scratch: &mut DataCfgScratch,
@@ -1501,14 +1512,8 @@ where
     K2: FromEvalVal + Eq + Hash + Copy,
     V: FromEvalVal,
 {
-    let _cipher = decrypt_luac_in_place(buf);
-    scratch.reset();
-    let mut cur = WireCursor::new(buf)?;
-    let (is_xdi, _upvals) = read_chunk_header(&mut cur)?;
-    load_root_proto_into_scratch(&mut cur, is_xdi, scratch)?;
-    let regs = eval_datacfg_instructions(scratch, 1)?;
-
-    let EvalVal::Table(r0_tid) = regs[0] else {
+    let r0_val = eval_preload_root(buf, scratch)?;
+    let EvalVal::Table(r0_tid) = r0_val else {
         return Err(DataCfgError::ExpectedTable { context: "R[0]" }.into());
     };
     let ctx = EvalContext { buf, scratch };
@@ -1532,6 +1537,7 @@ where
 }
 
 /// Evaluates a list-based `LuaPreLoadTable/DataCfg/config_preload_*.out` buffer into `Box<[T]>`.
+#[inline]
 pub(crate) fn parse_preload_list<T>(
     buf: &mut [u8],
     scratch: &mut DataCfgScratch,
@@ -1540,13 +1546,7 @@ pub(crate) fn parse_preload_list<T>(
 where
     T: FromEvalVal,
 {
-    let _cipher = decrypt_luac_in_place(buf);
-    scratch.reset();
-    let mut cur = WireCursor::new(buf)?;
-    let (is_xdi, _upvals) = read_chunk_header(&mut cur)?;
-    load_root_proto_into_scratch(&mut cur, is_xdi, scratch)?;
-    let regs = eval_datacfg_instructions(scratch, 1)?;
-
+    let r0_val = eval_preload_root(buf, scratch)?;
     let ctx = EvalContext { buf, scratch };
-    Box::<[T]>::from_eval_val(&ctx, regs[0], table_name, "<root_list>")
+    Box::<[T]>::from_eval_val(&ctx, r0_val, table_name, "<root_list>")
 }

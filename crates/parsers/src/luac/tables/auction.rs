@@ -22,6 +22,7 @@ pub struct ConfigAuctionGoodsnumRow {
 impl DataCfgRow for ConfigAuctionGoodsnumRow {
     const TABLE_NAME: &'static str = "config_auction_goodsnum";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -67,6 +68,7 @@ pub struct ConfigAuctionMenuRow {
 impl DataCfgRow for ConfigAuctionMenuRow {
     const TABLE_NAME: &'static str = "config_auction_menu";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -107,6 +109,7 @@ pub struct ConfigAuctionTaxRow {
 impl DataCfgRow for ConfigAuctionTaxRow {
     const TABLE_NAME: &'static str = "config_auction_tax";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -154,6 +157,7 @@ pub struct ConfigAuctionhouseConditionlistRow {
 impl DataCfgRow for ConfigAuctionhouseConditionlistRow {
     const TABLE_NAME: &'static str = "config_auctionhouse_conditionlist";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -258,6 +262,7 @@ pub struct ConfigAuctionhouseDetailSearchRow {
 }
 
 impl ConfigAuctionhouseDetailSearchRow {
+    #[inline(never)]
     fn set_field_0(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -308,6 +313,7 @@ impl ConfigAuctionhouseDetailSearchRow {
         Ok(true)
     }
 
+    #[inline(never)]
     fn set_field_1(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -334,6 +340,7 @@ impl ConfigAuctionhouseDetailSearchRow {
 impl DataCfgRow for ConfigAuctionhouseDetailSearchRow {
     const TABLE_NAME: &'static str = "config_auctionhouse_detail_search";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -371,6 +378,7 @@ pub struct ConfigAuctionhouseDetailSearchTagRow {
 impl DataCfgRow for ConfigAuctionhouseDetailSearchTagRow {
     const TABLE_NAME: &'static str = "config_auctionhouse_detail_search_tag";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -415,6 +423,7 @@ pub struct ConfigAuctionhouseInvalidItemidRow {
 impl DataCfgRow for ConfigAuctionhouseInvalidItemidRow {
     const TABLE_NAME: &'static str = "config_auctionhouse_invalid_itemid";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -463,6 +472,7 @@ pub struct ConfigAuctionhouseInvalidItemtypeRow {
 impl DataCfgRow for ConfigAuctionhouseInvalidItemtypeRow {
     const TABLE_NAME: &'static str = "config_auctionhouse_invalid_itemtype";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -514,6 +524,7 @@ pub struct ConfigAuctionhouseRoughSearchRow {
 impl DataCfgRow for ConfigAuctionhouseRoughSearchRow {
     const TABLE_NAME: &'static str = "config_auctionhouse_rough_search";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
@@ -565,6 +576,7 @@ pub struct ConfigAuctionhouseTaxrebateRow {
 impl DataCfgRow for ConfigAuctionhouseTaxrebateRow {
     const TABLE_NAME: &'static str = "config_auctionhouse_taxrebate";
 
+    #[inline(never)]
     fn set_field(
         &mut self,
         ctx: &EvalContext<'_, '_>,
