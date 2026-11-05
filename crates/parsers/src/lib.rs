@@ -3,6 +3,7 @@
 pub mod luac;
 
 const _: () = assert!(usize::BITS >= 32);
+const _: () = assert!(usize::BITS <= 64);
 
 /// Converts a `u32` into `usize` without loss on 32-bit or 64-bit targets.
 ///

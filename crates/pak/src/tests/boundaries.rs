@@ -185,10 +185,15 @@ fn mount_point_bytes_boundaries() {
 
 #[test]
 fn pak_limits_constructor_boundaries() {
-    assert!(PakLimits::try_new(0, 1, 1, 1).is_err());
-    assert!(PakLimits::try_new(1, 0, 1, 1).is_err());
-    assert!(PakLimits::try_new(1, 1, 0, 1).is_err());
-    assert!(PakLimits::try_new(1, 1, 1, 0).is_err());
+    for (idx_b, ent_c, blk_c, unc_b) in [(0, 1, 1, 1), (1, 0, 1, 1), (1, 1, 0, 1), (1, 1, 1, 0)] {
+        assert!(matches!(
+            PakLimits::try_new(idx_b, ent_c, blk_c, unc_b),
+            Err(PakError::LimitExceeded {
+                kind: LimitKind::LimitsConfig,
+                ..
+            })
+        ));
+    }
 
     PakLimits::try_new(1, ENTRIES_COUNT_HARD_MAX - 1, 1, 1).expect("HARD_MAX - 1 valid");
     PakLimits::try_new(1, ENTRIES_COUNT_HARD_MAX, 1, 1).expect("HARD_MAX valid");
@@ -272,8 +277,15 @@ fn pak_limits_enforcement_exact_transitions() {
 
 #[test]
 fn scratch_limits_and_capacity_boundaries() {
-    assert!(ScratchLimits::try_new(0, 0).is_err());
-    assert!(ScratchLimits::try_new(65, 64).is_err());
+    for (initial_cap, max_cap) in [(0, 0), (65, 64)] {
+        assert!(matches!(
+            ScratchLimits::try_new(initial_cap, max_cap),
+            Err(PakError::LimitExceeded {
+                kind: LimitKind::LimitsConfig,
+                ..
+            })
+        ));
+    }
     ScratchLimits::try_new(0, 1).expect("0..=1 valid");
     ScratchLimits::try_new(64, 64).expect("64..=64 valid");
 

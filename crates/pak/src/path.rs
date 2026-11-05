@@ -40,14 +40,9 @@ fn normalize_fold_char(ch: char) -> char {
 pub(crate) fn compute_ue4_path_hash(rel_path: &str, seed: u64) -> Result<PathHash, PakError> {
     let trimmed = trim_leading_separators(rel_path);
     if trimmed.len() > u32_to_usize(PATH_BYTES_MAX) {
-        let actual = u64::try_from(trimmed.len()).map_err(|_| PakError::LimitExceeded {
-            kind: LimitKind::PathBytes,
-            actual: u64::MAX,
-            max: u64::from(PATH_BYTES_MAX),
-        })?;
         return Err(PakError::LimitExceeded {
             kind: LimitKind::PathBytes,
-            actual,
+            actual: trimmed.len() as u64,
             max: u64::from(PATH_BYTES_MAX),
         });
     }
@@ -145,14 +140,9 @@ fn push_normalized_str(src: &str, out: &mut String) -> Result<(), PakError> {
             max: u64::from(PATH_BYTES_MAX),
         })?;
     if new_len > u32_to_usize(PATH_BYTES_MAX) {
-        let actual = u64::try_from(new_len).map_err(|_| PakError::LimitExceeded {
-            kind: LimitKind::PathBytes,
-            actual: u64::MAX,
-            max: u64::from(PATH_BYTES_MAX),
-        })?;
         return Err(PakError::LimitExceeded {
             kind: LimitKind::PathBytes,
-            actual,
+            actual: new_len as u64,
             max: u64::from(PATH_BYTES_MAX),
         });
     }
@@ -211,23 +201,18 @@ pub(crate) struct PathArenaBuilder {
 
 impl PathArenaBuilder {
     pub(crate) fn with_capacity(entry_cap: u32) -> Self {
-        assert!(entry_cap <= u32::MAX / 32);
+        assert!(entry_cap <= ENTRIES_COUNT_HARD_MAX);
         Self {
-            text: String::with_capacity(u32_to_usize(entry_cap * 32)),
+            text: String::with_capacity(u32_to_usize(entry_cap.saturating_mul(32))),
             spans: Vec::with_capacity(u32_to_usize(entry_cap)),
         }
     }
 
     pub(crate) fn push_path(&mut self, path: &str) -> Result<(), PakError> {
         let Ok(len_u16) = u16::try_from(path.len()) else {
-            let actual = u64::try_from(path.len()).map_err(|_| PakError::LimitExceeded {
-                kind: LimitKind::PathBytes,
-                actual: u64::MAX,
-                max: u64::from(PATH_BYTES_MAX),
-            })?;
             return Err(PakError::LimitExceeded {
                 kind: LimitKind::PathBytes,
-                actual,
+                actual: path.len() as u64,
                 max: u64::from(PATH_BYTES_MAX),
             });
         };

@@ -83,7 +83,7 @@ fn reads_premount_patch_paks_and_multiblock_oodle() -> TestResult {
             saw_multiblock_oodle = true;
         }
         let decoded = read_verified_entry(&patch_b, id, &mut scratch)?;
-        assert_eq!(u64::try_from(decoded.len())?, meta.uncompressed_bytes());
+        assert_eq!(decoded.len() as u64, meta.uncompressed_bytes());
     }
     assert!(saw_multiblock_oodle);
     Ok(())
@@ -109,7 +109,7 @@ fn reads_encrypted_oodle_zlib_and_concurrent_pakchunks() -> TestResult {
         }
         let meta = chunk999.entry_meta(id);
         let decoded = read_verified_entry(&chunk999, id, &mut scratch)?;
-        assert_eq!(u64::try_from(decoded.len())?, meta.uncompressed_bytes());
+        assert_eq!(decoded.len() as u64, meta.uncompressed_bytes());
         if meta.is_encrypted() && meta.compression_method() == CompressionMethod::Oodle {
             encrypted_oodle_decoded += 1;
         }
@@ -127,7 +127,7 @@ fn reads_encrypted_oodle_zlib_and_concurrent_pakchunks() -> TestResult {
         let meta = chunk0.entry_meta(id);
         if meta.compression_method() == CompressionMethod::Zlib {
             let decoded = read_verified_entry(&chunk0, id, &mut scratch)?;
-            assert_eq!(u64::try_from(decoded.len())?, meta.uncompressed_bytes());
+            assert_eq!(decoded.len() as u64, meta.uncompressed_bytes());
             saw_zlib = true;
             break;
         }
@@ -149,7 +149,7 @@ fn verify_concurrent_reads(chunk0: &PakArchive) -> TestResult {
                     let meta = chunk0.entry_meta(id);
                     if meta.uncompressed_bytes() <= 4 * 1024 * 1024 {
                         let decoded = read_verified_entry(chunk0, id, &mut local_scratch)?;
-                        assert_eq!(u64::try_from(decoded.len())?, meta.uncompressed_bytes());
+                        assert_eq!(decoded.len() as u64, meta.uncompressed_bytes());
                     }
                 }
                 Ok(())

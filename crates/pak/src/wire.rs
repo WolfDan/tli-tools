@@ -303,11 +303,9 @@ fn take_fstring_utf16(
             .checked_add(encoded.len())
             .ok_or(PakError::CorruptWireLayout { context })?;
         if new_len > u32_to_usize(max_utf8_bytes) {
-            let actual =
-                u64::try_from(new_len).map_err(|_| PakError::CorruptWireLayout { context })?;
             return Err(PakError::LimitExceeded {
                 kind: limit_kind,
-                actual,
+                actual: new_len as u64,
                 max: u64::from(max_utf8_bytes),
             });
         }

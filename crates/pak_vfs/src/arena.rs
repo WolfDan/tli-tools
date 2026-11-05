@@ -83,14 +83,9 @@ impl StringArenaBuilder {
 
     pub(crate) fn push_str(&mut self, s: &str) -> Result<ArenaSpan, VfsError> {
         let Ok(seg_len) = u16::try_from(s.len()) else {
-            let actual = u64::try_from(s.len()).map_err(|_| VfsError::LimitExceeded {
-                kind: VfsLimitKind::PathBytes,
-                actual: u64::MAX,
-                max: u64::from(u16::MAX),
-            })?;
             return Err(VfsError::LimitExceeded {
                 kind: VfsLimitKind::PathBytes,
-                actual,
+                actual: s.len() as u64,
                 max: u64::from(u16::MAX),
             });
         };
@@ -301,14 +296,9 @@ impl ExtBuilder {
             max: u64::from(limits.exts_count_max()),
         })?;
         let Ok(ext_len) = u16::try_from(ext_str.len()) else {
-            let actual = u64::try_from(ext_str.len()).map_err(|_| VfsError::LimitExceeded {
-                kind: VfsLimitKind::PathBytes,
-                actual: u64::MAX,
-                max: u64::from(u16::MAX),
-            })?;
             return Err(VfsError::LimitExceeded {
                 kind: VfsLimitKind::PathBytes,
-                actual,
+                actual: ext_str.len() as u64,
                 max: u64::from(u16::MAX),
             });
         };

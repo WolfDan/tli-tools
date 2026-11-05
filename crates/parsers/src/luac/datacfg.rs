@@ -1250,11 +1250,15 @@ fn eval_datacfg_instructions(
     let mut regs = [EvalVal::Nil; 256];
     let mut pc = 0_u32;
 
-    while pc < stop_pc {
+    for _ in 0..stop_pc {
+        if pc >= stop_pc {
+            break;
+        }
         let inst = scratch.code.as_slice()[u32_to_usize(pc)];
         step_datacfg_instruction(scratch, &mut regs, inst, &mut pc, stop_pc)?;
         pc += 1;
     }
+    assert!(pc >= stop_pc);
 
     for reg in 0..=3_u8 {
         let _materialized = scratch.materialize_reg(&mut regs, reg)?;

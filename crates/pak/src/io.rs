@@ -43,11 +43,7 @@ impl PositionedFile {
     ///
     /// Total over empty slices (`&mut []`), validating `offset <= file_bytes` upfront.
     pub(crate) fn read_exact_at(&self, offset: u64, dst: &mut [u8]) -> Result<(), PakError> {
-        let len_u64 = u64::try_from(dst.len()).map_err(|_| PakError::OutOfBoundsRange {
-            offset,
-            byte_len: u64::MAX,
-            container_bytes: self.file_bytes,
-        })?;
+        let len_u64 = dst.len() as u64;
         let end = offset
             .checked_add(len_u64)
             .ok_or(PakError::OutOfBoundsRange {
@@ -89,8 +85,7 @@ fn sys_read_exact_at(file: &File, mut offset: u64, mut dst: &mut [u8]) -> std::i
         if bytes_read == 0 {
             return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
         }
-        let read_u64 = u64::try_from(bytes_read)
-            .map_err(|_| std::io::Error::other("positioned read byte count overflowed u64"))?;
+        let read_u64 = bytes_read as u64;
         offset = offset
             .checked_add(read_u64)
             .ok_or_else(|| std::io::Error::other("positioned read offset overflowed u64"))?;

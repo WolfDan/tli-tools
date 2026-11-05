@@ -12,54 +12,70 @@ use crate::{
 #[test]
 fn vfs_limits_zero_and_hard_max_boundaries() {
     let d = VfsLimits::DEFAULT;
-    assert!(matches!(
+    for res in [
         d.with_paks_count_max(0),
-        Err(VfsError::LimitExceeded {
-            kind: VfsLimitKind::LimitsConfig,
-            ..
-        })
-    ));
-    assert!(d.with_paks_count_max(PAKS_COUNT_HARD_MAX).is_ok());
+        d.with_dirs_count_max(0),
+        d.with_files_count_max(0),
+        d.with_exts_count_max(0),
+        d.with_arena_bytes_max(0),
+        d.with_path_bytes_max(0),
+        d.with_path_depth_max(0),
+        d.with_mount_aliases_count_max(0),
+    ] {
+        assert!(matches!(
+            res,
+            Err(VfsError::LimitExceeded {
+                kind: VfsLimitKind::LimitsConfig,
+                ..
+            })
+        ));
+    }
 
-    assert!(d.with_dirs_count_max(0).is_err());
-    assert!(d.with_dirs_count_max(DIRS_COUNT_HARD_MAX).is_ok());
-    assert!(matches!(
-        d.with_dirs_count_max(DIRS_COUNT_HARD_MAX + 1),
-        Err(VfsError::LimitExceeded {
-            kind: VfsLimitKind::DirsCount,
-            ..
-        })
-    ));
+    d.with_paks_count_max(PAKS_COUNT_HARD_MAX).expect("ok");
+    d.with_dirs_count_max(DIRS_COUNT_HARD_MAX).expect("ok");
+    d.with_files_count_max(FILES_COUNT_HARD_MAX).expect("ok");
+    d.with_exts_count_max(EXTS_COUNT_HARD_MAX).expect("ok");
+    d.with_arena_bytes_max(ARENA_BYTES_HARD_MAX).expect("ok");
+    d.with_path_bytes_max(VFS_PATH_BYTES_HARD_MAX).expect("ok");
+    d.with_path_depth_max(PATH_DEPTH_HARD_MAX).expect("ok");
+    d.with_mount_aliases_count_max(MOUNT_ALIASES_COUNT_HARD_MAX)
+        .expect("ok");
 
-    assert!(d.with_files_count_max(0).is_err());
-    assert!(d.with_files_count_max(FILES_COUNT_HARD_MAX).is_ok());
-    assert!(d.with_files_count_max(FILES_COUNT_HARD_MAX + 1).is_err());
-
-    assert!(d.with_exts_count_max(0).is_err());
-    assert!(d.with_exts_count_max(EXTS_COUNT_HARD_MAX).is_ok());
-    assert!(d.with_exts_count_max(EXTS_COUNT_HARD_MAX + 1).is_err());
-
-    assert!(d.with_arena_bytes_max(0).is_err());
-    assert!(d.with_arena_bytes_max(ARENA_BYTES_HARD_MAX).is_ok());
-    assert!(d.with_arena_bytes_max(ARENA_BYTES_HARD_MAX + 1).is_err());
-
-    assert!(d.with_path_bytes_max(0).is_err());
-    assert!(d.with_path_bytes_max(VFS_PATH_BYTES_HARD_MAX).is_ok());
-    assert!(d.with_path_bytes_max(VFS_PATH_BYTES_HARD_MAX + 1).is_err());
-
-    assert!(d.with_path_depth_max(0).is_err());
-    assert!(d.with_path_depth_max(PATH_DEPTH_HARD_MAX).is_ok());
-    assert!(d.with_path_depth_max(PATH_DEPTH_HARD_MAX + 1).is_err());
-
-    assert!(d.with_mount_aliases_count_max(0).is_err());
-    assert!(
-        d.with_mount_aliases_count_max(MOUNT_ALIASES_COUNT_HARD_MAX)
-            .is_ok()
-    );
-    assert!(
-        d.with_mount_aliases_count_max(MOUNT_ALIASES_COUNT_HARD_MAX + 1)
-            .is_err()
-    );
+    for (res, expected_kind) in [
+        (
+            d.with_dirs_count_max(DIRS_COUNT_HARD_MAX + 1),
+            VfsLimitKind::DirsCount,
+        ),
+        (
+            d.with_files_count_max(FILES_COUNT_HARD_MAX + 1),
+            VfsLimitKind::FilesCount,
+        ),
+        (
+            d.with_exts_count_max(EXTS_COUNT_HARD_MAX + 1),
+            VfsLimitKind::ExtsCount,
+        ),
+        (
+            d.with_arena_bytes_max(ARENA_BYTES_HARD_MAX + 1),
+            VfsLimitKind::ArenaBytes,
+        ),
+        (
+            d.with_path_bytes_max(VFS_PATH_BYTES_HARD_MAX + 1),
+            VfsLimitKind::PathBytes,
+        ),
+        (
+            d.with_path_depth_max(PATH_DEPTH_HARD_MAX + 1),
+            VfsLimitKind::PathDepth,
+        ),
+        (
+            d.with_mount_aliases_count_max(MOUNT_ALIASES_COUNT_HARD_MAX + 1),
+            VfsLimitKind::MountAliasesCount,
+        ),
+    ] {
+        assert!(matches!(
+            res,
+            Err(VfsError::LimitExceeded { kind, .. }) if kind == expected_kind
+        ));
+    }
 }
 
 #[test]
@@ -90,7 +106,7 @@ fn paks_files_dirs_and_exts_exact_max_transitions() {
 
     // PaksCount: 2 succeeds at max=2, fails at max=1.
     let lim_p2 = VfsLimits::DEFAULT.with_paks_count_max(2).expect("ok");
-    assert!(PakVfs::open_mounts(&mounts, &VfsOpenOptions::new(None).with_limits(lim_p2)).is_ok());
+    PakVfs::open_mounts(&mounts, &VfsOpenOptions::new(None).with_limits(lim_p2)).expect("p2 ok");
     let lim_p1 = VfsLimits::DEFAULT.with_paks_count_max(1).expect("ok");
     assert!(matches!(
         PakVfs::open_mounts(&mounts, &VfsOpenOptions::new(None).with_limits(lim_p1)),
@@ -102,7 +118,7 @@ fn paks_files_dirs_and_exts_exact_max_transitions() {
 
     // FilesCount: 3 files total succeeds at max=3, fails at max=2.
     let lim_f3 = VfsLimits::DEFAULT.with_files_count_max(3).expect("ok");
-    assert!(PakVfs::open_mounts(&mounts, &VfsOpenOptions::new(None).with_limits(lim_f3)).is_ok());
+    PakVfs::open_mounts(&mounts, &VfsOpenOptions::new(None).with_limits(lim_f3)).expect("f3 ok");
     let lim_f2 = VfsLimits::DEFAULT.with_files_count_max(2).expect("ok");
     assert!(matches!(
         PakVfs::open_mounts(&mounts, &VfsOpenOptions::new(None).with_limits(lim_f2)),
@@ -114,7 +130,7 @@ fn paks_files_dirs_and_exts_exact_max_transitions() {
 
     // DirsCount: ROOT + A + B + C = 4 dirs succeeds at max=4, fails at max=3.
     let lim_d4 = VfsLimits::DEFAULT.with_dirs_count_max(4).expect("ok");
-    assert!(PakVfs::open_mounts(&mounts, &VfsOpenOptions::new(None).with_limits(lim_d4)).is_ok());
+    PakVfs::open_mounts(&mounts, &VfsOpenOptions::new(None).with_limits(lim_d4)).expect("d4 ok");
     let lim_d3 = VfsLimits::DEFAULT.with_dirs_count_max(3).expect("ok");
     assert!(matches!(
         PakVfs::open_mounts(&mounts, &VfsOpenOptions::new(None).with_limits(lim_d3)),
@@ -126,7 +142,7 @@ fn paks_files_dirs_and_exts_exact_max_transitions() {
 
     // ExtsCount: e1, e2, e3 = 3 exts succeeds at max=3, fails at max=2.
     let lim_e3 = VfsLimits::DEFAULT.with_exts_count_max(3).expect("ok");
-    assert!(PakVfs::open_mounts(&mounts, &VfsOpenOptions::new(None).with_limits(lim_e3)).is_ok());
+    PakVfs::open_mounts(&mounts, &VfsOpenOptions::new(None).with_limits(lim_e3)).expect("e3 ok");
     let lim_e2 = VfsLimits::DEFAULT.with_exts_count_max(2).expect("ok");
     assert!(matches!(
         PakVfs::open_mounts(&mounts, &VfsOpenOptions::new(None).with_limits(lim_e2)),
@@ -169,7 +185,7 @@ fn path_depth_path_bytes_arena_and_alias_max_transitions() {
     let lim_ar_ok = VfsLimits::DEFAULT
         .with_arena_bytes_max(exact_arena)
         .expect("ok");
-    assert!(PakVfs::open_mounts(&m, &VfsOpenOptions::new(None).with_limits(lim_ar_ok)).is_ok());
+    PakVfs::open_mounts(&m, &VfsOpenOptions::new(None).with_limits(lim_ar_ok)).expect("ar ok");
     let lim_ar_fail = VfsLimits::DEFAULT
         .with_arena_bytes_max(exact_arena - 1)
         .expect("ok");
@@ -183,7 +199,7 @@ fn path_depth_path_bytes_arena_and_alias_max_transitions() {
 
     // PathBytes: longest entry "GameProj/Content/g.tx" is 21 bytes -> succeeds at 21, fails at 20.
     let lim_pb21 = VfsLimits::DEFAULT.with_path_bytes_max(21).expect("ok");
-    assert!(PakVfs::open_mounts(&m, &VfsOpenOptions::new(None).with_limits(lim_pb21)).is_ok());
+    PakVfs::open_mounts(&m, &VfsOpenOptions::new(None).with_limits(lim_pb21)).expect("pb21 ok");
     let lim_pb20 = VfsLimits::DEFAULT.with_path_bytes_max(20).expect("ok");
     assert!(matches!(
         PakVfs::open_mounts(&m, &VfsOpenOptions::new(None).with_limits(lim_pb20)),
@@ -197,7 +213,7 @@ fn path_depth_path_bytes_arena_and_alias_max_transitions() {
     let lim_ma2 = VfsLimits::DEFAULT
         .with_mount_aliases_count_max(2)
         .expect("ok");
-    assert!(PakVfs::open_mounts(&m, &VfsOpenOptions::new(None).with_limits(lim_ma2)).is_ok());
+    PakVfs::open_mounts(&m, &VfsOpenOptions::new(None).with_limits(lim_ma2)).expect("ma2 ok");
     let lim_ma1 = VfsLimits::DEFAULT
         .with_mount_aliases_count_max(1)
         .expect("ok");
@@ -223,7 +239,8 @@ fn read_range_exact_eof_boundaries() {
     let mut scratch = ReadScratch::with_limits(ScratchLimits::DEFAULT);
 
     // 0-byte read at exact EOF (offset == 4) must succeed; offset == 5 or 1 byte at offset == 4 must fail.
-    assert!(vfs.read_range_into(fid, 4, &mut scratch, &mut []).is_ok());
+    vfs.read_range_into(fid, 4, &mut scratch, &mut [])
+        .expect("0-byte read at EOF ok");
     assert!(matches!(
         vfs.read_range_into(fid, 5, &mut scratch, &mut []),
         Err(VfsError::OutOfBoundsRange { .. })
@@ -253,11 +270,9 @@ fn ue_mount_alias_and_project_name_path_byte_bounds() {
     ));
 
     let max_proj = "p".repeat(crate::u32_to_usize(VFS_PATH_BYTES_HARD_MAX));
-    assert!(
-        VfsOpenOptions::new(None)
-            .with_game_project_name(&max_proj)
-            .is_ok()
-    );
+    let _opts = VfsOpenOptions::new(None)
+        .with_game_project_name(&max_proj)
+        .expect("max_proj ok");
     let over_proj = "p".repeat(crate::u32_to_usize(VFS_PATH_BYTES_HARD_MAX + 1));
     assert!(matches!(
         VfsOpenOptions::new(None).with_game_project_name(&over_proj),

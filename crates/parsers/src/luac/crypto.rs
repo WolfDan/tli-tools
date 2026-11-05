@@ -21,9 +21,9 @@ const fn mask_mod2(i: u64, v: u64) -> u8 {
 
 #[inline(always)]
 fn xor_triplet(triplet: &mut [u8; 3], i2: u64, v2: u64) {
-    let i0 = i2.wrapping_add(1);
+    let i0 = i2 + 1;
     let v0 = v2.wrapping_add(CIPHER_MULT);
-    let i1 = i2.wrapping_add(2);
+    let i1 = i2 + 2;
     let v1 = v0.wrapping_add(CIPHER_MULT);
 
     triplet[0] ^= mask_mod2(i2, v2);
@@ -55,7 +55,7 @@ pub(crate) fn decrypt_luac_in_place(buf: &mut [u8]) -> CipherState {
         assert!(empty_rem.is_empty());
         for triplet in triplets {
             xor_triplet(triplet, i, v);
-            i = i.wrapping_add(3);
+            i += 3;
             v = v.wrapping_add(step_triplet_v);
         }
     }
@@ -67,7 +67,7 @@ pub(crate) fn decrypt_luac_in_place(buf: &mut [u8]) -> CipherState {
             _ => mask_mod2(i, v),
         };
         *byte ^= mask;
-        i = i.wrapping_add(1);
+        i += 1;
         v = v.wrapping_add(CIPHER_MULT);
     }
 

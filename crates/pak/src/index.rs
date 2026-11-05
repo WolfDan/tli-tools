@@ -640,7 +640,6 @@ fn ensure_min_wire_records(
 fn split_capacity_hint(primary: &ParsedPrimaryIndex<'_>) -> u32 {
     let max_encoded = bounded_len_u32(primary.encoded_entries.len() / 12);
     let max_unencoded = bounded_len_u32(primary.unencoded_list.items.len());
-    assert!(max_encoded <= u32::MAX / 12);
     assert!(max_unencoded <= ENTRIES_COUNT_HARD_MAX);
     let max_locs = max_encoded + max_unencoded;
     primary.declared_entries.min((max_locs * 2).max(64))
@@ -805,8 +804,7 @@ fn decode_split_location(
                 .ok_or(PakError::OutOfBoundsRange {
                     offset: u64::from(offset),
                     byte_len: 4,
-                    container_bytes: u64::try_from(env.encoded_entries.len())
-                        .map_err(|_| PakError::CorruptWireLayout { context })?,
+                    container_bytes: env.encoded_entries.len() as u64,
                 })?;
         decode_encoded_entry(
             encoded_tail,
@@ -1232,14 +1230,9 @@ fn validate_joined_rel_len(dir_trim: &str, file_str: &str) -> Result<(), PakErro
             max: u64::from(PATH_BYTES_MAX),
         })?;
     if joined_len > u32_to_usize(PATH_BYTES_MAX) {
-        let actual = u64::try_from(joined_len).map_err(|_| PakError::LimitExceeded {
-            kind: LimitKind::PathBytes,
-            actual: u64::MAX,
-            max: u64::from(PATH_BYTES_MAX),
-        })?;
         return Err(PakError::LimitExceeded {
             kind: LimitKind::PathBytes,
-            actual,
+            actual: joined_len as u64,
             max: u64::from(PATH_BYTES_MAX),
         });
     }

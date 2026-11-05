@@ -70,12 +70,7 @@ impl<'vfs, 'scratch> VfsCursor<'vfs, 'scratch> {
     /// Reads exactly `dst.len()` bytes starting at [`VfsCursor::position`] and advances the cursor,
     /// returning a typed [`VfsError`] without boxing into [`std::io::Error`].
     pub fn read_exact_slice(&mut self, dst: &mut [u8]) -> Result<(), VfsError> {
-        let len_u64 = u64::try_from(dst.len()).map_err(|_| VfsError::OutOfBoundsRange {
-            file: self.file,
-            offset: self.pos,
-            byte_len: u64::MAX,
-            file_bytes: self.file_bytes,
-        })?;
+        let len_u64 = dst.len() as u64;
         self.vfs
             .read_range_into(self.file, self.pos, self.scratch, dst)?;
         self.pos += len_u64;
@@ -93,15 +88,7 @@ impl Read for VfsCursor<'_, '_> {
             Ok(avail_usize) => buf.len().min(avail_usize),
             Err(_) => buf.len(),
         };
-        let to_read_u64 = match u64::try_from(to_read_usize) {
-            Ok(n) => n,
-            Err(_) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "read buffer size exceeds u64::MAX",
-                ));
-            }
-        };
+        let to_read_u64 = to_read_usize as u64;
         self.vfs
             .read_range_into(self.file, self.pos, self.scratch, &mut buf[..to_read_usize])
             .map_err(std::io::Error::other)?;

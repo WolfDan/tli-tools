@@ -40,14 +40,9 @@ impl PakCipher {
         buf: &mut [u8],
     ) -> Result<(), PakError> {
         if !buf.len().is_multiple_of(16) {
-            let byte_len =
-                u64::try_from(buf.len()).map_err(|_| PakError::UnalignedEncryptedSize {
-                    context: section,
-                    byte_len: u64::MAX,
-                })?;
             return Err(PakError::UnalignedEncryptedSize {
                 context: section,
-                byte_len,
+                byte_len: buf.len() as u64,
             });
         }
         if buf.is_empty() {

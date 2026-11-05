@@ -46,9 +46,7 @@ impl DataCfgRow for SpellRow {
 #[test]
 fn cipher_round_trip_and_chunk_boundaries() {
     for len in [0_u32, 1, 2, 3, 4, 5, 23, 24, 25, 26, 27, 48, 49, 50, 100] {
-        let mut orig: Vec<u8> = (0..len)
-            .map(|i| u8::try_from((i * 37 + 13) & 0xFF).unwrap())
-            .collect();
+        let mut orig: Vec<u8> = (0..len).map(|i| ((i * 37 + 13) & 0xFF) as u8).collect();
         if len >= 4 {
             orig[0..4].copy_from_slice(b"\x01XDI");
         }

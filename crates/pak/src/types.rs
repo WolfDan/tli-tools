@@ -164,11 +164,10 @@ impl AesKey {
         let arr: [u8; 32] = match slice.try_into() {
             Ok(bytes) => bytes,
             Err(_) => {
-                let len_u64 = u64::try_from(slice.len()).map_err(|_| PakError::InvalidAesKey {
-                    kind: KeyParseErrorKind::InvalidSliceLength { byte_len: u64::MAX },
-                })?;
                 return Err(PakError::InvalidAesKey {
-                    kind: KeyParseErrorKind::InvalidSliceLength { byte_len: len_u64 },
+                    kind: KeyParseErrorKind::InvalidSliceLength {
+                        byte_len: slice.len() as u64,
+                    },
                 });
             }
         };
@@ -187,11 +186,10 @@ impl AesKey {
         };
         let raw = digits.as_bytes();
         if raw.len() != 64 {
-            let len_u64 = u64::try_from(raw.len()).map_err(|_| PakError::InvalidAesKey {
-                kind: KeyParseErrorKind::InvalidHexLength { byte_len: u64::MAX },
-            })?;
             return Err(PakError::InvalidAesKey {
-                kind: KeyParseErrorKind::InvalidHexLength { byte_len: len_u64 },
+                kind: KeyParseErrorKind::InvalidHexLength {
+                    byte_len: raw.len() as u64,
+                },
             });
         }
         let (pairs, rem) = raw.as_chunks::<2>();

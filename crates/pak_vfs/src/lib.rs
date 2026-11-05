@@ -34,6 +34,7 @@ pub use types::{
 pub use vfs::{ExtFileIter, MountAliasIter, PakVfs, SubtreeFileIter};
 
 const _: () = assert!(usize::BITS >= 32);
+const _: () = assert!(usize::BITS <= 64);
 
 /// Canonical lossless bridge from `u32` domain indices and sizes to `usize` slice bounds.
 #[inline(always)]

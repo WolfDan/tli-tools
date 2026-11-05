@@ -45,6 +45,7 @@ pub use types::{
 };
 
 const _: () = assert!(usize::BITS >= 32);
+const _: () = assert!(usize::BITS <= 64);
 
 /// Canonical lossless bridge from `u32` domain counts/offsets to `usize` slice indices.
 #[inline(always)]

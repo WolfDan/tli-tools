@@ -57,8 +57,8 @@ mem_forget = "deny"
 rc_buffer = "deny"
 rc_mutex = "deny"
 
-# Semantic cast safety (blocks narrowing, sign-loss, wrap, lossless `as` where `From` exists,
-# precision-loss, and raw pointer `as`, while allowing `#[repr(u8)]` `enum as u8`, inline-masked/shifted bit-extractions, and `u32_to_usize`)
+# Semantic cast safety (blocks unexamined narrowing, sign-loss, wrap, lossless `as` where `From` exists,
+# precision-loss, and raw pointer `as`; use `From`, `TryFrom`, range-proven masks/shifts, or item-scoped `#[expect]` helpers)
 cast_possible_truncation = "deny"
 cast_possible_wrap = "deny"
 cast_sign_loss = "deny"

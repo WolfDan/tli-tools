@@ -19,18 +19,13 @@ pub(crate) struct WireCursor<'a> {
 
 impl<'a> WireCursor<'a> {
     pub(crate) fn new(buf: &'a [u8]) -> Result<Self, LuacError> {
-        let total_u64 = u64::try_from(buf.len()).map_err(|_| LuacError::LimitExceeded {
-            kind: LuacLimitKind::InputBytes,
-            actual: u64::MAX,
-            max: u64::from(u32::MAX),
-        })?;
-        let Ok(_total_u32) = u32::try_from(total_u64) else {
+        if u32::try_from(buf.len()).is_err() {
             return Err(LuacError::LimitExceeded {
                 kind: LuacLimitKind::InputBytes,
-                actual: total_u64,
+                actual: buf.len() as u64,
                 max: u64::from(u32::MAX),
             });
-        };
+        }
         Ok(Self {
             full: buf,
             rest: buf,
@@ -444,6 +439,38 @@ fn transpile_debug_trailer(
     Ok(())
 }
 
+fn push_child_proto(
+    cur: &mut WireCursor<'_>,
+    is_xdi: bool,
+    limits: LuacLimits,
+    counters: &mut TranspileCounters,
+    stack: &mut ArrayVec<u32, PROTO_DEPTH_HARD_MAX_USIZE>,
+    out: &mut FixedVec<u8>,
+) -> Result<(), LuacError> {
+    let next_depth = bounded_len_u32(stack.len()) + 1;
+    if next_depth > limits.proto_depth_max() {
+        return Err(LuacError::LimitExceeded {
+            kind: LuacLimitKind::ProtoDepth,
+            actual: u64::from(next_depth),
+            max: u64::from(limits.proto_depth_max()),
+        });
+    }
+    let proto_idx = counters.protos;
+    counters.protos = counters
+        .protos
+        .checked_add(1)
+        .filter(|&tot| tot <= limits.protos_count_max())
+        .ok_or_else(|| LuacError::LimitExceeded {
+            kind: LuacLimitKind::ProtosCount,
+            actual: u64::from(counters.protos) + 1,
+            max: u64::from(limits.protos_count_max()),
+        })?;
+    let child_p = transpile_proto_prefix(cur, is_xdi, proto_idx, limits, counters, out)?;
+    let push_res = stack.try_push(child_p);
+    assert!(push_res.is_ok());
+    Ok(())
+}
+
 /// Validates and transpiles a decrypted `\x01XDI` or canonical `\x1bLua` chunk into canonical 64-bit Lua 5.3 bytecode.
 pub(crate) fn transpile_to_lua53_into(
     src: &[u8],
@@ -475,36 +502,20 @@ pub(crate) fn transpile_to_lua53_into(
     let root_push = stack.try_push(root_children);
     assert!(root_push.is_ok());
 
-    while let Some(rem_children) = stack.last_mut() {
+    let max_steps = u64::from(limits.protos_count_max()) * 2;
+    for _ in 0..max_steps {
+        let Some(rem_children) = stack.last_mut() else {
+            break;
+        };
         if *rem_children > 0 {
             *rem_children -= 1;
-            let next_depth = bounded_len_u32(stack.len()) + 1;
-            if next_depth > limits.proto_depth_max() {
-                return Err(LuacError::LimitExceeded {
-                    kind: LuacLimitKind::ProtoDepth,
-                    actual: u64::from(next_depth),
-                    max: u64::from(limits.proto_depth_max()),
-                });
-            }
-            let proto_idx = counters.protos;
-            counters.protos = counters
-                .protos
-                .checked_add(1)
-                .filter(|&tot| tot <= limits.protos_count_max())
-                .ok_or_else(|| LuacError::LimitExceeded {
-                    kind: LuacLimitKind::ProtosCount,
-                    actual: u64::from(counters.protos) + 1,
-                    max: u64::from(limits.protos_count_max()),
-                })?;
-            let child_p =
-                transpile_proto_prefix(&mut cur, is_xdi, proto_idx, limits, &mut counters, out)?;
-            let push_res = stack.try_push(child_p);
-            assert!(push_res.is_ok());
+            push_child_proto(&mut cur, is_xdi, limits, &mut counters, &mut stack, out)?;
         } else {
             let _popped = stack.pop();
             transpile_debug_trailer(&mut cur, is_xdi, limits, &mut counters, out)?;
         }
     }
+    assert!(stack.is_empty());
 
     if !cur.is_empty() {
         return Err(LuacError::TrailingBytes {

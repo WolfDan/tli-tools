@@ -80,14 +80,9 @@ impl PakVfs {
         let count_u16 = match u16::try_from(mounts.len()) {
             Ok(c) if c <= limits.paks_count_max() => c,
             Ok(_) | Err(_) => {
-                let actual = u64::try_from(mounts.len()).map_err(|_| VfsError::LimitExceeded {
-                    kind: VfsLimitKind::PaksCount,
-                    actual: u64::MAX,
-                    max: u64::from(limits.paks_count_max()),
-                })?;
                 return Err(VfsError::LimitExceeded {
                     kind: VfsLimitKind::PaksCount,
-                    actual,
+                    actual: mounts.len() as u64,
                     max: u64::from(limits.paks_count_max()),
                 });
             }
@@ -446,12 +441,7 @@ impl PakVfs {
         let eref = self.files.entry_ref(file);
         let rec = self.pak_record(eref.pak_id);
         let meta = rec.reader.entry_meta(eref.entry_id);
-        let dst_len_u64 =
-            u64::try_from(dst.len()).map_err(|_| VfsError::DestinationSizeMismatch {
-                file,
-                expected: meta.uncompressed_bytes(),
-                actual: u64::MAX,
-            })?;
+        let dst_len_u64 = dst.len() as u64;
         if dst_len_u64 != meta.uncompressed_bytes() {
             return Err(VfsError::DestinationSizeMismatch {
                 file,
@@ -481,12 +471,7 @@ impl PakVfs {
         let rec = self.pak_record(eref.pak_id);
         let meta = rec.reader.entry_meta(eref.entry_id);
         let file_bytes = meta.uncompressed_bytes();
-        let dst_len_u64 = u64::try_from(dst.len()).map_err(|_| VfsError::OutOfBoundsRange {
-            file,
-            offset,
-            byte_len: u64::MAX,
-            file_bytes,
-        })?;
+        let dst_len_u64 = dst.len() as u64;
         let req_end = offset
             .checked_add(dst_len_u64)
             .ok_or(VfsError::OutOfBoundsRange {
@@ -683,21 +668,15 @@ impl PakVfs {
                     Ok(bytes_read) => VfsBatchOutcome::Ok { bytes_read },
                     Err(err) => VfsBatchOutcome::Err(err),
                 },
-                ReadWindow::ByteRange { offset } => match u64::try_from(req.dst.len()) {
-                    Ok(req_bytes) => match self.read_range_into(req.file, offset, scratch, req.dst)
-                    {
+                ReadWindow::ByteRange { offset } => {
+                    let req_bytes = req.dst.len() as u64;
+                    match self.read_range_into(req.file, offset, scratch, req.dst) {
                         Ok(()) => VfsBatchOutcome::Ok {
                             bytes_read: req_bytes,
                         },
                         Err(err) => VfsBatchOutcome::Err(err),
-                    },
-                    Err(_) => VfsBatchOutcome::Err(VfsError::OutOfBoundsRange {
-                        file: req.file,
-                        offset,
-                        byte_len: u64::MAX,
-                        file_bytes: self.file_meta(req.file).uncompressed_bytes(),
-                    }),
-                },
+                    }
+                }
             };
         }
     }

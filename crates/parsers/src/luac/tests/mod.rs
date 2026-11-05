@@ -158,9 +158,13 @@ fn write_xdi_proto_tail(out: &mut Vec<u8>, proto: &TestProto) {
 }
 
 pub(crate) fn write_xdi_proto(out: &mut Vec<u8>, root: &TestProto) {
+    const WRITE_STEPS_MAX: u32 = 1024;
     let mut stack = arrayvec::ArrayVec::<(&TestProto, u32, bool), 64>::new();
     stack.push((root, 0, false));
-    while let Some((proto, child_idx, entered)) = stack.last_mut() {
+    for _ in 0..WRITE_STEPS_MAX {
+        let Some((proto, child_idx, entered)) = stack.last_mut() else {
+            break;
+        };
         let p = *proto;
         if !*entered {
             write_xdi_proto_head(out, p);
@@ -177,6 +181,7 @@ pub(crate) fn write_xdi_proto(out: &mut Vec<u8>, root: &TestProto) {
             write_xdi_proto_tail(out, p);
         }
     }
+    assert!(stack.is_empty());
 }
 
 pub(crate) fn build_xdi_chunk(root: &TestProto) -> Vec<u8> {
@@ -192,7 +197,7 @@ pub(crate) fn encrypt_xdi_in_place(buf: &mut [u8]) {
         if i <= 1 {
             continue;
         }
-        let i64_val = u64::try_from(i).unwrap();
+        let i64_val = i as u64;
         let v = i64_val.wrapping_mul(0x2021_0507);
         let mask = match i % 3 {
             0 => ((i64_val.wrapping_add(v & 1).wrapping_add(v >> 28)) & 0xFF) as u8,

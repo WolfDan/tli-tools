@@ -227,7 +227,7 @@ fn append_entry_to_disk(
     dialect: PakDialect,
     cipher: Option<&PakCipher>,
 ) -> WrittenEntryRecord {
-    let header_offset = u64::try_from(disk.len()).expect("disk len fits in u64");
+    let header_offset = disk.len() as u64;
     let raw_method_idx: u32 = match entry.method {
         CompressionMethod::None => 0,
         CompressionMethod::Zlib => 1,
@@ -236,7 +236,7 @@ fn append_entry_to_disk(
     let encoded = encode_entry_payload(entry, dialect, raw_method_idx != 0, cipher);
     let hashed_len = usize::try_from(encoded.compressed_total).expect("compressed_total fits");
     let payload_sha1 = *compute_sha1(&encoded.disk_bytes[..hashed_len]).as_bytes();
-    let uncomp_u64 = u64::try_from(entry.payload.len()).expect("uncomp fits in u64");
+    let uncomp_u64 = entry.payload.len() as u64;
     write_unencoded_fpak_entry(
         disk,
         &RawEntryWriteSpec {
@@ -256,10 +256,7 @@ fn append_entry_to_disk(
         raw_method_idx != 0,
         u16::try_from(encoded.rel_blocks.len()).expect("blocks fit in u16"),
     );
-    assert_eq!(
-        u64::try_from(disk.len()).expect("fits") - header_offset,
-        u64::from(expected_hdr)
-    );
+    assert_eq!((disk.len() as u64) - header_offset, u64::from(expected_hdr));
     disk.extend_from_slice(&encoded.disk_bytes);
     WrittenEntryRecord {
         entry: entry.clone(),
@@ -300,7 +297,7 @@ fn encode_entry_payload(
 ) -> EncodedPayload {
     if !has_compression {
         let mut raw = entry.payload.clone();
-        let uncomp_len = u64::try_from(raw.len()).expect("len fits");
+        let uncomp_len = raw.len() as u64;
         if entry.encrypted {
             let aligned =
                 usize::try_from(align_up_16(uncomp_len).expect("align")).expect("aligned fits");
@@ -332,7 +329,7 @@ fn encode_entry_payload(
     let mut rel_blocks = Vec::with_capacity(raw_chunks.len());
     let mut comp_sum: u64 = 0;
     for mut blk in raw_chunks {
-        let start_rel = hdr_bytes + u64::try_from(disk_payload.len()).expect("fits");
+        let start_rel = hdr_bytes + (disk_payload.len() as u64);
         let raw_len = u32::try_from(blk.len()).expect("blk fits in u32");
         raw_lens.push(raw_len);
         let end_rel = start_rel + u64::from(raw_len);
@@ -345,7 +342,7 @@ fn encode_entry_payload(
                 .expect("encrypted block requires test cipher")
                 .encrypt_in_place_for_test(&mut blk);
         }
-        comp_sum += u64::try_from(blk.len()).expect("aligned blk fits");
+        comp_sum += blk.len() as u64;
         disk_payload.extend_from_slice(&blk);
     }
     EncodedPayload {
@@ -393,7 +390,7 @@ fn finalize_section(
     cipher: Option<&PakCipher>,
 ) -> (u64, u64, [u8; 20]) {
     if encrypt {
-        let len_u64 = u64::try_from(section.len()).expect("fits");
+        let len_u64 = section.len() as u64;
         let aligned = usize::try_from(align_up_16(len_u64).expect("align")).expect("fits");
         section.resize(aligned, 0);
     }
@@ -403,8 +400,8 @@ fn finalize_section(
             .expect("encrypted index requires test cipher")
             .encrypt_in_place_for_test(&mut section);
     }
-    let offset = u64::try_from(disk.len()).expect("fits");
-    let size = u64::try_from(section.len()).expect("fits");
+    let offset = disk.len() as u64;
+    let size = section.len() as u64;
     disk.extend_from_slice(&section);
     (offset, size, hash)
 }
@@ -432,7 +429,7 @@ fn append_legacy_index_and_footer(
                 dialect: spec.dialect(),
                 offset: rec.header_offset,
                 compressed_size: rec.compressed_total,
-                uncompressed_size: u64::try_from(rec.entry.payload.len()).expect("fits"),
+                uncompressed_size: rec.entry.payload.len() as u64,
                 raw_method: rec.raw_method_idx,
                 sha1: rec.payload_sha1,
                 blocks: &rec.rel_blocks,
@@ -503,7 +500,7 @@ fn append_split_index_and_footer(
                     dialect: spec.dialect(),
                     offset: rec.header_offset,
                     compressed_size: rec.compressed_total,
-                    uncompressed_size: u64::try_from(rec.entry.payload.len()).expect("fits"),
+                    uncompressed_size: rec.entry.payload.len() as u64,
                     raw_method: rec.raw_method_idx,
                     sha1: rec.payload_sha1,
                     blocks: &rec.rel_blocks,

@@ -71,7 +71,7 @@ fn luac_limits_instructions_constants_upvalues_locvars_and_bytes_transitions() {
         let mut out = crate::FixedVec::with_capacity(custom_limits.transpile_bytes_max());
         let res = transpile_to_lua53_into(&chunk, &mut out, custom_limits);
         if count <= 5 {
-            assert!(res.is_ok(), "instructions count {count} should succeed");
+            res.expect("instructions count within max");
         } else {
             assert!(matches!(
                 res.unwrap_err(),
@@ -92,7 +92,7 @@ fn luac_limits_instructions_constants_upvalues_locvars_and_bytes_transitions() {
         let mut out = crate::FixedVec::with_capacity(custom_limits.transpile_bytes_max());
         let res = transpile_to_lua53_into(&chunk, &mut out, custom_limits);
         if count <= 3 {
-            assert!(res.is_ok(), "constants count {count} should succeed");
+            res.expect("constants count within max");
         } else {
             assert!(matches!(
                 res.unwrap_err(),
@@ -117,7 +117,7 @@ fn luac_limits_instructions_constants_upvalues_locvars_and_bytes_transitions() {
         let mut out = crate::FixedVec::with_capacity(lim.transpile_bytes_max());
         let res = transpile_to_lua53_into(&base_chunk, &mut out, lim);
         if max_bytes >= exact_bytes {
-            assert!(res.is_ok());
+            res.expect("transpile_bytes within max");
         } else {
             assert!(matches!(
                 res.unwrap_err(),
@@ -146,7 +146,7 @@ fn luac_limits_upvalues_and_locvars_transitions() {
         let mut out = crate::FixedVec::with_capacity(custom_limits.transpile_bytes_max());
         let res = transpile_to_lua53_into(&chunk, &mut out, custom_limits);
         if count <= 2 {
-            assert!(res.is_ok(), "upvalues count {count} should succeed");
+            res.expect("upvalues count within max");
         } else {
             assert!(matches!(
                 res.unwrap_err(),
@@ -167,7 +167,7 @@ fn luac_limits_upvalues_and_locvars_transitions() {
         let mut out = crate::FixedVec::with_capacity(custom_limits.transpile_bytes_max());
         let res = transpile_to_lua53_into(&chunk, &mut out, custom_limits);
         if count <= 2 {
-            assert!(res.is_ok(), "loc_vars count {count} should succeed");
+            res.expect("loc_vars count within max");
         } else {
             assert!(matches!(
                 res.unwrap_err(),
@@ -202,7 +202,7 @@ fn luac_limits_proto_depth_and_total_count_transitions() {
         let mut out = crate::FixedVec::with_capacity(custom_limits.transpile_bytes_max());
         let res = transpile_to_lua53_into(&chunk, &mut out, custom_limits);
         if sibling_children < 3 {
-            assert!(res.is_ok());
+            res.expect("protos count within max");
         } else {
             assert!(matches!(
                 res.unwrap_err(),
@@ -228,7 +228,7 @@ fn luac_limits_proto_depth_and_total_count_transitions() {
         let mut out = crate::FixedVec::with_capacity(depth_limits.transpile_bytes_max());
         let res = transpile_to_lua53_into(&chunk, &mut out, depth_limits);
         if depth <= 3 {
-            assert!(res.is_ok(), "depth {depth} should succeed");
+            res.expect("proto depth within max");
         } else {
             assert!(matches!(
                 res.unwrap_err(),
@@ -317,7 +317,7 @@ fn datacfg_limits_tables_list_items_and_map_entries_transitions() {
         let mut chunk = build_chunk_with_list_len(1);
         let res = parse_luatable_datacfg::<u32, BoundaryRow>(&mut chunk, &mut tbl_scratch);
         if max_tables >= 6 {
-            assert!(res.is_ok());
+            let _table = res.expect("tables count within max");
         } else {
             assert!(matches!(
                 res.unwrap_err(),
@@ -336,7 +336,7 @@ fn datacfg_limits_tables_list_items_and_map_entries_transitions() {
         let mut chunk = build_chunk_with_list_len(1);
         let res = parse_luatable_datacfg::<u32, BoundaryRow>(&mut chunk, &mut map_scratch);
         if max_entries >= 3 {
-            assert!(res.is_ok());
+            let _table = res.expect("map entries within max");
         } else {
             assert!(matches!(
                 res.unwrap_err(),

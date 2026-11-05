@@ -921,79 +921,95 @@ impl<'a> Cursor<'a> {
     }
 }
 
+fn step_gen_instruction(
+    code: &[u32],
+    consts: &[Val],
+    regs: &mut [Val; 256],
+    tables: &mut Vec<TableObj>,
+    pc: &mut u32,
+) -> Result<bool, GenError> {
+    let w = code[u32_to_usize(*pc)];
+    let std_op = XDI_TO_LUA53_OPCODE[u32_to_usize(w >> 26)];
+    let a = u32_to_usize(w & 0xFF);
+    let c = u32_to_usize((w >> 8) & 0x1FF);
+    let b = u32_to_usize((w >> 17) & 0x1FF);
+    let bx = u32_to_usize((w >> 8) & 0x3FFFF);
+    match std_op {
+        11 => {
+            let tid = u32::try_from(tables.len()).map_err(|_| GenError::MalformedBytecode {
+                context: "table count overflow",
+            })?;
+            tables.push(TableObj::default());
+            regs[a] = Val::Table(tid);
+        }
+        1 => regs[a] = consts[bx].clone(),
+        2 => {
+            let next_w = code[u32_to_usize(*pc + 1)];
+            let ax = u32_to_usize(next_w & 0x03FF_FFFF);
+            regs[a] = consts[ax].clone();
+            *pc += 1;
+        }
+        3 => {
+            regs[a] = Val::Bool;
+            if c != 0 {
+                *pc += 1;
+            }
+        }
+        0 => regs[a] = regs[b].clone(),
+        43 => {
+            let count = if b == 0 { 50 } else { b };
+            let Val::Table(tid) = regs[a] else {
+                return Err(GenError::MalformedBytecode {
+                    context: "setlist on non-table",
+                });
+            };
+            for i in 1..=count {
+                let v = regs[a + i].clone();
+                tables[u32_to_usize(tid)].list.push(v);
+            }
+            if c == 0 {
+                *pc += 1;
+            }
+        }
+        10 => {
+            let k = if (b & 0x100) != 0 {
+                consts[b & 0xFF].clone()
+            } else {
+                regs[b].clone()
+            };
+            let v = if (c & 0x100) != 0 {
+                consts[c & 0xFF].clone()
+            } else {
+                regs[c].clone()
+            };
+            let Val::Table(tid) = regs[a] else {
+                return Err(GenError::MalformedBytecode {
+                    context: "settable on non-table",
+                });
+            };
+            tables[u32_to_usize(tid)].map.push((k, v));
+        }
+        36 | 38 => return Ok(false),
+        _ => {}
+    }
+    *pc += 1;
+    Ok(true)
+}
+
 fn eval_root_slice(
     code: &[u32],
     consts: &[Val],
     regs: &mut [Val; 256],
     tables: &mut Vec<TableObj>,
 ) -> Result<(), GenError> {
+    let code_len = u32::try_from(code.len()).map_err(|_| GenError::MalformedBytecode {
+        context: "code length overflow",
+    })?;
     let mut pc = 0_u32;
-    while u32_to_usize(pc) < code.len() {
-        let w = code[u32_to_usize(pc)];
-        let std_op = XDI_TO_LUA53_OPCODE[u32_to_usize(w >> 26)];
-        let a = u32_to_usize(w & 0xFF);
-        let c = u32_to_usize((w >> 8) & 0x1FF);
-        let b = u32_to_usize((w >> 17) & 0x1FF);
-        let bx = u32_to_usize((w >> 8) & 0x3FFFF);
-        match std_op {
-            11 => {
-                let tid = u32::try_from(tables.len()).map_err(|_| GenError::MalformedBytecode {
-                    context: "table count overflow",
-                })?;
-                tables.push(TableObj::default());
-                regs[a] = Val::Table(tid);
-            }
-            1 => regs[a] = consts[bx].clone(),
-            2 => {
-                let next_w = code[u32_to_usize(pc + 1)];
-                let ax = u32_to_usize(next_w & 0x03FF_FFFF);
-                regs[a] = consts[ax].clone();
-                pc += 1;
-            }
-            3 => {
-                regs[a] = Val::Bool;
-                if c != 0 {
-                    pc += 1;
-                }
-            }
-            0 => regs[a] = regs[b].clone(),
-            43 => {
-                let count = if b == 0 { 50 } else { b };
-                let Val::Table(tid) = regs[a] else {
-                    return Err(GenError::MalformedBytecode {
-                        context: "setlist on non-table",
-                    });
-                };
-                for i in 1..=count {
-                    let v = regs[a + i].clone();
-                    tables[u32_to_usize(tid)].list.push(v);
-                }
-                if c == 0 {
-                    pc += 1;
-                }
-            }
-            10 => {
-                let k = if (b & 0x100) != 0 {
-                    consts[b & 0xFF].clone()
-                } else {
-                    regs[b].clone()
-                };
-                let v = if (c & 0x100) != 0 {
-                    consts[c & 0xFF].clone()
-                } else {
-                    regs[c].clone()
-                };
-                let Val::Table(tid) = regs[a] else {
-                    return Err(GenError::MalformedBytecode {
-                        context: "settable on non-table",
-                    });
-                };
-                tables[u32_to_usize(tid)].map.push((k, v));
-            }
-            36 | 38 => break,
-            _ => {}
+    for _ in 0..code_len {
+        if pc >= code_len || !step_gen_instruction(code, consts, regs, tables, &mut pc)? {
+            break;
         }
-        pc += 1;
     }
     Ok(())
 }
@@ -1105,6 +1121,7 @@ fn emit_kv_helper_struct(
         hdr.stem, hdr.col, hdr.derive_line, hdr.struct_name
     ));
     if let Some(elems) = tuple_elems {
+        assert_eq!(elems.len(), v_names.len());
         for (ety, vname) in elems.iter().zip(&v_names) {
             let ety_rust = scalar_or_compound_rust_type(ety, None)?;
             code.push_str(&format!("    pub {vname}: {ety_rust},\n"));

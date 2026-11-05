@@ -324,14 +324,9 @@ pub(crate) fn add_segment_byte_budget(
 ) -> Result<u32, VfsError> {
     let max_bytes = limits.path_bytes_max();
     if seg.len() > u32_to_usize(max_bytes) {
-        let actual = u64::try_from(seg.len()).map_err(|_| VfsError::LimitExceeded {
-            kind: VfsLimitKind::PathBytes,
-            actual: u64::MAX,
-            max: u64::from(max_bytes),
-        })?;
         return Err(VfsError::LimitExceeded {
             kind: VfsLimitKind::PathBytes,
-            actual,
+            actual: seg.len() as u64,
             max: u64::from(max_bytes),
         });
     }

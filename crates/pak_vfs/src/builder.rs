@@ -69,14 +69,9 @@ pub(crate) fn build_pak_vfs(
     let pak_count = match u16::try_from(mounts.len()) {
         Ok(c) if c <= limits.paks_count_max() => c,
         Ok(_) | Err(_) => {
-            let actual = u64::try_from(mounts.len()).map_err(|_| VfsError::LimitExceeded {
-                kind: VfsLimitKind::PaksCount,
-                actual: u64::MAX,
-                max: u64::from(limits.paks_count_max()),
-            })?;
             return Err(VfsError::LimitExceeded {
                 kind: VfsLimitKind::PaksCount,
-                actual,
+                actual: mounts.len() as u64,
                 max: u64::from(limits.paks_count_max()),
             });
         }
@@ -249,14 +244,9 @@ impl StagingState {
 
     fn push_staging_str(&mut self, s: &str) -> Result<ArenaSpan, VfsError> {
         let Ok(seg_len) = u16::try_from(s.len()) else {
-            let actual = u64::try_from(s.len()).map_err(|_| VfsError::LimitExceeded {
-                kind: VfsLimitKind::PathBytes,
-                actual: u64::MAX,
-                max: u64::from(u16::MAX),
-            })?;
             return Err(VfsError::LimitExceeded {
                 kind: VfsLimitKind::PathBytes,
-                actual,
+                actual: s.len() as u64,
                 max: u64::from(u16::MAX),
             });
         };

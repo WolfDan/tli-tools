@@ -318,7 +318,7 @@ fn batch_reads_and_multithreaded_concurrent_reads() {
                     let id = shared.entry_id_at(idx).expect("valid index");
                     let bytes = read_entry_vec(shared, id, &mut local_scratch);
                     assert_eq!(
-                        u64::try_from(bytes.len()).expect("fits"),
+                        bytes.len() as u64,
                         shared.entry_meta(id).uncompressed_bytes()
                     );
                 }
@@ -400,7 +400,7 @@ fn read_entry_range_into_across_codecs_encryption_and_block_cache() {
 
     for (id, _) in archive.iter_entries() {
         let full = read_entry_vec(&archive, id, &mut scratch);
-        let total = u64::try_from(full.len()).expect("fits");
+        let total = full.len() as u64;
         archive
             .read_entry_range_into(id, 0, &mut scratch, &mut [])
             .expect("empty at 0");
@@ -434,7 +434,7 @@ fn verify_range_windows(
     ];
     for (start, len) in edges {
         let mut win = vec![0_u8; len];
-        let off = u64::try_from(start).expect("u64");
+        let off = start as u64;
         archive
             .read_entry_range_into(id, off, scratch, &mut win)
             .expect("edge range");
@@ -445,7 +445,7 @@ fn verify_range_windows(
         let max_len = (full.len() - start).min(2200);
         let len = rng.usize(0..=max_len);
         let mut win = vec![0_u8; len];
-        let off = u64::try_from(start).expect("u64");
+        let off = start as u64;
         archive
             .read_entry_range_into(id, off, scratch, &mut win)
             .expect("random range");

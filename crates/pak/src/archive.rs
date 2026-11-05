@@ -180,11 +180,7 @@ impl PakPayloadReader {
             "EntryId out of bounds for this PakPayloadReader"
         );
         let meta = self.entries.meta(id);
-        let dst_len_u64 =
-            u64::try_from(dst.len()).map_err(|_| PakError::DestinationSizeMismatch {
-                expected: meta.uncompressed_bytes,
-                actual: u64::MAX,
-            })?;
+        let dst_len_u64 = dst.len() as u64;
         if dst_len_u64 != meta.uncompressed_bytes {
             return Err(PakError::DestinationSizeMismatch {
                 expected: meta.uncompressed_bytes,
@@ -241,11 +237,7 @@ impl PakPayloadReader {
             "EntryId out of bounds for this PakPayloadReader"
         );
         let meta = self.entries.meta(id);
-        let dst_len_u64 = u64::try_from(dst.len()).map_err(|_| PakError::OutOfBoundsRange {
-            offset,
-            byte_len: u64::MAX,
-            container_bytes: meta.uncompressed_bytes,
-        })?;
+        let dst_len_u64 = dst.len() as u64;
         let req_end = offset
             .checked_add(dst_len_u64)
             .ok_or(PakError::OutOfBoundsRange {
@@ -961,8 +953,7 @@ fn decompress_zlib_block(
     let status = zlib
         .decompress(src, out_chunk, FlushDecompress::Finish)
         .map_err(|_| PakError::ZlibDecompressFailed { entry, block_index })?;
-    let expected_out = u64::try_from(out_chunk.len())
-        .map_err(|_| PakError::ZlibDecompressFailed { entry, block_index })?;
+    let expected_out = out_chunk.len() as u64;
     if status != Status::StreamEnd || zlib.total_out() != expected_out {
         return Err(PakError::ZlibDecompressFailed { entry, block_index });
     }

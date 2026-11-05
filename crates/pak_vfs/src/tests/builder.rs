@@ -144,7 +144,7 @@ fn append_test_entry(
     entry: &TestPakEntry,
     dialect: PakDialect,
 ) -> WrittenTestEntry {
-    let header_offset = u64::try_from(disk.len()).expect("fits");
+    let header_offset = disk.len() as u64;
     let raw_method_idx: u32 = match entry.method {
         CompressionMethod::None => 0,
         CompressionMethod::Zlib => 1,
@@ -152,7 +152,7 @@ fn append_test_entry(
     };
     let (disk_bytes, block_raw_lens, rel_blocks) =
         encode_test_payload(entry, dialect, raw_method_idx != 0);
-    let compressed_total = u64::try_from(disk_bytes.len()).expect("fits");
+    let compressed_total = disk_bytes.len() as u64;
     let payload_sha1 = sha1_digest(&disk_bytes);
     write_inline_header(
         disk,
@@ -160,7 +160,7 @@ fn append_test_entry(
             dialect,
             offset: 0,
             comp_sz: compressed_total,
-            uncomp_sz: u64::try_from(entry.payload.len()).expect("fits"),
+            uncomp_sz: entry.payload.len() as u64,
             raw_method: raw_method_idx,
             sha1: payload_sha1,
             blocks: &rel_blocks,
@@ -206,7 +206,7 @@ fn encode_test_payload(
     let mut raw_lens = Vec::with_capacity(chunks.len());
     let mut rel_blocks = Vec::with_capacity(chunks.len());
     for blk in chunks {
-        let start_rel = hdr_bytes + u64::try_from(out.len()).expect("fits");
+        let start_rel = hdr_bytes + (out.len() as u64);
         let len_u32 = u32::try_from(blk.len()).expect("fits");
         raw_lens.push(len_u32);
         rel_blocks.push((start_rel, start_rel + u64::from(len_u32)));
@@ -372,8 +372,8 @@ fn write_fstring(out: &mut Vec<u8>, text: &str) {
 
 fn append_section(disk: &mut Vec<u8>, bytes: &[u8]) -> (u64, u64, [u8; 20]) {
     let hash = sha1_digest(bytes);
-    let offset = u64::try_from(disk.len()).expect("fits");
-    let size = u64::try_from(bytes.len()).expect("fits");
+    let offset = disk.len() as u64;
+    let size = bytes.len() as u64;
     disk.extend_from_slice(bytes);
     (offset, size, hash)
 }
@@ -416,7 +416,7 @@ fn sha1_digest(data: &[u8]) -> [u8; 20] {
         0x1032_5476,
         0xC3D2_E1F0,
     ];
-    let bit_len = u64::try_from(data.len()).expect("fits") * 8;
+    let bit_len = (data.len() as u64) * 8;
     let mut padded = data.to_vec();
     padded.push(0x80);
     for _ in 0..64 {

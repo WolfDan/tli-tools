@@ -13,6 +13,8 @@ Apply TigerBeetle's engineering discipline (**Safety > Performance > Developer E
 
 **Core Mandate:** Always operate in **Strict Systems Mode** (upfront/bounded memory, zero recursion, production assertions, deterministic layouts, batching) while writing **100% idiomatic Rust**. Never write C-in-Rust or Zig-in-Rust: leverage fat slices, move semantics, algebraic types, niche optimizations, and compile-time proofs instead of pointer chasing, `(_offset, _len)` plumbing, or gratuitous `unsafe`.
 
+**Fixed-Point Idempotency:** Actively rewrite any code that violates a rule in this skill (such as hand-rolled hash tables, `binary_search` key-value maps, shred-and-reassemble SoA, `.strict_*` or internal `.saturating_*` arithmetic, silent fallbacks, or missing `_MAX` checks). Conversely, if a function or module already satisfies the architectural, memory, totality, and assertion rules below and passes `cargo clippy --all-targets -- -D warnings`, **leave it untouched**—make zero cosmetic edits, never weaken test assertions, and never alter runtime behavior to eliminate a valid item-scoped `#[expect]`.
+
 ---
 
 ## 1. Anti-C & Anti-Pointer-Chasing Guardrails
@@ -70,9 +72,8 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
          }
 
          #[must_use]
-         #[expect(clippy::cast_possible_truncation, reason = "Invariant: inner.len() <= cap (u32)")]
          pub fn len(&self) -> u32 {
-             self.inner.len() as u32
+             bounded_len_u32(self.inner.len())
          }
 
          #[must_use]
@@ -96,8 +97,8 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
      * For all self-contained keys (`u32`, `i32`, composite structs/tuples `(i32, i32, i32)`, and `Box<str>` queried zero-alloc via `&str` through `Borrow<str>`), use **`rustc_hash::{FxHashMap, FxHashSet, FxBuildHasher}`** directly—pre-sized upfront via `FxHashMap::with_capacity_and_hasher(u32_to_usize(cap), FxBuildHasher)` and bounded by an explicit `_MAX` entry limit when populated from external input (use `std`'s seeded `RandomState` only if keys come from unverified attacker-controlled network input).
      * Reserve **`hashbrown::HashTable<u32>`** strictly for index tables where slots store compact `u32` IDs or spans (`RowId(u32)`, `SymbolId(u32)`, `Span`) whose equality/hashing requires passing external context (`&[u8]` string arena, `&[Key]` slice) at lookup time that Rust's `Eq`/`Borrow` traits cannot accept. Never hand-roll scalar linear-probing loops over `Box<[Option<Slot>]>` or fall back to `O(log N)` `binary_search` on `Box<[K]>` + `Box<[V]>` for key-value lookups.
 
-3. **Slice Iterators & Chunks — Never C-Style `for i in 0..len { arr[i] }`**
-   * Iterate over pre-bounded slices via `.iter().zip(...)`, `.chunks_exact()`, or `.as_chunks::<N>()`. This hoists bounds checks, eliminates off-by-one indexing bugs, and unlocks LLVM autovectorization.
+3. **Slice Iterators & Chunks — Never Index Existing Slices via `for i in 0..slice.len() { slice[i] }`**
+   * When iterating over an existing slice, use `.iter()`, `.iter_mut()`, `.enumerate()`, `.zip()`, `.chunks_exact()`, or `.as_chunks::<N>()` instead of indexing `slice[i]` in `for i in 0..slice.len()`. This hoists bounds checks, eliminates off-by-one indexing bugs, and unlocks LLVM autovectorization. *(Counted loops `for i in 0..count` are normal when decoding `count` sequential records from a wire cursor or generating `0..count` IDs where no slice exists yet.)*
    * **Preserve slice totality & tail completeness:** `assert_eq!(a.len(), b.len())` before `.zip()`ing parallel SoA columns (since `.zip()` silently truncates mismatched lengths), always process or `assert!(rem.is_empty())` on both `.as_chunks::<N>()` and `.chunks_exact(N)` / `.chunks_exact_mut(N)` remainders, and keep batch/slice kernels total over empty slices (`&[]` = 0 work; never `assert!(!slice.is_empty())` unless non-emptiness is encoded in a wrapper type).
 
 4. **Flat Contiguous Memory & Access-Temperature Layout — Zero Pointer/Index Chasing & Zero "Shred-and-Reassemble" SoA**
@@ -124,20 +125,32 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
 
 1. **Explicitly Sized Types (`u32`, `u64`, `u128`) & Semantic Cast Discipline**
    * **Ban `usize` in structs, wire/disk formats, state machines, and domain APIs.** Allow `usize` strictly at local slice-indexing boundaries.
-   * Use `T::from(...)` for lossless widening (`cast_lossless = "deny"`) and `TryFrom -> Result` (never `.unwrap_or(0)`) for fallible range narrowing (where out-of-range values are errors).
-   * Define one canonical crate-root `u32_to_usize` bridge alongside a static pointer-width check. **`u32_to_usize` is the *only* permitted `as usize` cast** (`u64 -> usize` must always use `usize::try_from(x)` because `cast_possible_truncation` only flags `u64 as usize` on 32-bit targets):
+   * **`u32_to_usize` is the *only* permitted `as usize` cast** (`u64 -> usize` must always use `usize::try_from(x)` because `cast_possible_truncation` only flags `u64 as usize` on 32-bit targets), while **`usize as u64` is unconditionally lossless** on 32/64-bit targets (never write `u64::try_from(usize)` with unreachable error branches):
      ```rust
      const _: () = assert!(usize::BITS >= 32);
+     const _: () = assert!(usize::BITS <= 64);
 
      #[inline(always)]
      #[must_use]
      pub const fn u32_to_usize(x: u32) -> usize {
          x as usize
      }
+
+     #[inline(always)]
+     #[must_use]
+     #[expect(
+         clippy::cast_possible_truncation,
+         reason = "Invariant: bounded slice/table length is asserted <= u32::MAX"
+     )]
+     pub const fn bounded_len_u32(len: usize) -> u32 {
+         assert!(len <= u32_to_usize(u32::MAX));
+         len as u32
+     }
      ```
-   * Fieldless `#[repr(u8)]` / `#[repr(u16)]` / `#[repr(u32)]` `enum` discriminants may use `op as u8` directly.
-   * For intentional bitfield or word-half extraction (`u64 -> u32`, `u32 -> u16`, `u32 -> u8`), apply an inline constant mask or right-shift to the target width in the cast expression (`((bits >> 6) & 0xFFFF) as u16`, `(x >> 32) as u32`, `(x & 0xFFFF_FFFF) as u32`) so Clippy statically proves the `as` cast in-range without any `#[expect]`—never write unreachable `u16::try_from(x & 0xFFFF)` error branches or `.to_le_bytes()` array-slicing hacks.
-   * Rust's scalar `float as int` (`x as i32`, `x as u8`) is guaranteed saturating and maps `NaN -> 0` across all targets since Rust 1.45. When an intentional scalar float-to-int or int-to-float conversion is genuinely required, isolate it in a small named helper with a narrow `#[expect(clippy::cast_possible_truncation, reason = "...")]` (plus `clippy::cast_sign_loss` for unsigned targets like `u8`/`u32`, or `clippy::cast_precision_loss` for `u32 -> f32`)—never dodge semantic cast lints with `wide::*::splat` or bit-twiddling hacks.
+   * **Let Clippy's semantic cast suite govern all other casts:**
+     * Any other `as` cast that passes Clippy's semantic cast suite without `#[expect]` (including `usize as u64`, fieldless `#[repr(u8/u16/u32)]` `enum as u8/u16/u32`, and range-proven masked/shifted bit extractions like `((bits >> 6) & 0xFFFF) as u16` or `(x >> 32) as u32`) is valid as-is—**never rewrite it**.
+     * Otherwise, use `T::from(...)` for lossless widening, `T::try_from(...) -> Result` (never `.unwrap_or(0)`) for fallible external range narrowing, and a **small named helper with an item-scoped `#[expect(clippy::cast_*, reason = "...")]`** (for `usize -> u32`, `i64 -> f64`, `f32/f64 -> int`, etc.) whenever an invariant-bounded narrowing or lossy float conversion is genuinely intentional. *(Note: Rust's scalar `float as int` is guaranteed saturating and maps `NaN -> 0` across all targets since Rust 1.45.)*
+   * **Never alter runtime semantics or write Rube Goldberg cast dodges:** Never route wider types through narrower `TryFrom` checks (such as narrowing `i64 -> f64` through `i32::try_from`), write unreachable `u16::try_from(x & 0xFFFF)` or `u64::try_from(usize)` error branches, slice `.to_le_bytes()` / `from_le_bytes()`, or wrap scalars in `wide::*::splat` to eliminate a valid item-scoped `#[expect(clippy::cast_*)]` helper.
 
 2. **`#[repr(transparent)]` Newtypes, Private Invariants, & Big-Endian Naming**
    * Wrap distinct domain primitives (`AccountId(u128)`, `SlotId(u32)`, `ByteCount(u32)`) so mixing indices, counts, and byte sizes fails to compile.
@@ -153,7 +166,7 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
    * **Public/external boundaries MUST be total:** Functions accepting untrusted `&[u8]`, `&str`, or external numbers must validate bounds and use **fallible `.checked_add` / `.checked_sub` / `.checked_mul` / `.checked_div` mapped to `Err(...)`**—never `assert!`, `.saturating_*`, or bare `+ - * / %` on unvalidated external input (which turns malformed payloads into a `panic = "abort"` DoS or silent corruption). Prefer constructing a private-field validated wrapper (`BoundedBatch<'a, T>`) at the boundary so internal kernels receive pre-validated inputs by type.
    * **Keep `assert!` active in release** (`[profile.release] panic = "abort"`), never downgraded to `debug_assert!`, for internal contracts and state invariants.
    * **Split compound assertions:** Write `assert!(a); assert!(b);` instead of `assert!(a && b);`.
-   * **Pair assertions across boundaries:** Assert invariants right before encoding/writing and immediately after reading/decoding.
+   * **Pair checks across serialization boundaries:** `assert!` internal invariants right before encoding/writing internal state, and validate with `Result` (`Err(...)`) immediately when decoding/reading untrusted bytes into internal types (never duplicating an `if bad { return Err(...); }` check with a post-guard `assert!(!bad)`).
    * **Ban tautology assertions ("assertion theater"):** Never write post-guard tautologies (`if x > MAX { return Err(...); } assert!(x <= MAX);`), post-assignment tautologies (`let x = 5; assert!(x == 5);`), `std`/fixed-type tautologies (`v.push(x); assert!(!v.is_empty());`, `[T; N].len() == N`, `x & MASK <= MASK`, `x.min(N) <= N`), loop-condition echoes (`while cond { assert!(cond); }`), or single-constant literal echoes (`const MAX: u32 = 16; const _: () = assert!(MAX == 16);`—as opposed to `size_of::<T>()` or cross-constant relationship checks). Every `assert!` must verify a **non-trivial invariant across independent state, conservation laws, monotonicity/ordering, or cross-representation round-trips**. Trivial accessors and pure type-checked mappers have no artificial assertion-count quota—never pad functions with unrelated assertions.
 
 5. **Zero Silent Fallbacks & Strict Error Discipline**
@@ -221,9 +234,9 @@ Strict static bounds in Rust must **never** degenerate into C idioms:
 
 * **Hard 70-line function limit:** Keep functions under 70 lines with an inverse-hourglass shape (few parameters, simple return type, clear linear control flow). Never pack parameters or coordinates into anonymous multi-field tuples or raw `[u32; 4]` arrays to dodge argument limits; group cohesive fields into a named struct (`Rect`, `WriteOp`). *(Sole exception to 70 lines: a single flat, exhaustive `match` dispatch over a large enum may carry `#[expect(clippy::too_many_lines, reason = "...")]` rather than splitting into `_ =>` wildcard helpers.)*
 * **"Push `if`s up and `for`s down":** Centralize branching and validation in parent orchestrators; push pure, branch-free batch loops down into leaf functions taking pre-validated slices.
-* **Minimal variable scopes & no deceptive shadowing:** Bind variables in the smallest possible block expression (`let cfg = { ... };`). Do not shadow variable names across type or unit transformations.
-* **Prose "why" comments:** Write full-sentence comments (capitalized, proper punctuation) explaining *why* an invariant, bound, or layout exists—never restating *what* the syntax does.
-* **Zero technical debt & boundary testing:** No `todo!()`, `unimplemented!()`, or placeholder hacks. Test with built-in `#[test]` covering positive space, negative space (`#[should_panic]` for violated internal preconditions, `Err(...)` for external boundaries), and exact boundary transitions (`0`, `MAX - 1`, `MAX`, `MAX + 1`). Tests and benchmarks must never silently return early on `Err` or missing fixtures (`let Ok(x) = setup() else { return; };` is banned; use `#[ignore = "reason"]` for environment-dependent tests).
+* **Narrow variable scopes & no deceptive shadowing:** Keep variable scopes narrow and never shadow variable names across type or unit transformations.
+* **Prose comments for non-obvious invariants:** Write full-sentence comments (capitalized, proper punctuation) explaining non-obvious invariants, bounds, or layout choices—never restating what the syntax does or adding boilerplate comment prefixes to self-explanatory code.
+* **Zero technical debt & boundary testing:** No `todo!()`, `unimplemented!()`, or placeholder hacks. Test with built-in `#[test]` covering positive space, negative space (`#[should_panic]` for violated internal preconditions, `Err(...)` for external boundaries), and exact boundary transitions (`0`, `MAX - 1`, `MAX`, `MAX + 1`). When a `#[test]` function exceeds 70 lines, split it into multiple focused `#[test]` functions—never compress or weaken `assert!(matches!(err, SpecificVariant))` checks into `.is_err()` / `.is_ok()` to save lines. Tests and benchmarks must never silently return early on `Err` or missing fixtures (`let Ok(x) = setup() else { return; };` is banned; use `#[ignore = "reason"]` for environment-dependent tests).
 
 ---
 
@@ -257,7 +270,7 @@ Every core systems capability in the table below has **strictly one** approved c
 ## 6. Mechanical Enforcement & Verification
 
 Wire these checks directly into `Cargo.toml` and `clippy.toml`.
-**Lint Suppression Policy:** `#[allow(...)]` is banned (`allow_attributes = "deny"`), and unused expectations fail the build (`unfulfilled_lint_expectations = "deny"`). Ban inner `#![expect(...)]` and `mod`-level `#[expect(...)]` (a single hit anywhere in a large file marks a file-wide `#![expect]` fulfilled and blinds the rest of the module); attach `#[expect]` strictly to the narrowest individual function, item, or statement. Any rare, legitimate suppression (such as an intentional scalar float cast helper, `FixedVec::len`, `lock_unpoisoned`, a flat exhaustive `match` over 70 lines, or an external derive-macro span quirk) **must** include a concrete `reason = "..."`. Never suppress `allow_attributes` or `allow_attributes_without_reason` on handwritten code.
+**Lint Suppression Policy:** `#[allow(...)]` is banned (`allow_attributes = "deny"`), and unused expectations fail the build (`unfulfilled_lint_expectations = "deny"`). Ban inner `#![expect(...)]` and `mod`-level `#[expect(...)]` (a single hit anywhere in a large file marks a file-wide `#![expect]` fulfilled and blinds the rest of the module); attach `#[expect]` strictly to the narrowest individual function, item, or statement. Any legitimate item-scoped suppression (such as an intentional invariant-bounded or lossy numeric cast helper with `#[expect(clippy::cast_*, reason = "...")]`, `lock_unpoisoned`, a flat exhaustive `match` over 70 lines, or an external derive-macro span quirk) **must** include a concrete `reason = "..."`—never delete a valid item-scoped `#[expect]` helper by altering runtime semantics or using `.to_le_bytes()` / `wide::*::splat` hacks. Never suppress `allow_attributes` or `allow_attributes_without_reason` on handwritten code.
 
 ### `Cargo.toml`
 ```toml
@@ -295,8 +308,8 @@ mem_forget = "deny"
 rc_buffer = "deny"
 rc_mutex = "deny"
 
-# Semantic cast safety (blocks narrowing, sign-loss, wrap, lossless `as` where `From` exists,
-# precision-loss, and raw pointer `as`, while allowing `#[repr(u8)]` `enum as u8`, inline-masked/shifted bit-extractions, and `u32_to_usize`)
+# Semantic cast safety (blocks unexamined narrowing, sign-loss, wrap, lossless `as` where `From` exists,
+# precision-loss, and raw pointer `as`; use `From`, `TryFrom`, range-proven masks/shifts, or item-scoped `#[expect]` helpers)
 cast_possible_truncation = "deny"
 cast_possible_wrap = "deny"
 cast_sign_loss = "deny"
@@ -359,11 +372,11 @@ disallowed-methods = [
 
 ### Verification Checklist Before Completing Work
 1. Verify `Cargo.toml` contains zero blocked dependencies or overlapping alternatives to Section 5's canonical toolkit, and that dependencies are declared only in member crates that directly import them.
-2. Run `cargo test` and verify tests cover positive invariants, negative rejections (`Err(...)` on external boundaries, `#[should_panic]` on internal contract violations), and `_MAX` boundary edges (`0`, `MAX - 1`, `MAX`, `MAX + 1`) with zero silent early-`return` skips.
+2. Run `cargo test` and verify tests cover positive invariants, negative rejections (`Err(...)` with specific error variant matches—never weakened to `.is_err()` / `.is_ok()`—on external boundaries, `#[should_panic]` on internal contract violations), and `_MAX` boundary edges (`0`, `MAX - 1`, `MAX`, `MAX + 1`) with zero silent early-`return` skips.
 3. Run `cargo clippy --all-targets -- -D warnings` and resolve all lint errors without file/module-wide `#![expect]` or shortcut suppressions.
 4. Audit every modified module to confirm:
    * Public/external functions are total (`Result`, `.checked_*` math, checked slice narrowing, empty-slice `&[]` totality, zero `assert!` / `.saturating_*` / bare `+ - * / %` on unvalidated untrusted input).
    * Invariant-bearing structs/newtypes have private fields (`is_finite()` enforced on constrained floats, no invalid `Default` impls), and resources with fallible/durable teardown expose `close(self) -> Result<(), Error>`.
-   * Zero silent fallbacks (`unwrap_or*`, `map_or*`, `.ok()`, `let _ =`, bare `if let Ok`, error-discarding `let Ok(...) else`, dummy-default `match` arms, `.saturating_*` on internal indices/offsets/counters, redundant `.strict_*` calls (rewrite to `+ - *`), clamped/wrapped invalid indices, `from_utf8_lossy`, `Unknown(u8)` domain enum catch-alls, unreachable `try_from(x & MASK)` or `.to_le_bytes()` cast-dodge hacks, `Result<T, String>`, `PoisonError::into_inner`, ignored chunk remainders, unasserted parallel `.zip()` lengths, or silent bounded-loop exhaustion).
+   * Zero silent fallbacks (`unwrap_or*`, `map_or*`, `.ok()`, `let _ =`, bare `if let Ok`, error-discarding `let Ok(...) else`, dummy-default `match` arms, `.saturating_*` on internal indices/offsets/counters, redundant `.strict_*` calls (rewrite to `+ - *`), clamped/wrapped invalid indices, `from_utf8_lossy`, `Unknown(u8)` domain enum catch-alls, unreachable `try_from(x & MASK)` or `u64::try_from(usize)` branches, `.to_le_bytes()` / `from_le_bytes()` cast-dodge hacks, `Result<T, String>`, `PoisonError::into_inner`, ignored chunk remainders, unasserted parallel `.zip()` lengths, or silent bounded-loop exhaustion).
    * Zero tautology assertions or quota-padding checks; all `assert!`s verify real cross-state or paired boundary invariants.
    * Zero post-startup heap growth in hot paths (no hidden `Scratch::new()` wrappers), zero hand-rolled linear-probing hash tables or `binary_search` key-value maps (rewrite self-contained `K -> V` tables to `FxHashMap`/`FxHashSet`, and external-context/arena index tables to `hashbrown::HashTable<u32>`), zero "shred-and-reassemble" fake SoA (point-lookup fields share a `Row`; searched positional/arena tables split at most into hot `Box<[Key]>` + cold `Box<[Payload]>`; standalone `Box<[Field]>` columns exist only for selective slice scans or contiguous `as_chunks::<N>()` SIMD loads), zero standalone `parent_ids: Box<[ParentId]>` columns (use `&children[start..end]` slice narrowing for top-down lookups, and keep bottom-up `parent: ParentId` inline in the child struct), zero `(_offset, _len)` plumbing, and zero recursion.

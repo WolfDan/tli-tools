@@ -59,7 +59,7 @@ pub struct DecompileConfig {
 }
 
 impl DecompileConfig {
-    /// Default configuration (`DecompileLimits::DEFAULT` with permissive fallback comments enabled).
+    /// Default configuration (`LuacLimits::DEFAULT`, permissive mode, diagnostic comments disabled).
     pub const DEFAULT: Self = Self {
         limits: LuacLimits::DEFAULT,
         strict_mode: false,
