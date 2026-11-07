@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// Errors returned by `xtask` CLI commands and the `DataCfg` schema code generator.
+/// Errors returned by `xtask` CLI commands and the `DataCfg` and `.bin` schema code generators.
 #[derive(Debug, Error)]
 pub enum XtaskError {
     /// Missing or invalid CLI subcommand.

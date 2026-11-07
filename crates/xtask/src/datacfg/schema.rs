@@ -397,7 +397,8 @@ fn merge_kv_records(
         (Some(va_list), Some(vb_list)) if va_list.len() == vb_list.len() => {
             let mut elems = ArrayVec::new();
             for (x, y) in va_list.into_iter().zip(vb_list) {
-                elems.push(ScalarOrList::merge(x, y)?);
+                let push_res = elems.try_push(ScalarOrList::merge(x, y)?);
+                assert!(push_res.is_ok());
             }
             Some(elems)
         }
@@ -678,7 +679,9 @@ fn infer_map_or_record(
                     {
                         let mut elems = ArrayVec::new();
                         for item in &vt.list {
-                            elems.push(infer_scalar_or_list_depth1(item, tables, stem)?);
+                            let push_res =
+                                elems.try_push(infer_scalar_or_list_depth1(item, tables, stem)?);
+                            assert!(push_res.is_ok());
                         }
                         tuple_elems = Some(elems);
                     }

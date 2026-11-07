@@ -275,7 +275,8 @@ fn verify_hierarchy_slice(
         ExtractedKeySchema::Str1 | ExtractedKeySchema::StrInt(_)
     );
     let mut frames = arrayvec::ArrayVec::<u32, 4>::new();
-    frames.push(top_count);
+    let push_res = frames.try_push(top_count);
+    assert!(push_res.is_ok());
 
     while !frames.is_empty() {
         let level = frames.len() - 1;

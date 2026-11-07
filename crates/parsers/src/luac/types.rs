@@ -36,7 +36,7 @@ pub const CONSTANTS_COUNT_MAX_DEFAULT: u32 = 262_144;
 pub const UPVALUES_COUNT_MAX_DEFAULT: u32 = 255;
 /// Default maximum number of local variables across a single chunk.
 pub const LOC_VARS_COUNT_MAX_DEFAULT: u32 = 65_536;
-/// Default maximum transpiled Lua 5.3 buffer size in bytes (`32 MiB`).
+/// Default maximum decompiled Lua 5.3 output buffer size in bytes (`32 MiB`).
 pub const TRANSPILE_BYTES_MAX_DEFAULT: u32 = 32 * 1024 * 1024;
 
 /// Default maximum number of tables constructed in a single `DataCfg` file.
@@ -46,7 +46,7 @@ pub const DATACFG_LIST_ITEMS_MAX_DEFAULT: u32 = 1_048_576;
 /// Default maximum number of map key-value entries across a single `DataCfg` file.
 pub const DATACFG_MAP_ENTRIES_MAX_DEFAULT: u32 = 1_048_576;
 
-/// Identifies which resource limit was exceeded during parsing, transpilation, or evaluation.
+/// Identifies which resource limit was exceeded during parsing, decompilation, or evaluation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LuacLimitKind {
     /// Input buffer length exceeds `u32::MAX`.
@@ -63,7 +63,7 @@ pub enum LuacLimitKind {
     UpvaluesCount,
     /// Local variable count exceeds `loc_vars_count_max`.
     LocVarsCount,
-    /// Transpiled Lua 5.3 output size exceeds `transpile_bytes_max`.
+    /// Decompiled Lua 5.3 output size exceeds `transpile_bytes_max`.
     TranspileBytes,
     /// Total `DataCfg` tables count exceeds `tables_count_max`.
     DataCfgTablesCount,
@@ -73,7 +73,7 @@ pub enum LuacLimitKind {
     DataCfgMapEntries,
 }
 
-/// Resource bounds for `\x01XDI` / Lua 5.3 bytecode parsing and transpilation.
+/// Resource bounds for `\x01XDI` / Lua 5.3 bytecode parsing and decompilation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LuacLimits {
     proto_depth_max: u32,

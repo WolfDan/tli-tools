@@ -1,5 +1,4 @@
-//! Address-free PE64 loader and structural x86_64 disassembler for `.bin` `ReadBin` schemas,
-//! `FConfigAffix` expression opcodes (`AffixOp3`), and `ActionData` tagged unions.
+//! Address-free PE64 loader, `.pdata` function bounds lookup, and `.bin` key schema helpers.
 
 use crate::error::XtaskError;
 use crate::u32_to_usize;

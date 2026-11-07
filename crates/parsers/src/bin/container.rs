@@ -271,7 +271,8 @@ fn open_decompressed_block<'s>(
         });
     }
     let mut frames = ArrayVec::new();
-    frames.push(top_count);
+    let push_res = frames.try_push(top_count);
+    assert!(push_res.is_ok());
     Ok(Some((cur, frames)))
 }
 
@@ -390,7 +391,8 @@ pub fn parse_map_bin_table<K: BinKey, Row: BinRow>(
     let init_cap = top_count.min(INITIAL_MAP_CAP_MAX);
     let mut map = FxHashMap::with_capacity_and_hasher(u32_to_usize(init_cap), FxBuildHasher);
     let mut frames = ArrayVec::new();
-    frames.push(top_count);
+    let push_res = frames.try_push(top_count);
+    assert!(push_res.is_ok());
     let mut str_key = "";
     let mut int_keys = [0i32; 4];
     let mut total_rows: u32 = 0;
