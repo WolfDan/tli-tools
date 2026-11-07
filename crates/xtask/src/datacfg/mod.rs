@@ -9,7 +9,10 @@ pub mod vm;
 mod tests;
 
 use crate::datacfg::domains::classify_domain;
-use crate::datacfg::emit::{CodegenMode, emit_domain_module, emit_mod_rs, emit_preload_module};
+use crate::datacfg::emit::{
+    CodegenMode, emit_domain_module, emit_mod_rs, emit_preload_module,
+    verify_or_prune_stale_rs_files,
+};
 use crate::datacfg::schema::{LuaTableSpec, analyze_luatable, analyze_preload};
 use crate::error::XtaskError;
 use pak::{AesKey, ReadScratch, ScratchLimits};
@@ -124,13 +127,18 @@ pub fn run_codegen(mode: CodegenMode) -> Result<(), XtaskError> {
     }
 
     let mut all_modules = BTreeSet::new();
+    let mut expected_files = BTreeSet::new();
     for (domain, specs) in &domains {
         all_modules.insert(*domain);
+        expected_files.insert(format!("{domain}.rs"));
         emit_domain_module(&out_dir, domain, specs, mode)?;
     }
     all_modules.insert("preload");
+    expected_files.insert("preload.rs".to_owned());
     emit_preload_module(&out_dir, &preload_specs, mode)?;
+    expected_files.insert("mod.rs".to_owned());
     emit_mod_rs(&out_dir, &all_modules, mode)?;
+    verify_or_prune_stale_rs_files(&out_dir, &expected_files, mode)?;
 
     let action = match mode {
         CodegenMode::Write => "Generated",

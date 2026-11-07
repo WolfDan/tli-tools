@@ -1,16 +1,20 @@
-//! Unit, boundary, and negative tests for `xtask` CLI parsing and `DataCfg` schema inference.
+//! Unit, boundary, and negative tests for `xtask` CLI parsing, `DataCfg` schema inference,
+//! and AST-backed Rust code emission.
 
 use crate::datacfg::domains::{
     classify_domain, infer_kv_field_names, to_pascal_case, to_snake_case,
 };
-use crate::datacfg::emit::{CodegenMode, write_or_check_file};
+use crate::datacfg::emit::{
+    CodegenMode, emit_domain_module, verify_or_prune_stale_rs_files, write_or_check_file,
+};
 use crate::datacfg::schema::{
-    ColType, IntBounds, RecordType, ScalarOrList, ScalarType, analyze_luatable, analyze_preload,
+    ColType, IntBounds, LuaTableKey, PreloadKind, RecordType, ScalarOrList, ScalarType,
+    analyze_luatable, analyze_preload,
 };
 use crate::datacfg::vm::{Cursor, GEN_INSTRUCTIONS_MAX, RootProto, Val, eval_root_slice};
 use crate::error::XtaskError;
 use crate::parse_cli_args;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 fn encode_xdi_abc(xdi_op: u32, a: u32, b: u32, c: u32) -> u32 {
@@ -59,14 +63,18 @@ fn cli_args_positive_and_negative_rejections() {
 }
 
 #[test]
-fn int_bounds_exact_integer_width_transitions() {
+fn int_bounds_exact_integer_width_transitions_and_align_tiers() {
     assert_eq!(IntBounds::single(0).rust_type(), "u8");
+    assert_eq!(IntBounds::single(0).align_tier(), 3);
     assert_eq!(IntBounds::single(255).rust_type(), "u8");
     assert_eq!(IntBounds::single(256).rust_type(), "u16");
+    assert_eq!(IntBounds::single(256).align_tier(), 2);
     assert_eq!(IntBounds::single(65_535).rust_type(), "u16");
     assert_eq!(IntBounds::single(65_536).rust_type(), "u32");
+    assert_eq!(IntBounds::single(65_536).align_tier(), 1);
     assert_eq!(IntBounds::single(4_294_967_295).rust_type(), "u32");
     assert_eq!(IntBounds::single(4_294_967_296).rust_type(), "u64");
+    assert_eq!(IntBounds::single(4_294_967_296).align_tier(), 0);
 
     assert_eq!(
         IntBounds {
@@ -120,7 +128,10 @@ fn schema_type_merging_and_incompatible_rejection() {
         depth: 1,
     };
     let merged = ScalarOrList::merge(u8_ty, list_u16).unwrap();
-    assert_eq!(merged.rust_type(), "IntOrIntList<u16>");
+    assert_eq!(
+        merged.rust_type_tokens().to_string(),
+        "IntOrIntList < u16 >"
+    );
 
     // StringRecord with divergent keys degrades to FxHashMap<Box<str>, V>
     let mut m1 = BTreeMap::new();
@@ -133,8 +144,8 @@ fn schema_type_merging_and_incompatible_rejection() {
     )
     .unwrap();
     assert_eq!(
-        col_merged.rust_type(None, "config_test").unwrap(),
-        "FxHashMap<Box<str>, u8>"
+        col_merged.rust_type_tokens("Test", "Col").to_string(),
+        "FxHashMap < Box < str > , u8 >"
     );
 
     // Incompatible scalar types rejected
@@ -162,13 +173,12 @@ fn domains_and_naming_conventions() {
 }
 
 #[test]
-fn analyze_synthetic_luatable_and_preload_chunks() {
+fn analyze_synthetic_luatable_and_preload_chunks_and_emit_ast() {
     // Build a synthetic preload list chunk: R0 = { 10, 300 }; Return R0
-    // XDI op 4 = NEWTABLE(11), XDI op 6 = LOADK(1), XDI op 28 = SETLIST(43), XDI op 21 = RETURN(38)
     let mut preload_buf = Vec::new();
     preload_buf.extend_from_slice(b"\x01XDI\x11\r\n\x1a\n\x01");
-    preload_buf.push(0); // source = None
-    preload_buf.extend_from_slice(&[0u8; 11]); // meta
+    preload_buf.push(0);
+    preload_buf.extend_from_slice(&[0u8; 11]);
     let preload_code = [
         encode_xdi_abc(4, 0, 0, 0),  // NEWTABLE R0
         encode_xdi_abx(6, 1, 0),     // LOADK R1, K0 (10)
@@ -188,9 +198,9 @@ fn analyze_synthetic_luatable_and_preload_chunks() {
 
     let p_spec = analyze_preload("config_preload_test".to_owned(), &mut preload_buf).unwrap();
     assert_eq!(p_spec.pascal, "ConfigPreloadTest");
+    assert!(matches!(p_spec.kind, PreloadKind::List(_)));
 
     // Build a synthetic LuaTable chunk: R0 (main), R1 (most), R2 (def)
-    // XDI op 2 = SETTABLE(10)
     let mut lt_buf = Vec::new();
     lt_buf.extend_from_slice(b"\x01XDI\x11\r\n\x1a\n\x01");
     lt_buf.push(0);
@@ -214,15 +224,23 @@ fn analyze_synthetic_luatable_and_preload_chunks() {
 
     let lt_spec = analyze_luatable("config_item_test".to_owned(), &mut lt_buf).unwrap();
     assert_eq!(lt_spec.pascal, "ItemTest");
+    assert_eq!(lt_spec.key, LuaTableKey::DefaultU32);
     assert_eq!(
         lt_spec
             .cols
             .get("Id")
             .unwrap()
-            .rust_type(None, "s")
-            .unwrap(),
+            .rust_type_tokens(&lt_spec.pascal, "Id")
+            .to_string(),
         "u8"
     );
+
+    let tmp_dir = std::env::temp_dir().join(format!("tli_xtask_ast_{}", std::process::id()));
+    fs::create_dir_all(&tmp_dir).unwrap();
+    emit_domain_module(&tmp_dir, "item", &[lt_spec], CodegenMode::Write).unwrap();
+    let generated = fs::read_to_string(tmp_dir.join("item.rs")).unwrap();
+    assert!(generated.contains("pub struct ConfigItemTestRow"));
+    fs::remove_dir_all(&tmp_dir).unwrap();
 }
 
 #[test]
@@ -251,10 +269,11 @@ fn reject_malformed_bytecode_and_step_limit_exceeded() {
 }
 
 #[test]
-fn write_or_check_file_detects_drift() {
+fn write_or_check_file_and_stale_prune_detect_drift() {
     let tmp_dir = std::env::temp_dir().join(format!("tli_xtask_test_{}", std::process::id()));
     fs::create_dir_all(&tmp_dir).unwrap();
     let file_path = tmp_dir.join("sample.rs");
+    let stale_path = tmp_dir.join("stale.rs");
 
     // Check fails when file does not exist
     let missing_err =
@@ -269,6 +288,15 @@ fn write_or_check_file_detects_drift() {
     let drift_err =
         write_or_check_file(&file_path, "pub mod b;\n", CodegenMode::Check).unwrap_err();
     assert!(matches!(drift_err, XtaskError::GeneratedFileDrift { .. }));
+
+    // Stale .rs file detection in Check mode and removal in Write mode
+    write_or_check_file(&stale_path, "pub mod stale;\n", CodegenMode::Write).unwrap();
+    let expected = BTreeSet::from(["sample.rs".to_owned()]);
+    let stale_err =
+        verify_or_prune_stale_rs_files(&tmp_dir, &expected, CodegenMode::Check).unwrap_err();
+    assert!(matches!(stale_err, XtaskError::GeneratedFileDrift { .. }));
+    verify_or_prune_stale_rs_files(&tmp_dir, &expected, CodegenMode::Write).unwrap();
+    assert!(!stale_path.exists());
 
     fs::remove_dir_all(&tmp_dir).unwrap();
 }

@@ -1,5 +1,6 @@
 //! Workspace automation and TigerStyle code generator binary (`cargo xtask` / `cargo codegen`).
 
+pub mod bincfg;
 pub mod datacfg;
 pub mod error;
 
@@ -60,5 +61,6 @@ where
 
 fn main() -> Result<(), XtaskError> {
     let mode = parse_cli_args(std::env::args().skip(1))?;
-    datacfg::run_codegen(mode)
+    datacfg::run_codegen(mode)?;
+    bincfg::run_codegen(mode)
 }

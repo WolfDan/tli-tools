@@ -59,4 +59,19 @@ pub enum XtaskError {
     /// `--check` mode detected that a committed generated file is missing or out of date.
     #[error("generated file `{path}` is out of date; run `cargo codegen` to update")]
     GeneratedFileDrift { path: Box<str> },
+
+    /// Failed to parse PE64 headers or extract `.bin` schema metadata from the client executable.
+    #[error("PE64 schema extraction failed in `{context}`: {detail}")]
+    PeExtract {
+        context: &'static str,
+        detail: Box<str>,
+    },
+
+    /// `.bin` corpus verification failed against an extracted schema.
+    #[error(".bin corpus verification failed in `{path}`: {detail}")]
+    BinCorpusVerify { path: Box<str>, detail: Box<str> },
+
+    /// Generated token stream failed to parse as a valid Rust syntax tree.
+    #[error("generated Rust AST parse error")]
+    Syn(#[from] syn::Error),
 }

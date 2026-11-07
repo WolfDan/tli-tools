@@ -1,5 +1,6 @@
 //! High-performance, data-oriented TigerStyle parsers for files extracted from `.pak` archives.
 
+pub mod bin;
 pub mod luac;
 
 const _: () = assert!(usize::BITS >= 32);
@@ -99,6 +100,17 @@ impl FixedVec<u8> {
         }
         let raw_cap_before = self.inner.capacity();
         self.inner.extend_from_slice(bytes);
+        assert!(self.inner.capacity() == raw_cap_before);
+        true
+    }
+
+    #[inline]
+    pub(crate) fn resize_within_cap(&mut self, new_len: u32, val: u8) -> bool {
+        if new_len > self.cap {
+            return false;
+        }
+        let raw_cap_before = self.inner.capacity();
+        self.inner.resize(u32_to_usize(new_len), val);
         assert!(self.inner.capacity() == raw_cap_before);
         true
     }

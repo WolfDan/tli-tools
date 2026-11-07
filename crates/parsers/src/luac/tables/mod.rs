@@ -1,5 +1,4 @@
 //! Strongly-typed `DataCfg` and `LuaPreLoadTable` parsers grouped into 23 domain modules.
-
 pub mod achievement;
 pub mod activity;
 pub mod auction;
@@ -23,7 +22,6 @@ pub mod skill;
 pub mod sp;
 pub mod system;
 pub mod talent;
-
 pub use achievement::*;
 pub use activity::*;
 pub use auction::*;
@@ -47,12 +45,13 @@ pub use skill::*;
 pub use sp::*;
 pub use system::*;
 pub use talent::*;
-
 use crate::luac::datacfg::DataCfgScratch;
 use crate::luac::error::{DataCfgError, LuacError};
-
-type DomainVerifier = fn(&str, &mut [u8], &mut DataCfgScratch) -> Option<Result<u32, LuacError>>;
-
+type DomainVerifier = fn(
+    &str,
+    &mut [u8],
+    &mut DataCfgScratch,
+) -> Option<Result<u32, LuacError>>;
 const DOMAIN_VERIFIERS: [DomainVerifier; 23] = [
     achievement::verify_achievement_datacfg_by_stem,
     activity::verify_activity_datacfg_by_stem,
@@ -78,7 +77,6 @@ const DOMAIN_VERIFIERS: [DomainVerifier; 23] = [
     system::verify_system_datacfg_by_stem,
     talent::verify_talent_datacfg_by_stem,
 ];
-
 /// Evaluates a `DataCfg` `.out` buffer by file stem (`config_*`) and returns its row/entry count.
 pub fn verify_all_datacfg_by_stem(
     stem: &str,
@@ -90,9 +88,11 @@ pub fn verify_all_datacfg_by_stem(
             return res;
         }
     }
-    Err(DataCfgError::UnknownField {
-        table: "<datacfg_corpus>",
-        field: stem.into(),
-    }
-    .into())
+    Err(
+        DataCfgError::UnknownField {
+            table: "<datacfg_corpus>",
+            field: stem.into(),
+        }
+            .into(),
+    )
 }

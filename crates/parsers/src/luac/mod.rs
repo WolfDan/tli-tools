@@ -5,6 +5,7 @@ mod datacfg;
 mod decompile;
 mod error;
 pub(crate) mod opcode;
+#[rustfmt::skip]
 pub mod tables;
 pub(crate) mod transpile;
 mod types;

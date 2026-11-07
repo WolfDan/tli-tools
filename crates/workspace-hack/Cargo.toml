@@ -18,11 +18,25 @@ workspace = true
 
 ### BEGIN HAKARI SECTION
 [dependencies]
-memchr = { version = "2" }
+proc-macro2 = { version = "1" }
+quote = { version = "1" }
+syn = { version = "3", features = ["full"] }
 
 [build-dependencies]
 proc-macro2 = { version = "1" }
 quote = { version = "1" }
 syn = { version = "3", features = ["full"] }
+
+[target.aarch64-unknown-linux-gnu.dependencies]
+libc = { version = "0.2" }
+
+[target.aarch64-unknown-linux-gnu.build-dependencies]
+libc = { version = "0.2" }
+
+[target.aarch64-apple-darwin.dependencies]
+libc = { version = "0.2" }
+
+[target.aarch64-apple-darwin.build-dependencies]
+libc = { version = "0.2" }
 
 ### END HAKARI SECTION

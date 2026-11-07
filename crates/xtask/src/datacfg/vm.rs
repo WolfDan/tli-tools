@@ -2,6 +2,8 @@
 
 use crate::error::XtaskError;
 use crate::u32_to_usize;
+use zerocopy::FromBytes;
+use zerocopy::byteorder::little_endian::{I64, U32};
 
 /// Maximum number of VM instructions executed when evaluating a `DataCfg` root chunk.
 pub const GEN_INSTRUCTIONS_MAX: u32 = 2_097_152;
@@ -68,17 +70,16 @@ pub fn decrypt_in_place(buf: &mut [u8]) {
     }
 }
 
-/// Fallible byte cursor for reading `\x01XDI` root prototype fields.
+/// Fallible fat-slice byte cursor for reading `\x01XDI` root prototype fields.
 pub struct Cursor<'a> {
     buf: &'a [u8],
-    pos: u32,
     stem: &'a str,
 }
 
 impl<'a> Cursor<'a> {
     #[must_use]
     pub const fn new(buf: &'a [u8], stem: &'a str) -> Self {
-        Self { buf, pos: 0, stem }
+        Self { buf, stem }
     }
 
     fn err(&self, context: &'static str) -> XtaskError {
@@ -89,35 +90,33 @@ impl<'a> Cursor<'a> {
     }
 
     pub fn take(&mut self, len: u32) -> Result<&'a [u8], XtaskError> {
-        let start = u32_to_usize(self.pos);
-        let end = start
-            .checked_add(u32_to_usize(len))
-            .ok_or_else(|| self.err("cursor overflow"))?;
-        let slice = self
+        let (slice, rest) = self
             .buf
-            .get(start..end)
+            .split_at_checked(u32_to_usize(len))
             .ok_or_else(|| self.err("cursor eof"))?;
-        self.pos = self
-            .pos
-            .checked_add(len)
-            .ok_or_else(|| self.err("cursor position overflow"))?;
+        self.buf = rest;
         Ok(slice)
     }
 
     pub fn read_u8(&mut self) -> Result<u8, XtaskError> {
-        Ok(self.take(1)?[0])
+        let (&b, rest) = self
+            .buf
+            .split_first()
+            .ok_or_else(|| self.err("cursor eof"))?;
+        self.buf = rest;
+        Ok(b)
     }
 
     pub fn read_u32(&mut self) -> Result<u32, XtaskError> {
-        let b = self.take(4)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        let (v, rest) = U32::ref_from_prefix(self.buf).map_err(|_| self.err("cursor eof"))?;
+        self.buf = rest;
+        Ok(v.get())
     }
 
     pub fn read_i64(&mut self) -> Result<i64, XtaskError> {
-        let b = self.take(8)?;
-        Ok(i64::from_le_bytes([
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        ]))
+        let (v, rest) = I64::ref_from_prefix(self.buf).map_err(|_| self.err("cursor eof"))?;
+        self.buf = rest;
+        Ok(v.get())
     }
 
     pub fn read_xdi_string(&mut self) -> Result<Option<Box<str>>, XtaskError> {

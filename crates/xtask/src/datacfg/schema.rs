@@ -7,6 +7,8 @@ use crate::datacfg::vm::{
 use crate::error::XtaskError;
 use crate::u32_to_usize;
 use arrayvec::ArrayVec;
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote};
 use std::collections::BTreeMap;
 
 /// Inclusive integer range observed across all rows of a column.
@@ -30,28 +32,59 @@ impl IntBounds {
         }
     }
 
-    /// Returns the narrowest fixed-width Rust integer type that fits `self.min..=self.max`.
+    /// Returns the narrowest fixed-width Rust integer type name that fits `self.min..=self.max`.
     #[must_use]
-    pub fn rust_type(self) -> &'static str {
+    pub const fn rust_type(self) -> &'static str {
         if self.min >= 0 {
-            if self.max <= i64::from(u8::MAX) {
+            if self.max <= u8::MAX as i64 {
                 "u8"
-            } else if self.max <= i64::from(u16::MAX) {
+            } else if self.max <= u16::MAX as i64 {
                 "u16"
-            } else if self.max <= i64::from(u32::MAX) {
+            } else if self.max <= u32::MAX as i64 {
                 "u32"
             } else {
                 "u64"
             }
-        } else if self.min >= i64::from(i8::MIN) && self.max <= i64::from(i8::MAX) {
+        } else if self.min >= i8::MIN as i64 && self.max <= i8::MAX as i64 {
             "i8"
-        } else if self.min >= i64::from(i16::MIN) && self.max <= i64::from(i16::MAX) {
+        } else if self.min >= i16::MIN as i64 && self.max <= i16::MAX as i64 {
             "i16"
-        } else if self.min >= i64::from(i32::MIN) && self.max <= i64::from(i32::MAX) {
+        } else if self.min >= i32::MIN as i64 && self.max <= i32::MAX as i64 {
             "i32"
         } else {
             "i64"
         }
+    }
+
+    /// Returns the alignment tier (`0` = 8B, `1` = 4B, `2` = 2B, `3` = 1B) for this integer width.
+    #[must_use]
+    pub const fn align_tier(self) -> u8 {
+        if self.min >= 0 {
+            if self.max <= u8::MAX as i64 {
+                3
+            } else if self.max <= u16::MAX as i64 {
+                2
+            } else if self.max <= u32::MAX as i64 {
+                1
+            } else {
+                0
+            }
+        } else if self.min >= i8::MIN as i64 && self.max <= i8::MAX as i64 {
+            3
+        } else if self.min >= i16::MIN as i64 && self.max <= i16::MAX as i64 {
+            2
+        } else if self.min >= i32::MIN as i64 && self.max <= i32::MAX as i64 {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Returns the `TokenStream` for the narrowest fixed-width Rust integer type.
+    #[must_use]
+    pub fn rust_type_tokens(self) -> TokenStream {
+        let ident = format_ident!("{}", self.rust_type());
+        quote! { #ident }
     }
 }
 
@@ -106,15 +139,30 @@ impl ScalarType {
         matches!(self, Self::IntOrList(_))
     }
 
+    /// Returns the alignment tier (`0` = 8B, `1` = 4B, `2` = 2B, `3` = 1B, `4` = 0B) for struct layout.
     #[must_use]
-    pub fn rust_type(self) -> String {
+    pub const fn align_tier(self) -> u8 {
         match self {
-            Self::EmptyTable => "[u8; 0]".to_owned(),
-            Self::Bool => "bool".to_owned(),
-            Self::Int(b) => b.rust_type().to_owned(),
-            Self::Float => "f64".to_owned(),
-            Self::Str => "Box<str>".to_owned(),
-            Self::IntOrList(b) => format!("IntOrIntList<{}>", b.rust_type()),
+            Self::EmptyTable => 4,
+            Self::Bool => 3,
+            Self::Int(b) => b.align_tier(),
+            Self::Float | Self::Str | Self::IntOrList(_) => 0,
+        }
+    }
+
+    /// Returns the Rust type `TokenStream` for this scalar type.
+    #[must_use]
+    pub fn rust_type_tokens(self) -> TokenStream {
+        match self {
+            Self::EmptyTable => quote! { [u8; 0] },
+            Self::Bool => quote! { bool },
+            Self::Int(b) => b.rust_type_tokens(),
+            Self::Float => quote! { f64 },
+            Self::Str => quote! { Box<str> },
+            Self::IntOrList(b) => {
+                let inner = b.rust_type_tokens();
+                quote! { IntOrIntList<#inner> }
+            }
         }
     }
 }
@@ -211,14 +259,24 @@ impl ScalarOrList {
         }
     }
 
+    /// Returns the alignment tier (`0` = 8B, `1` = 4B, `2` = 2B, `3` = 1B, `4` = 0B) for struct layout.
     #[must_use]
-    pub fn rust_type(self) -> String {
+    pub const fn align_tier(self) -> u8 {
         match self {
-            Self::Scalar(s) => s.rust_type(),
+            Self::Scalar(s) => s.align_tier(),
+            Self::List { .. } => 0,
+        }
+    }
+
+    /// Returns the Rust type `TokenStream` for this scalar or boxed slice type.
+    #[must_use]
+    pub fn rust_type_tokens(self) -> TokenStream {
+        match self {
+            Self::Scalar(s) => s.rust_type_tokens(),
             Self::List { elem, depth } => {
-                let mut out = elem.rust_type();
+                let mut out = elem.rust_type_tokens();
                 for _ in 0..depth {
-                    out = format!("Box<[{out}]>");
+                    out = quote! { Box<[#out]> };
                 }
                 out
             }
@@ -291,6 +349,26 @@ impl RecordType {
         match self {
             Self::KvRecord { key, val, .. } => key.uses_int_or_list() || val.uses_int_or_list(),
             Self::StringRecord(m) => m.values().copied().any(ScalarOrList::uses_int_or_list),
+        }
+    }
+
+    /// Returns the alignment tier (`0..=4`) of this nested record struct.
+    #[must_use]
+    pub fn align_tier(&self) -> u8 {
+        match self {
+            Self::KvRecord {
+                key,
+                val,
+                tuple_elems,
+            } => {
+                let kt = key.align_tier();
+                let vt = match tuple_elems {
+                    Some(elems) => elems.iter().fold(4u8, |acc, &e| acc.min(e.align_tier())),
+                    None => val.align_tier(),
+                };
+                kt.min(vt)
+            }
+            Self::StringRecord(m) => m.values().fold(4u8, |acc, &v| acc.min(v.align_tier())),
         }
     }
 }
@@ -455,45 +533,65 @@ impl ColType {
         }
     }
 
-    /// Returns `(record_type, is_collection)` if this column requires a generated helper struct.
+    /// Returns the alignment tier (`0..=4`) of this column for struct field layout ordering.
     #[must_use]
-    pub const fn nested_record(&self) -> Option<(&RecordType, bool)> {
+    pub fn align_tier(&self) -> u8 {
         match self {
-            Self::Record(r) => Some((r, false)),
-            Self::RecordList(r) => Some((r, true)),
+            Self::Simple(s) => s.align_tier(),
+            Self::Record(r) => r.align_tier(),
+            Self::RecordList(_) | Self::Map { .. } => 0,
+        }
+    }
+
+    /// Returns `(record_type, helper_struct_name)` if this column requires a generated helper struct.
+    #[must_use]
+    pub fn nested_record(
+        &self,
+        table_pascal: &str,
+        col_name: &str,
+    ) -> Option<(&RecordType, String)> {
+        match self {
+            Self::Record(r) => {
+                let col_pascal = to_pascal_case(col_name);
+                Some((r, format!("{table_pascal}{col_pascal}")))
+            }
+            Self::RecordList(r) => {
+                let col_pascal = to_pascal_case(col_name);
+                Some((r, format!("{table_pascal}{col_pascal}Entry")))
+            }
             Self::Simple(_) | Self::Map { .. } => None,
         }
     }
 
-    pub fn rust_type(
-        &self,
-        helper_struct_name: Option<&str>,
-        stem: &str,
-    ) -> Result<String, XtaskError> {
+    /// Returns the Rust type `TokenStream` for this column on table `table_pascal`.
+    #[must_use]
+    pub fn rust_type_tokens(&self, table_pascal: &str, col_name: &str) -> TokenStream {
         match self {
-            Self::Simple(s) => Ok(s.rust_type()),
+            Self::Simple(s) => s.rust_type_tokens(),
             Self::Record(_) => {
-                helper_struct_name
-                    .map(str::to_owned)
-                    .ok_or_else(|| XtaskError::MalformedBytecode {
-                        stem: stem.into(),
-                        context: "missing helper struct name for Record",
-                    })
+                let ident = format_ident!("{table_pascal}{}", to_pascal_case(col_name));
+                quote! { #ident }
             }
             Self::RecordList(_) => {
-                let h = helper_struct_name.ok_or_else(|| XtaskError::MalformedBytecode {
-                    stem: stem.into(),
-                    context: "missing helper struct name for RecordList",
-                })?;
-                Ok(format!("Box<[{h}]>"))
+                let ident = format_ident!("{table_pascal}{}Entry", to_pascal_case(col_name));
+                quote! { Box<[#ident]> }
             }
-            Self::Map { key, val } => Ok(format!(
-                "FxHashMap<{}, {}>",
-                key.rust_type(),
-                val.rust_type()
-            )),
+            Self::Map { key, val } => {
+                let kt = key.rust_type_tokens();
+                let vt = val.rust_type_tokens();
+                quote! { FxHashMap<#kt, #vt> }
+            }
         }
     }
+}
+
+fn get_table<'a>(tables: &'a [TableObj], tid: u32, stem: &str) -> Result<&'a TableObj, XtaskError> {
+    tables
+        .get(u32_to_usize(tid))
+        .ok_or_else(|| XtaskError::MalformedBytecode {
+            stem: stem.into(),
+            context: "table id out of bounds",
+        })
 }
 
 fn is_valid_ident(s: &str) -> bool {
@@ -518,13 +616,7 @@ fn infer_scalar(val: &Val, tables: &[TableObj], stem: &str) -> Result<ScalarType
         Val::Float => Ok(ScalarType::Float),
         Val::Str(_) => Ok(ScalarType::Str),
         Val::Table(tid) => {
-            let t =
-                tables
-                    .get(u32_to_usize(*tid))
-                    .ok_or_else(|| XtaskError::MalformedBytecode {
-                        stem: stem.into(),
-                        context: "table id out of bounds",
-                    })?;
+            let t = get_table(tables, *tid, stem)?;
             if t.list.is_empty() && t.map.is_empty() {
                 Ok(ScalarType::EmptyTable)
             } else {
@@ -543,12 +635,7 @@ fn infer_scalar_or_list_depth1(
     stem: &str,
 ) -> Result<ScalarOrList, XtaskError> {
     if let Val::Table(tid) = val {
-        let t = tables
-            .get(u32_to_usize(*tid))
-            .ok_or_else(|| XtaskError::MalformedBytecode {
-                stem: stem.into(),
-                context: "table id out of bounds",
-            })?;
+        let t = get_table(tables, *tid, stem)?;
         if !t.list.is_empty() {
             let mut elem = infer_scalar(&t.list[0], tables, stem)?;
             for item in &t.list[1..] {
@@ -585,7 +672,7 @@ fn infer_map_or_record(
                 if let (Val::Str(s), Val::Table(vtid)) = (k, v)
                     && &**s == "Value"
                 {
-                    let vt = &tables[u32_to_usize(*vtid)];
+                    let vt = get_table(tables, *vtid, stem)?;
                     if (2..=4).contains(&vt.list.len())
                         && vt.list.iter().all(|x| !matches!(x, Val::Table(_)))
                     {
@@ -638,12 +725,7 @@ fn lift_into_list(col: ColType, stem: &str) -> Result<ColType, XtaskError> {
 
 fn infer_elem_val(val: &Val, tables: &[TableObj], stem: &str) -> Result<ColType, XtaskError> {
     if let Val::Table(tid) = val {
-        let t = tables
-            .get(u32_to_usize(*tid))
-            .ok_or_else(|| XtaskError::MalformedBytecode {
-                stem: stem.into(),
-                context: "table id out of bounds",
-            })?;
+        let t = get_table(tables, *tid, stem)?;
         if t.list.is_empty() && t.map.is_empty() {
             return Ok(ColType::Simple(ScalarOrList::Scalar(
                 ScalarType::EmptyTable,
@@ -666,12 +748,7 @@ fn infer_elem_val(val: &Val, tables: &[TableObj], stem: &str) -> Result<ColType,
 /// Infers the [`ColType`] of a column or preload entry value without recursion.
 pub fn infer_col_val(val: &Val, tables: &[TableObj], stem: &str) -> Result<ColType, XtaskError> {
     if let Val::Table(tid) = val {
-        let t = tables
-            .get(u32_to_usize(*tid))
-            .ok_or_else(|| XtaskError::MalformedBytecode {
-                stem: stem.into(),
-                context: "table id out of bounds",
-            })?;
+        let t = get_table(tables, *tid, stem)?;
         if !t.list.is_empty() {
             let mut elem = infer_elem_val(&t.list[0], tables, stem)?;
             for item in &t.list[1..] {
@@ -683,22 +760,50 @@ pub fn infer_col_val(val: &Val, tables: &[TableObj], stem: &str) -> Result<ColTy
     infer_elem_val(val, tables, stem)
 }
 
+/// Inferred primary key type for a `LuaTable/DataCfg` table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LuaTableKey {
+    /// Default `u32` key for empty tables.
+    DefaultU32,
+    /// Single scalar or 1D scalar list key (`K`).
+    Single(ScalarOrList),
+    /// Composite 3D key (`(K1, K2, K3)`).
+    Triple(ScalarOrList, ScalarOrList, ScalarOrList),
+}
+
+impl LuaTableKey {
+    /// Returns the Rust primary key type `TokenStream` for `DataTable<K, Row>`.
+    #[must_use]
+    pub fn rust_type_tokens(self) -> TokenStream {
+        match self {
+            Self::DefaultU32 => quote! { u32 },
+            Self::Single(k) => k.rust_type_tokens(),
+            Self::Triple(k1, k2, k3) => {
+                let t1 = k1.rust_type_tokens();
+                let t2 = k2.rust_type_tokens();
+                let t3 = k3.rust_type_tokens();
+                quote! { (#t1, #t2, #t3) }
+            }
+        }
+    }
+}
+
 /// Schema specification for a standard `LuaTable/DataCfg` table.
 #[derive(Debug)]
 pub struct LuaTableSpec {
     pub stem: String,
     pub pascal: String,
-    pub key_rust: String,
+    pub key: LuaTableKey,
     pub is_3d: bool,
     pub cols: BTreeMap<String, ColType>,
 }
 
 /// Shape of a `LuaPreLoadTable/DataCfg` preload table.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreloadKind {
-    List(String),
-    Map1D(String, String),
-    Map2D(String, String, String),
+    List(ScalarOrList),
+    Map1D(ScalarOrList, ScalarOrList),
+    Map2D(ScalarOrList, ScalarOrList, ScalarOrList),
 }
 
 /// Schema specification for a `LuaPreLoadTable/DataCfg` preload table.
@@ -726,11 +831,11 @@ fn collect_3d_keys_and_rows(
     main_tid: u32,
     tables: &[TableObj],
     row_tids: &mut Vec<u32>,
-) -> Result<String, XtaskError> {
+) -> Result<LuaTableKey, XtaskError> {
     let mut k1_ty = None;
     let mut k2_ty = None;
     let mut k3_ty = None;
-    for (k1, v1) in &tables[u32_to_usize(main_tid)].map {
+    for (k1, v1) in &get_table(tables, main_tid, stem)?.map {
         merge_opt_scalar_or_list(&mut k1_ty, infer_scalar_or_list_depth1(k1, tables, stem)?)?;
         let Val::Table(tid1) = v1 else {
             return Err(XtaskError::MalformedBytecode {
@@ -738,7 +843,7 @@ fn collect_3d_keys_and_rows(
                 context: "3d l1",
             });
         };
-        for (k2, v2) in &tables[u32_to_usize(*tid1)].map {
+        for (k2, v2) in &get_table(tables, *tid1, stem)?.map {
             merge_opt_scalar_or_list(&mut k2_ty, infer_scalar_or_list_depth1(k2, tables, stem)?)?;
             let Val::Table(tid2) = v2 else {
                 return Err(XtaskError::MalformedBytecode {
@@ -746,7 +851,7 @@ fn collect_3d_keys_and_rows(
                     context: "3d l2",
                 });
             };
-            for (k3, v3) in &tables[u32_to_usize(*tid2)].map {
+            for (k3, v3) in &get_table(tables, *tid2, stem)?.map {
                 merge_opt_scalar_or_list(
                     &mut k3_ty,
                     infer_scalar_or_list_depth1(k3, tables, stem)?,
@@ -769,12 +874,20 @@ fn collect_3d_keys_and_rows(
         stem: stem.into(),
         context: "missing 3d k3",
     })?;
-    Ok(format!(
-        "({}, {}, {})",
-        t1.rust_type(),
-        t2.rust_type(),
-        t3.rust_type()
-    ))
+    Ok(LuaTableKey::Triple(t1, t2, t3))
+}
+
+fn detect_3d_table(main_tbl: &TableObj, tables: &[TableObj]) -> bool {
+    main_tbl.map.first().is_some_and(|(_, v1)| {
+        matches!(v1, Val::Table(t1) if tables.get(u32_to_usize(*t1)).is_some_and(|tbl1| {
+            tbl1.map.first().is_some_and(|(k2, v2)| {
+                matches!(k2, Val::Int(_))
+                    && matches!(v2, Val::Table(t2) if tables.get(u32_to_usize(*t2)).is_some_and(|tbl2| {
+                        tbl2.map.first().is_some_and(|(k3, _)| matches!(k3, Val::Int(_)))
+                    }))
+            })
+        }))
+    })
 }
 
 /// Decrypts, executes, and infers the [`LuaTableSpec`] for a `LuaTable/DataCfg` `.out` buffer.
@@ -796,36 +909,29 @@ pub fn analyze_luatable(stem: String, buf: &mut [u8]) -> Result<LuaTableSpec, Xt
         });
     };
     let (main_tid, most_tid, def_tid) = (*main_tid, *most_tid, *def_tid);
-
-    let is_3d = tables[u32_to_usize(main_tid)]
-        .map
-        .first()
-        .is_some_and(|(_, v1)| {
-            matches!(v1, Val::Table(t1) if tables[u32_to_usize(*t1)].map.first().is_some_and(|(k2, v2)| {
-                matches!(k2, Val::Int(_)) && matches!(v2, Val::Table(t2) if tables[u32_to_usize(*t2)].map.first().is_some_and(|(k3, _)| matches!(k3, Val::Int(_))))
-            }))
-        });
+    let main_tbl = get_table(&tables, main_tid, &stem)?;
+    let is_3d = detect_3d_table(main_tbl, &tables);
 
     let mut row_tids = vec![most_tid, def_tid];
-    let key_rust = if is_3d {
+    let key = if is_3d {
         collect_3d_keys_and_rows(&stem, main_tid, &tables, &mut row_tids)?
     } else {
         let mut k_ty = None;
-        for (k, v) in &tables[u32_to_usize(main_tid)].map {
+        for (k, v) in &main_tbl.map {
             merge_opt_scalar_or_list(&mut k_ty, infer_scalar_or_list_depth1(k, &tables, &stem)?)?;
             if let Val::Table(rtid) = v {
                 row_tids.push(*rtid);
             }
         }
         match k_ty {
-            Some(kt) => kt.rust_type(),
-            None => "u32".to_owned(),
+            Some(kt) => LuaTableKey::Single(kt),
+            None => LuaTableKey::DefaultU32,
         }
     };
 
     let mut cols: BTreeMap<String, ColType> = BTreeMap::new();
     for rtid in row_tids {
-        for (k, v) in &tables[u32_to_usize(rtid)].map {
+        for (k, v) in &get_table(&tables, rtid, &stem)?.map {
             let Val::Str(col_name) = k else { continue };
             let col_str = col_name.to_string();
             let inferred = infer_col_val(v, &tables, &stem)?;
@@ -839,7 +945,7 @@ pub fn analyze_luatable(stem: String, buf: &mut [u8]) -> Result<LuaTableSpec, Xt
     Ok(LuaTableSpec {
         stem,
         pascal,
-        key_rust,
+        key,
         is_3d,
         cols,
     })
@@ -866,7 +972,7 @@ fn infer_preload_2d(
                 context: "2d sub",
             });
         };
-        for (k2, v2) in &tables[u32_to_usize(*sub_tid)].map {
+        for (k2, v2) in &get_table(tables, *sub_tid, stem)?.map {
             merge_opt_scalar_or_list(&mut k2_ty, infer_scalar_or_list_depth1(k2, tables, stem)?)?;
             merge_opt_scalar_or_list(&mut v_ty, infer_scalar_or_list_depth1(v2, tables, stem)?)?;
         }
@@ -884,7 +990,7 @@ fn infer_preload_2d(
         context: "2d k2",
     })?;
     Ok(InferredPreload {
-        kind: PreloadKind::Map2D(k1.rust_type(), k2.rust_type(), vt.rust_type()),
+        kind: PreloadKind::Map2D(k1, k2, vt),
         uses_int_or_list: vt.uses_int_or_list(),
     })
 }
@@ -904,19 +1010,19 @@ pub fn analyze_preload(stem: String, buf: &mut [u8]) -> Result<PreloadSpec, Xtas
             context: "missing preload R[0]",
         });
     };
-    let root_tbl = &tables[u32_to_usize(main_tid)];
+    let root_tbl = get_table(&tables, main_tid, &stem)?;
     let inferred = if !root_tbl.list.is_empty() {
         let mut elem = infer_scalar_or_list_depth1(&root_tbl.list[0], &tables, &stem)?;
         for item in &root_tbl.list[1..] {
             elem = ScalarOrList::merge(elem, infer_scalar_or_list_depth1(item, &tables, &stem)?)?;
         }
         InferredPreload {
-            kind: PreloadKind::List(elem.rust_type()),
+            kind: PreloadKind::List(elem),
             uses_int_or_list: false,
         }
-    } else if root_tbl.map.first().is_some_and(
-        |(_, v)| matches!(v, Val::Table(tid) if !tables[u32_to_usize(*tid)].map.is_empty()),
-    ) {
+    } else if root_tbl.map.first().is_some_and(|(_, v)| {
+        matches!(v, Val::Table(tid) if tables.get(u32_to_usize(*tid)).is_some_and(|t| !t.map.is_empty()))
+    }) {
         infer_preload_2d(&stem, root_tbl, &tables)?
     } else {
         let mut k_ty = None;
@@ -934,7 +1040,7 @@ pub fn analyze_preload(stem: String, buf: &mut [u8]) -> Result<PreloadSpec, Xtas
             context: "1d val",
         })?;
         InferredPreload {
-            kind: PreloadKind::Map1D(kt.rust_type(), vt.rust_type()),
+            kind: PreloadKind::Map1D(kt, vt),
             uses_int_or_list: vt.uses_int_or_list(),
         }
     };

@@ -8,7 +8,12 @@ members = [
   "crates/workspace-hack",
   "crates/xtask",
 ]
-default-members = ["crates/data", "crates/pak", "crates/pak_vfs", "crates/parsers"]
+default-members = [
+  "crates/data",
+  "crates/pak",
+  "crates/pak_vfs",
+  "crates/parsers",
+]
 
 [workspace.package]
 version = "0.1.0"
